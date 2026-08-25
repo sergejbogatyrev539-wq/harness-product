@@ -1,6 +1,6 @@
 """Public API for the pure, non-effectful M1 kernel."""
 
-from .kernel import classify, derive, normalize
+from .kernel import classify, decide, derive, evaluate, normalize, transition
 from .model import (
     AuthorityClause,
     AuthoritySource,
@@ -54,6 +54,9 @@ __all__ = [
     "TransitionResult",
     "TrustedFacts",
     "classify",
+    "decide",
     "derive",
+    "evaluate",
     "normalize",
+    "transition",
 ]

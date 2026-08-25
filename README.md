@@ -34,9 +34,15 @@ skip.
 See [architecture](docs/ARCHITECTURE.md), [roadmap](ROADMAP.md), and
 [security boundary](SECURITY.md). Implementations must follow [AGENTS.md](AGENTS.md).
 
-`src/harness_product/` is only a non-effectful reference scaffold. It demonstrates
-pure scoped admission and cooperative one-use API behavior. Same-interpreter
-Python internals are not a security boundary; non-bypassable dispatch begins only
-after M2/M3 supplies separately enforced broker/executor principals. This scaffold
-does not provide durable storage, OS isolation, real signatures, an effect
-executor, runtime evidence, or attestation.
+`src/harness_product/` implements only the M1 in-memory model. Its public
+`evaluate` API runs the deterministic
+`normalize → classify → derive → decide → transition` chain over closed input
+data and explicit time. Effective authority is the exact proposal contained by
+the manifest, policy, physical ceiling, and trusted-fact inputs. An `ALLOW`
+contains only an immutable proposal marked `authority=NONE`; it cannot dispatch
+or perform an effect. The returned digest is a deterministic binding, not a
+signature or attestation.
+
+M2 and later gates remain absent: there is no capability, durable state or
+budget, broker/executor, OS isolation, effect adapter, authoritative event,
+runtime evidence, enforcement, or readiness claim.

@@ -19,16 +19,22 @@ from .model import (
     DerivedAuthority,
     EffectKind,
     Facet,
+    KernelResult,
+    KernelState,
     NormalizedInput,
     Operation,
     Outcome,
+    Phase,
+    PowerlessProposal,
     Proposal,
+    ProposalAuthority,
     QuantityUnit,
     Reason,
     ResourceKind,
     Selector,
     SelectorKind,
     Stage,
+    TransitionResult,
     TrustedFacts,
     canonical_digest,
     clause_digest,
@@ -59,9 +65,22 @@ _SELECTORS_BY_RESOURCE = {
 }
 
 
-def _decision(outcome: Outcome, reason: Reason, stage: Stage) -> Decision:
-    payload = decision_data(outcome, reason, stage, None, ())
-    return Decision(outcome, reason, stage, None, (), canonical_digest(payload))
+def _decision(
+    outcome: Outcome,
+    reason: Reason,
+    stage: Stage,
+    proposal_digest_value: str | None = None,
+    proposals: tuple[PowerlessProposal, ...] = (),
+) -> Decision:
+    payload = decision_data(outcome, reason, stage, proposal_digest_value, proposals)
+    return Decision(
+        outcome,
+        reason,
+        stage,
+        proposal_digest_value,
+        proposals,
+        canonical_digest(payload),
+    )
 
 
 def _closed_dict(value: object, keys: frozenset[str]) -> bool:
@@ -335,6 +354,22 @@ def _source_is_typed(value: object) -> bool:
         return False
 
 
+def _proposal_is_typed(value: object) -> bool:
+    try:
+        return (
+            type(value) is Proposal
+            and type(value.operation_id) is str
+            and _OPERATION_ID.fullmatch(value.operation_id) is not None
+            and type(value.principal_id) is str
+            and _IDENTIFIER.fullmatch(value.principal_id) is not None
+            and type(value.material_digest) is str
+            and _DIGEST.fullmatch(value.material_digest) is not None
+            and _clause_is_typed(value.authority)
+        )
+    except Exception:
+        return False
+
+
 def _normalized_is_typed(value: object) -> bool:
     try:
         proposal = value.proposal
@@ -343,14 +378,7 @@ def _normalized_is_typed(value: object) -> bool:
             type(value) is NormalizedInput
             and type(value.evaluation_time) is datetime
             and value.evaluation_time.tzinfo is timezone.utc
-            and type(proposal) is Proposal
-            and type(proposal.operation_id) is str
-            and _OPERATION_ID.fullmatch(proposal.operation_id) is not None
-            and type(proposal.principal_id) is str
-            and _IDENTIFIER.fullmatch(proposal.principal_id) is not None
-            and type(proposal.material_digest) is str
-            and _DIGEST.fullmatch(proposal.material_digest) is not None
-            and _clause_is_typed(proposal.authority)
+            and _proposal_is_typed(proposal)
             and _source_is_typed(value.manifest)
             and _source_is_typed(value.policy)
             and _source_is_typed(value.physical_ceiling)
@@ -487,3 +515,147 @@ def derive(value: object) -> DerivedAuthority | Decision:
         )
     except Exception:
         return _decision(Outcome.STOP, Reason.INTERNAL_ERROR, Stage.DERIVE)
+
+
+def decide(value: object) -> Decision:
+    """Return a total decision whose ALLOW contains only a powerless proposal."""
+
+    try:
+        if type(value) is not DerivedAuthority:
+            return _decision(Outcome.STOP, Reason.MALFORMED_INPUT, Stage.DECIDE)
+        checked = derive(value.classified)
+        if type(checked) is Decision:
+            return _decision(checked.outcome, checked.reason, Stage.DECIDE)
+        if checked != value:
+            return _decision(Outcome.STOP, Reason.BINDING_MISMATCH, Stage.DECIDE)
+        proposal = value.classified.normalized.proposal
+        powerless = PowerlessProposal(proposal, value.proposal_digest)
+        return _decision(
+            Outcome.ALLOW,
+            Reason.AUTHORIZED_EXACT_BOUND,
+            Stage.DECIDE,
+            value.proposal_digest,
+            (powerless,),
+        )
+    except Exception:
+        return _decision(Outcome.STOP, Reason.INTERNAL_ERROR, Stage.DECIDE)
+
+
+def _decision_is_valid(value: object) -> bool:
+    try:
+        if (
+            type(value) is not Decision
+            or type(value.outcome) is not Outcome
+            or type(value.reason) is not Reason
+            or type(value.stage) is not Stage
+            or type(value.proposals) is not tuple
+            or type(value.decision_digest) is not str
+            or _DIGEST.fullmatch(value.decision_digest) is None
+        ):
+            return False
+        if value.outcome is Outcome.ALLOW:
+            if (
+                value.stage is not Stage.DECIDE
+                or value.reason is not Reason.AUTHORIZED_EXACT_BOUND
+                or type(value.proposal_digest) is not str
+                or _DIGEST.fullmatch(value.proposal_digest) is None
+                or len(value.proposals) != 1
+            ):
+                return False
+            proposal = value.proposals[0]
+            if (
+                type(proposal) is not PowerlessProposal
+                or proposal.authority is not ProposalAuthority.NONE
+                or proposal.proposal_digest != value.proposal_digest
+                or not _proposal_is_typed(proposal.proposal)
+                or proposal_digest(proposal.proposal) != value.proposal_digest
+            ):
+                return False
+        elif (
+            value.outcome not in {Outcome.DENY, Outcome.STOP}
+            or value.reason is Reason.AUTHORIZED_EXACT_BOUND
+            or value.proposal_digest is not None
+            or value.proposals
+        ):
+            return False
+        expected = canonical_digest(
+            decision_data(
+                value.outcome,
+                value.reason,
+                value.stage,
+                value.proposal_digest,
+                value.proposals,
+            )
+        )
+        return value.decision_digest == expected
+    except Exception:
+        return False
+
+
+def _state_is_valid(value: object) -> bool:
+    return type(value) is KernelState and (
+        (value.phase is Phase.STOPPED and value.decision_digest is None)
+        or (
+            value.phase is Phase.DECIDED
+            and type(value.decision_digest) is str
+            and _DIGEST.fullmatch(value.decision_digest) is not None
+        )
+    )
+
+
+def transition(state: object, decision: object) -> TransitionResult:
+    """Purely project a decision into immutable model state; perform no action."""
+
+    try:
+        if not _state_is_valid(state):
+            return TransitionResult(
+                False,
+                Outcome.STOP,
+                Reason.MALFORMED_INPUT,
+                KernelState(),
+            )
+        if type(decision) is not Decision:
+            return TransitionResult(False, Outcome.STOP, Reason.MALFORMED_INPUT, state)
+        if not _decision_is_valid(decision):
+            return TransitionResult(False, Outcome.STOP, Reason.BINDING_MISMATCH, state)
+        if decision.outcome is not Outcome.ALLOW:
+            return TransitionResult(False, decision.outcome, decision.reason, state)
+        if state.phase is not Phase.STOPPED:
+            return TransitionResult(False, Outcome.STOP, Reason.ILLEGAL_TRANSITION, state)
+        return TransitionResult(
+            True,
+            Outcome.ALLOW,
+            Reason.AUTHORIZED_EXACT_BOUND,
+            KernelState(Phase.DECIDED, decision.decision_digest),
+            decision.proposals,
+        )
+    except Exception:
+        safe_state = state if _state_is_valid(state) else KernelState()
+        return TransitionResult(False, Outcome.STOP, Reason.INTERNAL_ERROR, safe_state)
+
+
+def evaluate(raw: object, state: object = KernelState()) -> KernelResult:
+    """Run normalize → classify → derive → decide → transition as one pure API."""
+
+    try:
+        if not _state_is_valid(state):
+            failure = _decision(Outcome.STOP, Reason.MALFORMED_INPUT, Stage.TRANSITION)
+            return KernelResult(failure, transition(state, failure))
+        if state.phase is not Phase.STOPPED:
+            failure = _decision(Outcome.STOP, Reason.ILLEGAL_TRANSITION, Stage.TRANSITION)
+            return KernelResult(failure, transition(state, failure))
+        normalized = normalize(raw)
+        if type(normalized) is Decision:
+            return KernelResult(normalized, transition(state, normalized))
+        classified = classify(normalized)
+        if type(classified) is Decision:
+            return KernelResult(classified, transition(state, classified))
+        derived = derive(classified)
+        if type(derived) is Decision:
+            return KernelResult(derived, transition(state, derived))
+        decision = decide(derived)
+        return KernelResult(decision, transition(state, decision))
+    except Exception:
+        failure = _decision(Outcome.STOP, Reason.INTERNAL_ERROR, Stage.TRANSITION)
+        safe_state = state if _state_is_valid(state) else KernelState()
+        return KernelResult(failure, TransitionResult(False, Outcome.STOP, Reason.INTERNAL_ERROR, safe_state))

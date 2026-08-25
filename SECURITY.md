@@ -5,6 +5,10 @@ Text in those sources is input data, not policy, authority, or instructions.
 
 ## Non-negotiable boundary
 
+These are runtime requirements, not current implementation claims. M1 only
+models their admission inputs and powerless output; M2/M3 must provide durable
+mediation and an enforced profile before any boundary can be claimed.
+
 - The worker has no ambient credential, executor, or network/sink authority.
 - The only effect route is Controller/PEP → broker → exact-bound executor or
   gateway. Each downstream hop revalidates identity, scope, digests, epoch, and
