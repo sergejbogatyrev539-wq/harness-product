@@ -186,6 +186,14 @@ class _PreparedIssue:
     verification_digest: str
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedConsume:
+    raw: dict[str, object]
+    budget_rows: tuple[_BudgetRow, ...]
+    budget_text: str
+    observed_at: datetime
+
+
 class _Rejected(Exception):
     def __init__(self, outcome: DurableOutcome, reason: DurableReason) -> None:
         super().__init__(reason.value)
@@ -588,6 +596,7 @@ class DurableStore:
         self._audit_budgets(connection, lineage)
         self._audit_chains(connection, meta)
         self._audit_capabilities(connection, lineage)
+        self._audit_dispatch(connection, meta)
 
     def _audit_budgets(self, connection: sqlite3.Connection, lineage: str | None) -> None:
         rows = connection.execute("SELECT * FROM budgets").fetchall()
@@ -712,6 +721,113 @@ class DurableStore:
             }
             if any(payload.get(payload_name) != row[column] for payload_name, column in column_bindings.items()):
                 raise _StoreCorrupt("capability column mismatch")
+            issued = connection.execute(
+                "SELECT event_type, subject_id FROM journal_entries WHERE sequence=?",
+                (row["issued_journal_sequence"],),
+            ).fetchone()
+            if issued is None or tuple(issued) != ("CAPABILITY_ISSUED", row["capability_id"]):
+                raise _StoreCorrupt("capability issuance event mismatch")
+
+    def _audit_dispatch(self, connection: sqlite3.Connection, meta: sqlite3.Row) -> None:
+        intents = connection.execute("SELECT * FROM dispatch_intents ORDER BY dispatch_counter").fetchall()
+        if len(intents) != meta["dispatch_counter"]:
+            raise _StoreCorrupt("dispatch counter truncation")
+        expected_reserved: dict[tuple[str, str, str, str], int] = {}
+        expected_spent: dict[tuple[str, str, str, str], int] = {}
+        for expected_counter, intent_row in enumerate(intents, 1):
+            if intent_row["dispatch_counter"] != expected_counter:
+                raise _StoreCorrupt("non-contiguous dispatch counter")
+            intent = _json_value(intent_row["intent_json"])
+            if canonical_digest(intent) != intent_row["intent_digest"]:
+                raise _StoreCorrupt("intent digest mismatch")
+            for field in (
+                "transaction_id",
+                "capability_id",
+                "idempotency_key_digest",
+                "fencing_epoch",
+                "dispatch_counter",
+            ):
+                if intent.get(field) != intent_row[field]:
+                    raise _StoreCorrupt("intent column mismatch")
+            capability = connection.execute(
+                "SELECT * FROM capabilities WHERE capability_id=?",
+                (intent_row["capability_id"],),
+            ).fetchone()
+            if (
+                capability is None
+                or capability["state"] != "CONSUMED"
+                or capability["consumed_transaction_id"] != intent_row["transaction_id"]
+                or _json_value(capability["budget_vector_json"]) != intent.get("budget_vector")
+            ):
+                raise _StoreCorrupt("consumed capability mismatch")
+            event = connection.execute(
+                "SELECT event_type, subject_id, payload_json FROM journal_entries WHERE sequence=?",
+                (intent_row["journal_sequence"],),
+            ).fetchone()
+            if event is None or tuple(event[:2]) != (
+                "CAPABILITY_CONSUMED_WITH_INTENT",
+                intent_row["transaction_id"],
+            ):
+                raise _StoreCorrupt("intent journal event mismatch")
+            event_payload = _json_value(event["payload_json"])
+            if (
+                event_payload.get("intent_digest") != intent_row["intent_digest"]
+                or event_payload.get("capability_id") != intent_row["capability_id"]
+                or event_payload.get("budget_vector_digest") != capability["budget_vector_digest"]
+            ):
+                raise _StoreCorrupt("intent event binding mismatch")
+            reservations = connection.execute(
+                """
+                SELECT * FROM budget_reservations
+                WHERE transaction_id=? ORDER BY name, unit, scope_digest, lineage_root
+                """,
+                (intent_row["transaction_id"],),
+            ).fetchall()
+            expected_vector = intent.get("budget_vector")
+            if type(expected_vector) is not list or len(reservations) != len(expected_vector):
+                raise _StoreCorrupt("reservation vector cardinality mismatch")
+            observed_vector = [
+                {
+                    "name": row["name"],
+                    "unit": row["unit"],
+                    "scope_digest": row["scope_digest"],
+                    "lineage_root": row["lineage_root"],
+                    "amount": row["amount"],
+                }
+                for row in reservations
+            ]
+            if observed_vector != expected_vector:
+                raise _StoreCorrupt("reservation vector mismatch")
+            expected_disposition = None if intent_row["state"] == "PENDING" else intent_row["state"]
+            for reservation in reservations:
+                if reservation["disposition"] != expected_disposition:
+                    raise _StoreCorrupt("reservation terminal mismatch")
+                terminal_text = reservation["terminal_record_json"]
+                terminal_digest = reservation["terminal_record_digest"]
+                if expected_disposition is None:
+                    if terminal_text is not None or terminal_digest is not None:
+                        raise _StoreCorrupt("pending reservation has terminal record")
+                else:
+                    terminal = _json_value(terminal_text)
+                    if canonical_digest(terminal) != terminal_digest:
+                        raise _StoreCorrupt("terminal record digest mismatch")
+                key = (
+                    reservation["name"],
+                    reservation["unit"],
+                    reservation["scope_digest"],
+                    reservation["lineage_root"],
+                )
+                if expected_disposition in (None, "QUARANTINED_ESCROW"):
+                    expected_reserved[key] = expected_reserved.get(key, 0) + reservation["amount"]
+                elif expected_disposition == "SPENT":
+                    expected_spent[key] = expected_spent.get(key, 0) + reservation["amount"]
+        consumed = connection.execute("SELECT COUNT(*) FROM capabilities WHERE state='CONSUMED'").fetchone()[0]
+        if consumed != len(intents):
+            raise _StoreCorrupt("consumed capability cardinality mismatch")
+        for budget in connection.execute("SELECT * FROM budgets"):
+            key = (budget["name"], budget["unit"], budget["scope_digest"], budget["lineage_root"])
+            if budget["reserved"] != expected_reserved.get(key, 0) or budget["spent"] != expected_spent.get(key, 0):
+                raise _StoreCorrupt("budget ledger/reservation mismatch")
 
     def _append_event(
         self,
@@ -1249,3 +1365,781 @@ class DurableStore:
         finally:
             if connection is not None:
                 connection.close()
+
+    def _prepare_consume(self, raw: object) -> _PreparedConsume:
+        keys = frozenset(
+            {
+                "capability_id",
+                "transaction_id",
+                "nonce",
+                "principal_id",
+                "audience_id",
+                "purpose",
+                "decision_digest",
+                "request_digest",
+                "authorized_envelope_digest",
+                "manifest_digest",
+                "policy_digest",
+                "physical_ceiling_digest",
+                "trusted_facts_digest",
+                "contract_digest",
+                "registry_digest",
+                "profile_digest",
+                "placement_digest",
+                "session_id",
+                "lineage_root",
+                "observed_at",
+                "revocation_epoch",
+                "fencing_epoch",
+                "idempotency_key_digest",
+                "budget",
+            }
+        )
+        if not _closed_dict(raw, keys):
+            raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        for field in (
+            "transaction_id",
+            "nonce",
+            "principal_id",
+            "audience_id",
+            "purpose",
+            "session_id",
+        ):
+            if not _valid_identifier(raw[field]):
+                raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        for field in (
+            "capability_id",
+            "decision_digest",
+            "request_digest",
+            "authorized_envelope_digest",
+            "manifest_digest",
+            "policy_digest",
+            "physical_ceiling_digest",
+            "trusted_facts_digest",
+            "contract_digest",
+            "registry_digest",
+            "profile_digest",
+            "placement_digest",
+            "lineage_root",
+            "idempotency_key_digest",
+        ):
+            if not _valid_digest(raw[field]):
+                raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if not _bounded_integer(raw["revocation_epoch"]) or not _bounded_integer(raw["fencing_epoch"]):
+            raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        observed_at = _parse_time(raw["observed_at"])
+        if observed_at is None:
+            raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        budget_rows = _parse_budget_vector(
+            raw["budget"],
+            amount_name="amount",
+            expected_lineage=raw["lineage_root"],
+        )
+        return _PreparedConsume(raw, budget_rows, _canonical_text([row.data() for row in budget_rows]), observed_at)
+
+    def _stored_verification_is_valid(self, capability: sqlite3.Row, observed_at: str) -> bool:
+        try:
+            payload = _json_value(capability["payload_json"])
+            verification = _json_value(capability["verification_json"])
+            if (
+                verification.get("bindings") != payload
+                or verification.get("payload_digest") != capability["capability_id"]
+                or canonical_digest(verification) != capability["verification_digest"]
+            ):
+                return False
+            result = self._verifier.verify(
+                capability["payload_json"].encode("utf-8"),
+                capability["verification_json"].encode("utf-8"),
+                observed_at,
+            )
+            return (
+                type(result) is VerificationResult
+                and result.status is VerificationStatus.VERIFIED
+                and result.verifier_id == verification.get("verifier_id")
+                and result.payload_digest == capability["capability_id"]
+                and result.record_digest == capability["verification_digest"]
+            )
+        except Exception:
+            return False
+
+    def consume(self, raw: object) -> DurableResult:
+        """Atomically consume one capability, reserve its vector, and persist intent/event."""
+
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        try:
+            prepared = self._prepare_consume(raw)
+        except _Rejected as rejection:
+            return _result(rejection.outcome, rejection.reason)
+        except Exception:
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        connection: sqlite3.Connection | None = None
+        try:
+            self._hit("before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("after_begin")
+            self._audit(connection)
+            meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+            capability = connection.execute(
+                "SELECT * FROM capabilities WHERE capability_id=?",
+                (prepared.raw["capability_id"],),
+            ).fetchone()
+            if meta is None:
+                raise _StoreCorrupt("missing metadata")
+            if capability is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.UNKNOWN_CAPABILITY)
+            if capability["state"] == "CONSUMED":
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.REPLAY)
+            if capability["state"] == "REVOKED":
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.STALE_REVOCATION)
+            exact_fields = (
+                "nonce",
+                "principal_id",
+                "audience_id",
+                "purpose",
+                "decision_digest",
+                "request_digest",
+                "authorized_envelope_digest",
+                "manifest_digest",
+                "policy_digest",
+                "physical_ceiling_digest",
+                "trusted_facts_digest",
+                "contract_digest",
+                "registry_digest",
+                "profile_digest",
+                "placement_digest",
+                "session_id",
+                "lineage_root",
+                "revocation_epoch",
+                "fencing_epoch",
+                "idempotency_key_digest",
+            )
+            if any(prepared.raw[field] != capability[field] for field in exact_fields):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.BINDING_MISMATCH)
+            if prepared.raw["lineage_root"] != meta["lineage_root"]:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.BINDING_MISMATCH)
+            if (
+                prepared.raw["revocation_epoch"] != meta["revocation_epoch"]
+                or capability["revocation_epoch"] != meta["revocation_epoch"]
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.STALE_REVOCATION)
+            if (
+                prepared.raw["fencing_epoch"] != meta["fencing_epoch"]
+                or capability["fencing_epoch"] != meta["fencing_epoch"]
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.STALE_FENCE)
+            not_before = _parse_time(capability["not_before"])
+            expires_at = _parse_time(capability["expires_at"])
+            if not_before is None or expires_at is None:
+                raise _StoreCorrupt("invalid capability time")
+            if not (not_before <= prepared.observed_at < expires_at):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.EXPIRED)
+            if prepared.budget_text != capability["budget_vector_json"]:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.BUDGET_MISMATCH)
+            if not self._stored_verification_is_valid(capability, prepared.raw["observed_at"]):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.CAPABILITY_INVALID)
+            if connection.execute(
+                "SELECT 1 FROM dispatch_intents WHERE transaction_id=? OR idempotency_key_digest=?",
+                (prepared.raw["transaction_id"], prepared.raw["idempotency_key_digest"]),
+            ).fetchone() is not None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.REPLAY)
+            for budget in prepared.budget_rows:
+                cursor = connection.execute(
+                    """
+                    UPDATE budgets
+                    SET remaining=remaining-?, reserved=reserved+?
+                    WHERE name=? AND unit=? AND scope_digest=? AND lineage_root=?
+                      AND remaining>=? AND reserved<=?
+                    """,
+                    (budget.amount, budget.amount, *budget.key, budget.amount, _MAX_INTEGER - budget.amount),
+                )
+                if cursor.rowcount != 1:
+                    connection.rollback()
+                    return _result(DurableOutcome.DENY, DurableReason.BUDGET_EXCEEDED)
+            self._hit("after_budget_reservation")
+            counter = meta["dispatch_counter"] + 1
+            sequence = meta["journal_head_sequence"] + 1
+            if not _bounded_integer(counter, 1) or not _bounded_integer(sequence, 1):
+                raise _StoreCorrupt("monotonic counter overflow")
+            capability_payload = _json_value(capability["payload_json"])
+            target_scope = prepared.budget_rows[0].scope_digest
+            intent = {
+                "intent_version": FORMAT_VERSION,
+                "transaction_id": prepared.raw["transaction_id"],
+                "capability_id": capability["capability_id"],
+                "capability_payload_digest": capability["payload_digest"],
+                "decision_digest": capability["decision_digest"],
+                "request_digest": capability["request_digest"],
+                "principal_id": capability["principal_id"],
+                "audience_id": capability["audience_id"],
+                "purpose": capability["purpose"],
+                "authorized_envelope_digest": capability["authorized_envelope_digest"],
+                "manifest_digest": capability["manifest_digest"],
+                "policy_digest": capability["policy_digest"],
+                "physical_ceiling_digest": capability["physical_ceiling_digest"],
+                "trusted_facts_digest": capability["trusted_facts_digest"],
+                "contract_digest": capability["contract_digest"],
+                "registry_digest": capability["registry_digest"],
+                "profile_digest": capability["profile_digest"],
+                "placement_digest": capability["placement_digest"],
+                "session_id": capability["session_id"],
+                "lineage_root": capability["lineage_root"],
+                "nonce": capability["nonce"],
+                "observed_at": prepared.raw["observed_at"],
+                "revocation_epoch": capability["revocation_epoch"],
+                "fencing_epoch": capability["fencing_epoch"],
+                "idempotency_key_digest": capability["idempotency_key_digest"],
+                "target_scope_digest": target_scope,
+                "material_digest": capability_payload["decision"]["proposals"][0]["proposal"]["material_digest"],
+                "budget_vector": [item.data() for item in prepared.budget_rows],
+                "budget_vector_digest": capability["budget_vector_digest"],
+                "dispatch_counter": counter,
+            }
+            intent_text = _canonical_text(intent)
+            intent_digest = canonical_digest(intent)
+            updated = connection.execute(
+                """
+                UPDATE capabilities SET state='CONSUMED', consumed_transaction_id=?
+                WHERE capability_id=? AND state='ISSUED' AND consumed_transaction_id IS NULL
+                """,
+                (prepared.raw["transaction_id"], capability["capability_id"]),
+            )
+            if updated.rowcount != 1:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.REPLAY)
+            self._hit("after_capability_consume")
+            connection.execute(
+                "INSERT INTO dispatch_intents VALUES (?, ?, 'PENDING', ?, ?, ?, ?, ?, ?)",
+                (
+                    prepared.raw["transaction_id"],
+                    capability["capability_id"],
+                    intent_digest,
+                    capability["idempotency_key_digest"],
+                    capability["fencing_epoch"],
+                    counter,
+                    intent_text,
+                    sequence,
+                ),
+            )
+            for budget in prepared.budget_rows:
+                connection.execute(
+                    """
+                    INSERT INTO budget_reservations
+                    VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+                    """,
+                    (prepared.raw["transaction_id"], *budget.key, budget.amount),
+                )
+            self._hit("after_intent")
+            connection.execute("UPDATE store_meta SET dispatch_counter=? WHERE id=1", (counter,))
+            event_payload = {
+                "transaction_id": prepared.raw["transaction_id"],
+                "capability_id": capability["capability_id"],
+                "intent_digest": intent_digest,
+                "idempotency_key_digest": capability["idempotency_key_digest"],
+                "budget_vector_digest": capability["budget_vector_digest"],
+                "dispatch_counter": counter,
+                "fencing_epoch": capability["fencing_epoch"],
+                "intent": intent,
+            }
+            observed_sequence = self._append_event(
+                connection,
+                "CAPABILITY_CONSUMED_WITH_INTENT",
+                prepared.raw["transaction_id"],
+                event_payload,
+            )
+            if observed_sequence != sequence:
+                raise _StoreCorrupt("consume sequence mismatch")
+            self._hit("after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            return DurableResult(
+                DurableOutcome.COMMITTED,
+                DurableReason.INTENT_COMMITTED,
+                capability_id=capability["capability_id"],
+                transaction_id=prepared.raw["transaction_id"],
+                journal_sequence=sequence,
+            )
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def revoke(self, raw: object) -> DurableResult:
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        if not _closed_dict(
+            raw,
+            frozenset(
+                {
+                    "capability_id",
+                    "expected_revocation_epoch",
+                    "new_revocation_epoch",
+                    "fencing_epoch",
+                    "reason_digest",
+                }
+            ),
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if not _valid_digest(raw["capability_id"]) or not _valid_digest(raw["reason_digest"]):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        for field in ("expected_revocation_epoch", "new_revocation_epoch", "fencing_epoch"):
+            if not _bounded_integer(raw[field]):
+                return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if (
+            raw["expected_revocation_epoch"] == _MAX_INTEGER
+            or raw["new_revocation_epoch"] != raw["expected_revocation_epoch"] + 1
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        connection: sqlite3.Connection | None = None
+        try:
+            self._hit("before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("after_begin")
+            self._audit(connection)
+            meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+            capability = connection.execute(
+                "SELECT state, revocation_epoch, fencing_epoch FROM capabilities WHERE capability_id=?",
+                (raw["capability_id"],),
+            ).fetchone()
+            if meta is None:
+                raise _StoreCorrupt("missing metadata")
+            if capability is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.UNKNOWN_CAPABILITY)
+            if capability["state"] != "ISSUED":
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            if (
+                meta["revocation_epoch"] != raw["expected_revocation_epoch"]
+                or capability["revocation_epoch"] != raw["expected_revocation_epoch"]
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.STALE_REVOCATION)
+            if meta["fencing_epoch"] != raw["fencing_epoch"] or capability["fencing_epoch"] != raw["fencing_epoch"]:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.STALE_FENCE)
+            connection.execute(
+                "UPDATE capabilities SET state='REVOKED' WHERE capability_id=? AND state='ISSUED'",
+                (raw["capability_id"],),
+            )
+            connection.execute(
+                "UPDATE store_meta SET revocation_epoch=? WHERE id=1",
+                (raw["new_revocation_epoch"],),
+            )
+            sequence = self._append_event(
+                connection,
+                "CAPABILITY_REVOKED",
+                raw["capability_id"],
+                {
+                    "capability_id": raw["capability_id"],
+                    "previous_revocation_epoch": raw["expected_revocation_epoch"],
+                    "revocation_epoch": raw["new_revocation_epoch"],
+                    "fencing_epoch": raw["fencing_epoch"],
+                    "reason_digest": raw["reason_digest"],
+                },
+            )
+            self._hit("after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            return DurableResult(
+                DurableOutcome.COMMITTED,
+                DurableReason.REVOKED,
+                capability_id=raw["capability_id"],
+                journal_sequence=sequence,
+            )
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def advance_fence(self, raw: object) -> DurableResult:
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        if not _closed_dict(
+            raw,
+            frozenset({"expected_fencing_epoch", "new_fencing_epoch", "reason_digest"}),
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if not _valid_digest(raw["reason_digest"]):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if not _bounded_integer(raw["expected_fencing_epoch"]) or not _bounded_integer(raw["new_fencing_epoch"]):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if (
+            raw["expected_fencing_epoch"] == _MAX_INTEGER
+            or raw["new_fencing_epoch"] != raw["expected_fencing_epoch"] + 1
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        connection: sqlite3.Connection | None = None
+        try:
+            self._hit("before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("after_begin")
+            self._audit(connection)
+            meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+            if meta is None:
+                raise _StoreCorrupt("missing metadata")
+            if meta["fencing_epoch"] != raw["expected_fencing_epoch"]:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.STALE_FENCE)
+            connection.execute(
+                "UPDATE store_meta SET fencing_epoch=? WHERE id=1",
+                (raw["new_fencing_epoch"],),
+            )
+            sequence = self._append_event(
+                connection,
+                "FENCE_ADVANCED",
+                meta["lineage_root"],
+                {
+                    "lineage_root": meta["lineage_root"],
+                    "previous_fencing_epoch": raw["expected_fencing_epoch"],
+                    "fencing_epoch": raw["new_fencing_epoch"],
+                    "reason_digest": raw["reason_digest"],
+                },
+            )
+            self._hit("after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            return DurableResult(
+                DurableOutcome.COMMITTED,
+                DurableReason.FENCE_ADVANCED,
+                journal_sequence=sequence,
+            )
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _no_effect_record(
+        self,
+        intent: sqlite3.Row,
+        evidence: dict[str, object],
+        observed_at: str,
+    ) -> tuple[dict[str, object], bool]:
+        intent_value = _json_value(intent["intent_json"])
+        record = {
+            "verification_version": FORMAT_VERSION,
+            "record_type": "NO_EFFECT",
+            "verifier_id": evidence["verifier_id"],
+            "observer_id": evidence["observer_id"],
+            "key_id": evidence["key_id"],
+            "transaction_id": intent["transaction_id"],
+            "intent_digest": intent["intent_digest"],
+            "intent": intent_value,
+            "target_scope_digest": intent_value["target_scope_digest"],
+            "fencing_epoch": intent["fencing_epoch"],
+            "observed_at": observed_at,
+            "proof": evidence["proof"],
+        }
+        record_text = _canonical_text(record)
+        try:
+            if self._no_effect_verifier is None:
+                return record, False
+            result = self._no_effect_verifier.verify(
+                intent["intent_json"].encode("utf-8"),
+                record_text.encode("utf-8"),
+                observed_at,
+            )
+            valid = (
+                type(result) is VerificationResult
+                and result.status is VerificationStatus.VERIFIED
+                and result.verifier_id == evidence["verifier_id"]
+                and result.payload_digest == intent["intent_digest"]
+                and result.record_digest == canonical_digest(record)
+            )
+            return record, valid
+        except Exception:
+            return record, False
+
+    def settle(self, raw: object) -> DurableResult:
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        if not _closed_dict(raw, frozenset({"transaction_id", "disposition", "observed_at", "evidence"})):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if not _valid_identifier(raw["transaction_id"]) or _parse_time(raw["observed_at"]) is None:
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if type(raw["disposition"]) is not str or raw["disposition"] not in {
+            "SPENT",
+            "RELEASED",
+            "QUARANTINED_ESCROW",
+        }:
+            reason = DurableReason.UNKNOWN_INPUT if type(raw["disposition"]) is str else DurableReason.MALFORMED_INPUT
+            return _result(DurableOutcome.STOP, reason)
+        evidence = raw["evidence"]
+        if raw["disposition"] in {"SPENT", "QUARANTINED_ESCROW"}:
+            if not _closed_dict(evidence, frozenset({"evidence_digest"})) or not _valid_digest(evidence["evidence_digest"]):
+                return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        else:
+            if not _closed_dict(
+                evidence,
+                frozenset({"verifier_id", "observer_id", "key_id", "proof"}),
+            ):
+                return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+            if not all(_valid_identifier(evidence[field]) for field in ("verifier_id", "observer_id", "key_id")):
+                return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+            if not _valid_proof(evidence["proof"]):
+                return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        connection: sqlite3.Connection | None = None
+        try:
+            self._hit("before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("after_begin")
+            self._audit(connection)
+            intent = connection.execute(
+                "SELECT * FROM dispatch_intents WHERE transaction_id=?",
+                (raw["transaction_id"],),
+            ).fetchone()
+            if intent is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            if intent["state"] != "PENDING":
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            reservations = connection.execute(
+                """
+                SELECT * FROM budget_reservations WHERE transaction_id=?
+                ORDER BY name, unit, scope_digest, lineage_root
+                """,
+                (raw["transaction_id"],),
+            ).fetchall()
+            if not reservations or any(row["disposition"] is not None for row in reservations):
+                raise _StoreCorrupt("pending intent reservation mismatch")
+            actual = raw["disposition"]
+            if actual == "RELEASED":
+                attempted, verified = self._no_effect_record(intent, evidence, raw["observed_at"])
+                if verified:
+                    terminal_record = attempted
+                else:
+                    actual = "QUARANTINED_ESCROW"
+                    terminal_record = {
+                        "record_type": "QUARANTINED_ESCROW",
+                        "reason": DurableReason.NO_EFFECT_UNVERIFIED.value,
+                        "transaction_id": intent["transaction_id"],
+                        "intent_digest": intent["intent_digest"],
+                        "fencing_epoch": intent["fencing_epoch"],
+                        "observed_at": raw["observed_at"],
+                        "attempted_no_effect_record_digest": canonical_digest(attempted),
+                    }
+            else:
+                terminal_record = {
+                    "record_type": actual,
+                    "transaction_id": intent["transaction_id"],
+                    "intent_digest": intent["intent_digest"],
+                    "fencing_epoch": intent["fencing_epoch"],
+                    "observed_at": raw["observed_at"],
+                    "evidence_digest": evidence["evidence_digest"],
+                }
+            terminal_text = _canonical_text(terminal_record)
+            terminal_digest = canonical_digest(terminal_record)
+            for reservation in reservations:
+                key = (
+                    reservation["name"],
+                    reservation["unit"],
+                    reservation["scope_digest"],
+                    reservation["lineage_root"],
+                )
+                if actual == "SPENT":
+                    cursor = connection.execute(
+                        """
+                        UPDATE budgets SET reserved=reserved-?, spent=spent+?
+                        WHERE name=? AND unit=? AND scope_digest=? AND lineage_root=?
+                          AND reserved>=? AND spent<=?
+                        """,
+                        (
+                            reservation["amount"],
+                            reservation["amount"],
+                            *key,
+                            reservation["amount"],
+                            _MAX_INTEGER - reservation["amount"],
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise _StoreCorrupt("spend conservation failure")
+                elif actual == "RELEASED":
+                    cursor = connection.execute(
+                        """
+                        UPDATE budgets SET reserved=reserved-?, remaining=remaining+?
+                        WHERE name=? AND unit=? AND scope_digest=? AND lineage_root=?
+                          AND reserved>=? AND remaining<=?
+                        """,
+                        (
+                            reservation["amount"],
+                            reservation["amount"],
+                            *key,
+                            reservation["amount"],
+                            _MAX_INTEGER - reservation["amount"],
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise _StoreCorrupt("release conservation failure")
+            updated = connection.execute(
+                """
+                UPDATE budget_reservations
+                SET disposition=?, terminal_record_json=?, terminal_record_digest=?
+                WHERE transaction_id=? AND disposition IS NULL
+                """,
+                (actual, terminal_text, terminal_digest, raw["transaction_id"]),
+            )
+            if updated.rowcount != len(reservations):
+                raise _StoreCorrupt("terminal reservation update mismatch")
+            changed = connection.execute(
+                "UPDATE dispatch_intents SET state=? WHERE transaction_id=? AND state='PENDING'",
+                (actual, raw["transaction_id"]),
+            )
+            if changed.rowcount != 1:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            sequence = self._append_event(
+                connection,
+                "BUDGET_TERMINAL_" + actual,
+                raw["transaction_id"],
+                {
+                    "transaction_id": raw["transaction_id"],
+                    "intent_digest": intent["intent_digest"],
+                    "disposition": actual,
+                    "terminal_record_digest": terminal_digest,
+                    "fencing_epoch": intent["fencing_epoch"],
+                },
+            )
+            self._hit("after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            return DurableResult(
+                DurableOutcome.COMMITTED,
+                DurableReason(actual),
+                transaction_id=raw["transaction_id"],
+                journal_sequence=sequence,
+            )
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def recover(self) -> DurableResult:
+        """Return durable pending/quarantined intent state without dispatch or retry."""
+
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        try:
+            connection = self._connect()
+            try:
+                self._audit(connection)
+                rows = connection.execute(
+                    """
+                    SELECT transaction_id, capability_id, intent_digest,
+                           idempotency_key_digest, state, fencing_epoch
+                    FROM dispatch_intents
+                    WHERE state IN ('PENDING', 'QUARANTINED_ESCROW')
+                    ORDER BY dispatch_counter
+                    """
+                ).fetchall()
+                intents = tuple(
+                    RecoveryIntent(
+                        row["transaction_id"],
+                        row["capability_id"],
+                        row["intent_digest"],
+                        row["idempotency_key_digest"],
+                        row["state"],
+                        row["fencing_epoch"],
+                    )
+                    for row in rows
+                )
+            finally:
+                connection.close()
+            return DurableResult(
+                DurableOutcome.OK,
+                DurableReason.RECOVERED,
+                recovery_intents=intents,
+            )
+        except sqlite3.OperationalError as error:
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            return self._mark_corrupt()
