@@ -3,7 +3,7 @@
 This document describes the intended implementation boundary. It does not attest
 that a runtime exists.
 
-## Implemented M1 and M2 boundary
+## Implemented M1/M2 and M3 draft-preflight boundary
 
 The current implementation is one pure in-memory pipeline:
 
@@ -42,7 +42,23 @@ Rollback `DELETE` mode is chosen for the serialized single-writer profile so
 recovery does not also depend on WAL checkpoint state; SQLite still creates a
 transient rollback-journal file for a transaction.
 
-The following executor topology remains future M3+ work, not an implemented path.
+M3 adds one direct `harness_product.l0` module without exporting it from the
+package root. Its first slice is a pure closed compiler for the exact draft
+`L0-LX-A / DISCONNECTED_STAGEABLE_WORKER` profile and a read-only host
+preflight. The compiler produces canonical immutable role, resource, broker-IPC,
+and measurement-plan bindings; it never treats `verified=true`, a digest, or a
+draft profile as physical proof. The only selected backend is the pinned
+root-owned `/usr/bin/bwrap` binary (bubblewrap 0.9.0, exact SHA-256 bound in
+code). Preflight verifies the binary and required platform capabilities with
+typed absolute argv and no shell. It creates no runtime object or effect.
+
+The current host result is a structured `STOP/CGROUP_DELEGATION_ABSENT`: the
+application cgroup is shared and lacks delegated CPU/IO controllers. The
+preflight consequently returns no partial compiled/measurement authority and
+does not fall back to Docker or a weaker profile.
+
+The following executor topology remains unfinished M3+ work, not an implemented
+or attested path.
 
 ```text
 untrusted worker ── powerless proposal ──> Controller / PEP
@@ -84,8 +100,10 @@ adapter, external cryptography/trust root/attestation, OS enforcement, or
 non-bypassable path. The local hash chain cannot detect a coherent whole-database
 rollback without an independent external anchor. `synchronous=FULL` depends on
 filesystem/device flush and ordering behavior and is not proof of power-loss
-durability. Therefore the product remains `NOT_IMPLEMENTED`, `NOT_ATTESTED`, and
-`NOT_READY`; enforcement, external evidence, and all M3+ work remain future.
+durability. The M3 compiler/preflight likewise proves only closed planning and
+host prerequisite measurement; it has not launched or attested a worker.
+Therefore the product remains `NOT_IMPLEMENTED`, `NOT_ATTESTED`, and
+`NOT_READY`; runtime enforcement and external evidence remain absent.
 
 ## Evidence and profiles
 

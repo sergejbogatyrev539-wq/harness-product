@@ -48,3 +48,20 @@ detect inconsistent local chain state, but cannot detect a coherent rollback of
 the whole database without an independent external anchor. `synchronous=FULL`
 also relies on the filesystem/device honoring flush and ordering guarantees; it
 does not prove power-loss durability.
+
+## M3 draft compiler and preflight boundary
+
+`harness_product.l0` currently compiles only the closed draft
+`L0-LX-A / DISCONNECTED_STAGEABLE_WORKER` profile and performs read-only host
+preflight for one exact pinned `/usr/bin/bwrap` backend. A successful compile is
+not activation, supply verification, placement proof, session attestation, or
+enforcement. Missing, extra, hostile, unbounded, duplicate, shared-identity, or
+mismatched profile/control input returns a structured `STOP` without a partial
+profile. Host/runtime exceptions also become `STOP`.
+
+Preflight creates no namespaces, cgroups, sockets, worker, executor, or staging
+write. On the current host it stops before launch because the session lacks a
+dedicated cgroup-v2 subtree with delegated CPU and IO controllers. No fallback
+runtime is attempted. Exact worker/broker/executor execution, descriptor-rooted
+staging, external supply/placement verification, lifecycle cleanup evidence,
+and runtime conformance are not yet implemented or claimed.

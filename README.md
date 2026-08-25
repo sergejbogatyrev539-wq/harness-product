@@ -62,4 +62,23 @@ external crypto/trust root/attestation, OS enforcement, non-bypassability, or
 readiness claim. A local hash chain cannot detect a coherent whole-database
 rollback without an independent external anchor. `synchronous=FULL` depends on
 the filesystem and device honoring flush/order guarantees and does not prove
-power-loss durability. M3+ enforcement and evidence remain future work.
+power-loss durability.
+
+M3 currently adds only the direct, non-root-exported
+`harness_product.l0` draft compiler and read-only host preflight for the one
+profile `L0-LX-A / DISCONNECTED_STAGEABLE_WORKER`. It pins the single backend
+to root-owned `/usr/bin/bwrap`, `bubblewrap 0.9.0`, SHA-256
+`52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712`.
+Compilation closes and canonicalizes five role plans, the exact fourteen-row
+Q-56 resource vector, disconnected worker controls, exact `UNIX_SEQPACKET`
+broker IPC, and measurement requirements. It emits a draft measurement plan,
+not activation or attestation. Preflight only reads host controls and invokes
+`bwrap --version/--help` with absolute typed argv, `shell=False`; it never
+creates a worker, namespace, cgroup, socket, or staging effect.
+
+On this development session preflight stops with
+`CGROUP_DELEGATION_ABSENT`: the current cgroup has only memory/PID controllers
+and is shared, so CPU/IO limits and complete process-tree lifecycle cannot be
+enforced. No weaker fallback is selected. M3 runtime enforcement, external
+supply/placement verification, attestation, and evidence remain absent; status
+therefore stays `NOT_IMPLEMENTED`, `NOT_ATTESTED`, and `NOT_READY`.
