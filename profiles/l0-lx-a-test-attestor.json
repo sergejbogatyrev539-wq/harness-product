@@ -1,0 +1,22 @@
+{
+  "algorithm": "ED25519",
+  "key_id": "harness-m3-test-ed25519-666ea1916c97e9c7",
+  "openssl": {
+    "digest": "sha256:b86b739329008369aebe1f7cff6c2adb18965609d68a19456fca55232f2908f5",
+    "path": "/usr/bin/openssl",
+    "version": "OpenSSL 3.0.13 30 Jan 2024"
+  },
+  "public_key_fingerprint": "sha256:666ea1916c97e9c71cf167b7a96bc32ea06a73c9b56def137ff09874d2e8645f",
+  "public_key_pem_digest": "sha256:dc1655a93a74ba69604cda200d6c103342e4dd764762765038566d1b7889b557",
+  "revocation_state_digest": "sha256:0d93dd3ddf336e72dbf1bab08897a7a12307652af3dcb727eece166a985eb851",
+  "rollback_floor": 1,
+  "scope": {
+    "data_class": "SYNTHETIC",
+    "environment": "DEV_STAGEABLE_LOCAL",
+    "profile_id": "L0-LX-A",
+    "workload_class": "DISCONNECTED_STAGEABLE_WORKER"
+  },
+  "signer_id": "harness-m3-attestor",
+  "trust_root_id": "harness-m3-disposable-test-root-20260826",
+  "trust_version": "1.0.0"
+}
