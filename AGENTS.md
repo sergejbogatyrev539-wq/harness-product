@@ -38,6 +38,7 @@
   or process unless a required control needs it.
 - For each change, update the requirement → invariant → enforcement → event →
   test → evidence trace; add the relevant negative/mutation test.
-- Before a commit, run `python scripts/check.py`; failure blocks the commit.
-  Do not commit generated evidence, secrets, or an unverified safety claim; make
-  focused commits only when explicitly requested.
+- Before a checkpoint commit, run `python scripts/check.py`. A commit without a
+  passing gate is non-conformant and must not be treated as a checkpoint; CI
+  reruns the same gate. Do not commit generated evidence, secrets, or an
+  unverified safety claim; make focused commits only when explicitly requested.

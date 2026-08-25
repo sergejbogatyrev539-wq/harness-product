@@ -34,7 +34,9 @@ skip.
 See [architecture](docs/ARCHITECTURE.md), [roadmap](ROADMAP.md), and
 [security boundary](SECURITY.md). Implementations must follow [AGENTS.md](AGENTS.md).
 
-`src/harness_product/` is only a non-effectful enforcement-kernel scaffold. It
-demonstrates fail-closed admission, broker-only dispatch and one-use exact-bound
-capabilities; it does not provide durable storage, OS isolation, real signatures,
-an effect executor, runtime evidence, or attestation.
+`src/harness_product/` is only a non-effectful reference scaffold. It demonstrates
+pure scoped admission and cooperative one-use API behavior. Same-interpreter
+Python internals are not a security boundary; non-bypassable dispatch begins only
+after M2/M3 supplies separately enforced broker/executor principals. This scaffold
+does not provide durable storage, OS isolation, real signatures, an effect
+executor, runtime evidence, or attestation.

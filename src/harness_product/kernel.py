@@ -1,9 +1,12 @@
-"""In-memory reference dispatch kernel with a broker-only dispatch path.
+"""Cooperative in-process reference dispatch kernel.
 
 No method in this module performs shell, network, filesystem, or other real
 effects.  ``executed`` means only that the exact call reached this model's
 executor after its checks.  The journal is intentionally non-production: it
-is process-local, not durable, serialized, signed, or crash-safe.
+is process-local, not durable, serialized, signed, or crash-safe.  Python
+private names and object identity are not a security boundary; actual
+non-bypassable mediation needs M2/M3 process-isolated principals and an
+enforced executor profile.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from .model import (
     Reason,
     Request,
     decide,
-    is_valid_effect_ceiling,
+    is_valid_physical_ceiling,
     is_valid_principal,
     is_valid_request,
 )
@@ -43,7 +46,7 @@ class DispatchReceipt:
 
 @dataclass(frozen=True)
 class _DispatchOrder:
-    """Private broker-created message accepted by a matching executor only."""
+    """Internal simulated dispatch message for cooperative API calls."""
 
     request: Request
     capability: Capability
@@ -120,7 +123,7 @@ def _is_valid_capability(value: object) -> bool:
 
 
 class Executor:
-    """Exact-call checker; it has no public API for raw request dispatch."""
+    """Cooperative exact-call checker, not an isolation or enforcement boundary."""
 
     def __init__(self, principal: object, journal: _InMemoryJournal, broker_key: object) -> None:
         self._principal = principal
@@ -148,7 +151,7 @@ class Executor:
 
 
 class Broker:
-    """The sole component that can create an executor-acceptable order."""
+    """Coordinates authorization and simulated dispatch in this reference model."""
 
     def __init__(self, executor_principal: object, physical_ceiling: object) -> None:
         """Build a disabled fail-closed broker rather than raising on bad input."""
@@ -159,7 +162,7 @@ class Broker:
         self._physical_ceiling = physical_ceiling
         self._configuration_valid = (
             is_valid_principal(executor_principal, PrincipalRole.EXECUTOR)
-            and is_valid_effect_ceiling(physical_ceiling)
+            and is_valid_physical_ceiling(physical_ceiling)
         )
 
     @property

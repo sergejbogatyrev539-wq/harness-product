@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from importlib import util
+from importlib import metadata, util
+import json
 from pathlib import Path, PurePosixPath
 import os
 import re
-import shutil
 import subprocess
 import sys
 
@@ -20,15 +20,32 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec"
 MANIFEST = SPEC / "MANIFEST.sha256"
 LINE = re.compile(r"^([0-9a-f]{64})  (.+)$")
+UNIMPLEMENTED_STATUS = {
+    "specification": "SPECIFIED",
+    "implementation": "NOT_IMPLEMENTED",
+    "evidence": "SPECIFICATION_MODEL_TESTED",
+    "runtime_attestation": "NOT_ATTESTED",
+    "overall": "NOT_READY",
+    "scope": "IMPORTED_SPECIFICATION_AND_NON_EFFECTFUL_KERNEL_SCAFFOLD",
+}
 
 
 def stop(message: str) -> "NoReturn":
     raise SystemExit(f"STOP: {message}")
 
 
-def verify_spec_manifest() -> None:
+def verify_status(root: Path = ROOT) -> None:
+    try:
+        status = json.loads((root / "STATUS.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        stop(f"invalid status artifact: {error}")
+    if status != UNIMPLEMENTED_STATUS:
+        stop("runtime status advancement verifier is not implemented")
+
+
+def verify_spec_manifest(spec: Path = SPEC, manifest: Path = MANIFEST) -> None:
     entries: dict[str, str] = {}
-    for number, raw in enumerate(MANIFEST.read_text(encoding="utf-8").splitlines(), 1):
+    for number, raw in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
         match = LINE.fullmatch(raw)
         if not match:
             stop(f"invalid spec manifest line {number}")
@@ -39,14 +56,14 @@ def verify_spec_manifest() -> None:
         entries[relative] = digest
 
     actual = {
-        path.relative_to(SPEC).as_posix()
-        for path in SPEC.rglob("*")
-        if path.is_file() and path != MANIFEST and "__pycache__" not in path.parts and path.suffix != ".pyc"
+        path.relative_to(spec).as_posix()
+        for path in spec.rglob("*")
+        if path.is_file() and path != manifest
     }
     if set(entries) != actual:
         stop(f"spec inventory mismatch missing={sorted(set(entries) - actual)} extra={sorted(actual - set(entries))}")
     for relative, expected in entries.items():
-        observed = sha256((SPEC / relative).read_bytes()).hexdigest()
+        observed = sha256((spec / relative).read_bytes()).hexdigest()
         if observed != expected:
             stop(f"spec digest mismatch: {relative}")
     if len(entries) != 48:
@@ -71,10 +88,21 @@ def run_product_tests() -> None:
     )
 
 
+def jsonschema_cli() -> Path:
+    try:
+        installed = metadata.version("jsonschema")
+    except metadata.PackageNotFoundError:
+        stop("jsonschema distribution is required")
+    if installed != "4.18.0":
+        stop(f"jsonschema==4.18.0 is required, got {installed}")
+    cli = Path(sys.executable).absolute().with_name("jsonschema")
+    if not cli.is_file() or not os.access(cli, os.X_OK):
+        stop(f"interpreter-local jsonschema CLI is required: {cli}")
+    return cli
+
+
 def run_specification_model() -> None:
-    cli = shutil.which("jsonschema")
-    if cli is None:
-        stop("jsonschema CLI is required")
+    cli = jsonschema_cli()
     path = SPEC / "tests" / "run_checks.py"
     module_spec = util.spec_from_file_location("transferred_spec_checks", path)
     if module_spec is None or module_spec.loader is None:
@@ -87,6 +115,7 @@ def run_specification_model() -> None:
 
 
 def main() -> int:
+    verify_status()
     verify_spec_manifest()
     compile_python()
     run_product_tests()

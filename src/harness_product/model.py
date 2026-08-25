@@ -99,6 +99,20 @@ class Selector:
 
 
 @dataclass(frozen=True)
+class ScopeBound:
+    """One correlated effect/resource/selector authority bound.
+
+    This reference type deliberately keeps a selector with the effect and
+    resource it constrains.  It is not an independent effects/resources/
+    selectors cross-product.
+    """
+
+    effect: EffectKind
+    resource: ResourceKind
+    selector: Selector
+
+
+@dataclass(frozen=True)
 class Request:
     operation_id: str
     principal: Principal
@@ -124,13 +138,12 @@ class Request:
 @dataclass(frozen=True)
 class Manifest:
     operation_id: str
-    effects: FrozenSet[EffectKind]
-    resource: ResourceKind
+    bounds: FrozenSet[ScopeBound]
 
 
 @dataclass(frozen=True)
 class Policy:
-    allowed_effects: FrozenSet[EffectKind]
+    bounds: FrozenSet[ScopeBound]
 
 
 @dataclass(frozen=True)
@@ -167,8 +180,24 @@ def is_canonical_sha256(value: object) -> bool:
     return all(character in "0123456789abcdef" for character in hexadecimal)
 
 
-def _is_effect_set(value: object) -> bool:
-    return type(value) is frozenset and bool(value) and all(type(item) is EffectKind for item in value)
+def is_canonical_workspace_path(value: object) -> bool:
+    """Accept a lexical canonical path rooted at ``/workspace`` only.
+
+    This pure model cannot establish descriptor, mount, or symlink identity;
+    M2/M3 runtime enforcement remains responsible for that physical proof.
+    """
+    if type(value) is not str:
+        return False
+    if value == "/workspace":
+        return True
+    if (
+        not value.startswith("/workspace/")
+        or "\\" in value
+        or "%" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        return False
+    return all(component not in {"", ".", ".."} for component in value.split("/")[2:])
 
 
 def is_valid_principal(value: object, role: PrincipalRole | None = None) -> bool:
@@ -180,6 +209,14 @@ def is_valid_principal(value: object, role: PrincipalRole | None = None) -> bool
     )
 
 
+def _is_valid_selector(value: object) -> bool:
+    if type(value) is not Selector or type(value.kind) is not SelectorKind or not _is_text(value.value):
+        return False
+    if value.kind in {SelectorKind.PATH_EXACT, SelectorKind.PATH_PREFIX}:
+        return is_canonical_workspace_path(value.value)
+    return True
+
+
 def is_valid_request(value: object) -> bool:
     return (
         type(value) is Request
@@ -187,34 +224,77 @@ def is_valid_request(value: object) -> bool:
         and is_valid_principal(value.principal, PrincipalRole.WORKER)
         and type(value.effect) is EffectKind
         and type(value.resource) is ResourceKind
-        and type(value.selector) is Selector
-        and type(value.selector.kind) is SelectorKind
-        and _is_text(value.selector.value)
+        and _is_valid_selector(value.selector)
         and is_canonical_sha256(value.material_digest)
     )
+
+
+def is_valid_scope_bound(value: object) -> bool:
+    return (
+        type(value) is ScopeBound
+        and type(value.effect) is EffectKind
+        and type(value.resource) is ResourceKind
+        and _is_valid_selector(value.selector)
+        and selector_matches_resource(value.resource, value.selector)
+    )
+
+
+def _is_scope_bound_set(value: object) -> bool:
+    return type(value) is frozenset and bool(value) and all(is_valid_scope_bound(item) for item in value)
 
 
 def is_valid_manifest(value: object) -> bool:
     return (
         type(value) is Manifest
         and _is_text(value.operation_id)
-        and _is_effect_set(value.effects)
-        and type(value.resource) is ResourceKind
+        and _is_scope_bound_set(value.bounds)
     )
 
 
 def is_valid_policy(value: object) -> bool:
-    return type(value) is Policy and _is_effect_set(value.allowed_effects)
+    return type(value) is Policy and _is_scope_bound_set(value.bounds)
 
 
-def is_valid_effect_ceiling(value: object) -> bool:
-    return _is_effect_set(value)
+def is_valid_physical_ceiling(value: object) -> bool:
+    return _is_scope_bound_set(value)
 
 
 def selector_matches_resource(resource: object, selector: object) -> bool:
     if type(resource) is not ResourceKind or type(selector) is not Selector or type(selector.kind) is not SelectorKind:
         return False
     return selector.kind in _SELECTORS_BY_RESOURCE.get(resource, frozenset())
+
+
+def _path_is_within(path: str, root: str) -> bool:
+    path_components = path.split("/")[1:]
+    root_components = root.split("/")[1:]
+    return path_components[:len(root_components)] == root_components
+
+
+def scope_bound_contains(bound: object, request: object) -> bool:
+    """Return whether one typed bound contains this request's exact scope."""
+    if not is_valid_scope_bound(bound) or not is_valid_request(request):
+        return False
+    if bound.effect is not request.effect or bound.resource is not request.resource:
+        return False
+    bound_selector = bound.selector
+    request_selector = request.selector
+    if bound_selector.kind is SelectorKind.PATH_EXACT:
+        return request_selector.kind is SelectorKind.PATH_EXACT and bound_selector.value == request_selector.value
+    if bound_selector.kind is SelectorKind.PATH_PREFIX:
+        return (
+            request_selector.kind in {SelectorKind.PATH_EXACT, SelectorKind.PATH_PREFIX}
+            and _path_is_within(request_selector.value, bound_selector.value)
+        )
+    return bound_selector == request_selector
+
+
+def _has_effect_resource_bound(bounds: FrozenSet[ScopeBound], request: Request) -> bool:
+    return any(bound.effect is request.effect and bound.resource is request.resource for bound in bounds)
+
+
+def _scope_is_covered(bounds: FrozenSet[ScopeBound], request: Request) -> bool:
+    return any(scope_bound_contains(bound, request) for bound in bounds)
 
 
 def decide(
@@ -231,12 +311,15 @@ def decide(
     """
     if not is_valid_request(request) or not is_valid_manifest(manifest) or not is_valid_policy(policy):
         return Decision(Outcome.STOP, Reason.MALFORMED_INPUT)
-    if not is_valid_effect_ceiling(physical_ceiling):
+    if not is_valid_physical_ceiling(physical_ceiling):
         return Decision(Outcome.STOP, Reason.MALFORMED_INPUT)
     if not selector_matches_resource(request.resource, request.selector):
         return Decision(Outcome.DENY, Reason.TYPED_SCOPE_MISMATCH)
-    if manifest.operation_id != request.operation_id or manifest.resource is not request.resource:
+    if manifest.operation_id != request.operation_id:
         return Decision(Outcome.DENY, Reason.OPERATION_MISMATCH)
-    if request.effect not in manifest.effects or request.effect not in policy.allowed_effects or request.effect not in physical_ceiling:
+    inputs = (manifest.bounds, policy.bounds, physical_ceiling)
+    if any(not _has_effect_resource_bound(bounds, request) for bounds in inputs):
         return Decision(Outcome.DENY, Reason.EFFECT_EXCEEDS_CEILING)
+    if any(not _scope_is_covered(bounds, request) for bounds in inputs):
+        return Decision(Outcome.DENY, Reason.TYPED_SCOPE_MISMATCH)
     return Decision(Outcome.ALLOW, Reason.AUTHORIZED_EXACT_BOUND, request.digest())
