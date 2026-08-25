@@ -32,8 +32,8 @@ The detailed threat model and residual-risk requirements are normative in
 ## Implemented M2 durable-intent boundary
 
 `harness_product.durable` is a direct stdlib SQLite store, not an executor or
-effect route. Schema v2, including an exact audited v1 migration, uses `STRICT`
-tables, foreign keys, `BEGIN IMMEDIATE`,
+effect route. Format version 1/schema version 3, including exact audited
+v1-to-v2-to-v3 migrations, uses `STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
 rollback-journal (`DELETE`) mode, and `synchronous=FULL`. At issue and consume
 it reruns/rechecks the exact M1 result, full canonical bindings, and full
 verifier record. Its one durable consume transaction records capability use,
@@ -50,6 +50,14 @@ second external verifier record, then atomically appends the claim and mandatory
 journal/outbox event. Crash recovery reports `ATTEMPT_CLAIMED` without returning
 an envelope or creating a retry. This remains durable mediation, not execution.
 
+Before prospective untrusted exec, a further atomic transition stores the full
+closed runtime object inventory, external runtime-verifier record, claim,
+profile, placement, session and fence bindings as `PREPARED`, with its mandatory
+journal/outbox event. Terminal records are exactly `STOPPED`, `TIMED_OUT`, or
+`QUARANTINED`; only independently verified no-effect cleanup may release budget.
+Recovery enumerates stale records but never resumes a process or dispatches a
+retry.
+
 This is not external cryptography, a trust root, runtime attestation, OS
 enforcement, non-bypassable mediation, or readiness. The local hash chain can
 detect inconsistent local chain state, but cannot detect a coherent rollback of
@@ -57,13 +65,13 @@ the whole database without an independent external anchor. `synchronous=FULL`
 also relies on the filesystem/device honoring flush and ordering guarantees; it
 does not prove power-loss durability.
 
-## M3 draft compiler, mediation, and staging boundary
+## M3 exact-profile implementation boundary
 
-`harness_product.l0` currently compiles only the closed draft
+`harness_product.l0` compiles only the closed draft
 `L0-LX-A / DISCONNECTED_STAGEABLE_WORKER` profile and performs read-only host
 preflight for one exact pinned `/usr/bin/bwrap` backend. A successful compile is
-not activation, supply verification, placement proof, session attestation, or
-enforcement. Missing, extra, hostile, unbounded, duplicate, shared-identity, or
+not activation, session attestation, or enforcement. Missing, extra, hostile,
+unbounded, duplicate, shared-identity, or
 mismatched profile/control input returns a structured `STOP` without a partial
 profile. Host/runtime exceptions also become `STOP`.
 
@@ -81,6 +89,26 @@ claim verification. It rejects traversal, links, cross-mount and descriptor/
 root/mount/epoch/object substitution; any post-write uncertainty is returned as
 `QUARANTINED` and the original binding cannot be retried.
 
-An actual isolated worker/broker/executor topology, external supply/placement
-verification, lifecycle cleanup evidence, and runtime conformance are not yet
-implemented or claimed.
+Supply admission has no production default: it hashes actual bytes from exact
+pre-opened descriptors and requires an external verifier over the complete
+canonical rootfs/runtime/loader/dependency/tool/SBOM/registry/signer/profile/
+placement payload and record. Caller-provided digests, tags, booleans and
+self-signed test fixtures cannot pass. The session planner then remeasures and
+binds the exact namespace, cgroup, mount, IPC, descriptor, process-tree, quota
+and cleanup inventory. Its staging scope is explicitly absent from the worker
+mount and FD plan.
+
+The supervisor implementation repeats host measurement, requires the durable
+`PREPARED` commit before launch, uses one exact typed bwrap argv with
+`shell=False`, releases an early start gate only after cgroup controls and PID
+placement, enforces external wall/CPU termination, kills the complete cgroup,
+and fails terminal uncertainty to quarantine without retry. These are code and
+unit-test properties, not current physical evidence.
+
+`scripts/check_m3_l0.py` is a separate non-skipping gate. It currently exits
+nonzero with `ABSENT/CGROUP_DELEGATION_ABSENT`; the host lacks the exact delegated
+CPU/IO cgroup boundary. Production external trust roots, a privileged runtime
+attestor, same-profile attack evidence, restart cleanup proof, and an attested
+distinct worker/broker/executor topology are also absent. Consequently no
+runtime isolation, non-bypassability, supply attestation, or readiness claim is
+made.

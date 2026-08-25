@@ -15,17 +15,20 @@ import json
 import os
 import platform
 import re
+import resource
 import socket
 import stat
 import struct
 import subprocess
+import time
 import unicodedata
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 
-from .durable import DispatchClaim, VerificationResult, VerificationStatus
+from .durable import DispatchClaim, DurableOutcome, DurableStore, VerificationResult, VerificationStatus
 
 PROFILE_ID = "L0-LX-A"
 WORKLOAD_CLASS = "DISCONNECTED_STAGEABLE_WORKER"
@@ -38,6 +41,7 @@ _MAX_INTEGER = (1 << 63) - 1
 _MAX_MESSAGE_BYTES = 1 << 20
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_UTC_TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 _ROLES = (
     "AGENT_WORKER",
@@ -328,6 +332,159 @@ _DURABLE_CLAIM_KEYS = frozenset(
 _VERIFICATION_KEYS = frozenset(
     {"verification_version", "verifier_id", "issuer_id", "key_id", "payload_digest", "bindings", "proof"}
 )
+_SUPPLY_KEYS = frozenset(
+    {
+        "supply_version",
+        "observed_at",
+        "profile_digest",
+        "measurement_digest",
+        "runtime",
+        "image",
+        "registry",
+        "signer",
+        "placement",
+        "artifacts",
+        "verification",
+    }
+)
+_SUPPLY_RUNTIME_KEYS = frozenset({"path", "version", "digest"})
+_SUPPLY_IMAGE_KEYS = frozenset({"image_id", "rootfs_manifest_digest", "platform", "architecture"})
+_SUPPLY_REGISTRY_KEYS = frozenset(
+    {"snapshot_digest", "reference", "generation", "rollback_floor", "issued_at", "expires_at"}
+)
+_SUPPLY_SIGNER_KEYS = frozenset(
+    {"trust_root_id", "signer_id", "key_id", "algorithm", "revocation_epoch", "rollback_floor"}
+)
+_SUPPLY_PLACEMENT_KEYS = frozenset(
+    {
+        "placement_id",
+        "host_id",
+        "subject_instance_id",
+        "process_tree_id",
+        "session_id",
+        "nonce",
+        "fencing_epoch",
+        "revocation_epoch",
+        "rootfs_binding_digest",
+        "staging_binding_digest",
+        "cgroup_binding_digest",
+        "broker_binding_digest",
+        "fd_inventory_digest",
+        "namespace_plan_digest",
+        "issued_at",
+        "expires_at",
+    }
+)
+_SUPPLY_ARTIFACT_KEYS = frozenset(
+    {"role", "artifact_id", "descriptor", "expected_bytes_digest", "provenance_digest"}
+)
+_SUPPLY_VERIFICATION_SOURCE_KEYS = frozenset({"verifier_id", "issuer_id", "key_id", "proof"})
+_SUPPLY_PAYLOAD_KEYS = frozenset(
+    {
+        "supply_version",
+        "observed_at",
+        "profile_digest",
+        "measurement_digest",
+        "runtime",
+        "image",
+        "registry",
+        "signer",
+        "placement",
+        "placement_digest",
+        "artifacts",
+    }
+)
+_SUPPLY_PLACEMENT_PAYLOAD_KEYS = _SUPPLY_PLACEMENT_KEYS | frozenset(
+    {"profile_digest", "measurement_digest", "runtime_digest"}
+)
+_SUPPLY_ARTIFACT_BINDING_KEYS = frozenset(
+    {
+        "role",
+        "artifact_id",
+        "expected_bytes_digest",
+        "actual_bytes_digest",
+        "provenance_digest",
+        "device",
+        "inode",
+        "size",
+        "mode",
+        "binding_digest",
+    }
+)
+_SUPPLY_ROLES = (
+    "ROOTFS_MANIFEST",
+    "LOADER",
+    "DEPENDENCY_CLOSURE",
+    "TOOL",
+    "SBOM",
+    "REGISTRY_SNAPSHOT",
+    "SECCOMP_PROFILE",
+    "LSM_POLICY",
+)
+_MAX_SUPPLY_ARTIFACT_BYTES = 64 << 20
+
+_SESSION_KEYS = frozenset(
+    {
+        "session_version",
+        "session_record_id",
+        "session_id",
+        "transaction_id",
+        "claim_digest",
+        "lineage_root",
+        "fencing_epoch",
+        "revocation_epoch",
+        "worker_principal",
+        "executor_principal",
+        "subject_instance_id",
+        "process_tree_id",
+        "namespace_ids",
+        "rootfs",
+        "inputs",
+        "broker_ipc",
+        "seccomp",
+        "tool",
+        "cgroup",
+        "staging",
+        "supervisor_fds",
+        "cleanup",
+    }
+)
+_SESSION_NAMESPACE_KEYS = frozenset({"user", "mount", "pid", "ipc", "uts", "network", "cgroup"})
+_SESSION_ROOTFS_KEYS = frozenset({"descriptor", "descriptor_id"})
+_SESSION_INPUT_KEYS = frozenset({"descriptor", "descriptor_id", "mount_path", "expected_bytes_digest"})
+_SESSION_BROKER_KEYS = frozenset(
+    {
+        "descriptor",
+        "descriptor_id",
+        "socket_name",
+        "worker_endpoint",
+        "broker_endpoint",
+        "transport",
+    }
+)
+_SESSION_SECCOMP_KEYS = frozenset({"descriptor", "descriptor_id", "expected_bytes_digest"})
+_SESSION_TOOL_KEYS = frozenset({"descriptor", "descriptor_id", "path", "argv", "expected_bytes_digest"})
+_SESSION_CGROUP_KEYS = frozenset(
+    {"path", "controllers", "device_major", "device_minor", "delegated", "identity_digest"}
+)
+_SESSION_STAGING_KEYS = frozenset(
+    {
+        "root_id",
+        "root_identity",
+        "mount_id",
+        "mount_identity",
+        "files",
+        "inodes",
+        "bytes",
+    }
+)
+_SESSION_SUPERVISOR_FD_KEYS = frozenset({"gate_read", "gate_write", "status_read", "status_write"})
+_SESSION_CLEANUP_KEYS = frozenset(
+    {"cleanup_id", "staging_root_id", "reuse_forbidden", "require_cgroup_empty", "quarantine_on_failure"}
+)
+_ROOTFS_TOP_LEVEL = frozenset({"inputs", "proc", "run", "usr", "workspace"})
+_WORKER_TOOL_PATH = "/usr/lib/harness/worker-tool"
+_BROKER_MOUNT = "/run/harness"
 
 _RESOLVE_NO_XDEV = 0x01
 _RESOLVE_NO_MAGICLINKS = 0x02
@@ -343,6 +500,9 @@ class L0Outcome(str, Enum):
     ACCEPTED = "ACCEPTED"
     STAGED = "STAGED"
     QUARANTINED = "QUARANTINED"
+    VERIFIED = "VERIFIED"
+    PREPARED = "PREPARED"
+    STOPPED = "STOPPED"
     STOP = "STOP"
     ABSENT = "ABSENT"
 
@@ -382,6 +542,22 @@ class L0Reason(str, Enum):
     STAGE_LIMIT_EXCEEDED = "STAGE_LIMIT_EXCEEDED"
     STAGED = "STAGED"
     STAGE_OUTCOME_UNKNOWN = "STAGE_OUTCOME_UNKNOWN"
+    SUPPLY_VERIFIED = "SUPPLY_VERIFIED"
+    SUPPLY_VERIFIER_ABSENT = "SUPPLY_VERIFIER_ABSENT"
+    SUPPLY_MISMATCH = "SUPPLY_MISMATCH"
+    SUPPLY_STALE = "SUPPLY_STALE"
+    SUPPLY_ROLLBACK = "SUPPLY_ROLLBACK"
+    ARTIFACT_MISMATCH = "ARTIFACT_MISMATCH"
+    PLACEMENT_MISMATCH = "PLACEMENT_MISMATCH"
+    PLACEMENT_MEASURED = "PLACEMENT_MEASURED"
+    SESSION_PREPARED = "SESSION_PREPARED"
+    SESSION_MISMATCH = "SESSION_MISMATCH"
+    SESSION_STOPPED = "SESSION_STOPPED"
+    SESSION_TIMED_OUT = "SESSION_TIMED_OUT"
+    DURABLE_PREPARE_FAILED = "DURABLE_PREPARE_FAILED"
+    RUNTIME_FAILED = "RUNTIME_FAILED"
+    CLEANUP_FAILED = "CLEANUP_FAILED"
+    CONFORMANCE_ABSENT = "CONFORMANCE_ABSENT"
     HOST_FAILURE = "HOST_FAILURE"
 
 
@@ -441,6 +617,7 @@ class HostMeasurement:
     backend_digest: str
     architecture: str
     kernel_release: str
+    kernel_features: tuple[str, ...]
     cgroup_path: str
     cgroup_controllers: tuple[str, ...]
     lsm_stack: tuple[str, ...]
@@ -548,6 +725,155 @@ class StageResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SupplyArtifactBinding:
+    role: str
+    artifact_id: str
+    expected_bytes_digest: str
+    actual_bytes_digest: str
+    provenance_digest: str
+    device: int
+    inode: int
+    size: int
+    mode: int
+    binding_digest: str
+
+    def data(self) -> dict[str, object]:
+        return {
+            "role": self.role,
+            "artifact_id": self.artifact_id,
+            "expected_bytes_digest": self.expected_bytes_digest,
+            "actual_bytes_digest": self.actual_bytes_digest,
+            "provenance_digest": self.provenance_digest,
+            "device": self.device,
+            "inode": self.inode,
+            "size": self.size,
+            "mode": self.mode,
+            "binding_digest": self.binding_digest,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SupplyVerification:
+    supply_digest: str
+    placement_digest: str
+    profile_digest: str
+    measurement_digest: str
+    runtime_digest: str
+    session_id: str
+    subject_instance_id: str
+    process_tree_id: str
+    fencing_epoch: int
+    revocation_epoch: int
+    observed_at: str
+    expires_at: str
+    verifier_id: str
+    artifacts: tuple[SupplyArtifactBinding, ...]
+    payload_json: str
+    verification_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class SupplyResult:
+    outcome: L0Outcome
+    reason: L0Reason
+    verification: SupplyVerification | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlacementMeasurement:
+    rootfs_binding_digest: str
+    staging_binding_digest: str
+    cgroup_binding_digest: str
+    broker_binding_digest: str
+    fd_inventory_digest: str
+    namespace_plan_digest: str
+    runtime_bindings_json: str
+    runtime_bindings_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class PlacementResult:
+    outcome: L0Outcome
+    reason: L0Reason
+    measurement: PlacementMeasurement | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionPlan:
+    profile_digest: str
+    measurement_digest: str
+    supply_digest: str
+    placement_digest: str
+    session_record_id: str
+    session_id: str
+    transaction_id: str
+    claim_digest: str
+    lineage_root: str
+    fencing_epoch: int
+    revocation_epoch: int
+    worker_principal: str
+    executor_principal: str
+    subject_instance_id: str
+    namespace_ids: tuple[tuple[str, str], ...]
+    read_only_mounts: tuple[tuple[int, str], ...]
+    broker_root_mount: tuple[int, str]
+    broker_socket_path: str
+    seccomp_fd: int
+    tool_fd: int
+    gate_read_fd: int
+    gate_write_fd: int
+    status_read_fd: int
+    status_write_fd: int
+    pass_fds: tuple[int, ...]
+    bwrap_argv: tuple[str, ...]
+    environment: tuple[tuple[str, str], ...]
+    cgroup_path: str
+    cgroup_limits: tuple[tuple[str, str], ...]
+    cpu_time_ms: int
+    wall_time_ms: int
+    rlimit_nofile: int
+    quota: tuple[tuple[str, int | str], ...]
+    cleanup_record_json: str
+    runtime_bindings_json: str
+    runtime_bindings_digest: str
+    launch_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class SessionResult:
+    outcome: L0Outcome
+    reason: L0Reason
+    plan: SessionPlan | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConformanceResult:
+    outcome: L0Outcome
+    reason: L0Reason
+    session: SessionPlan | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSessionRecord:
+    session_record_id: str
+    transaction_id: str
+    process_tree_id: str
+    process_id: int | None
+    state: str
+    cgroup_path: str
+    launch_digest: str
+    status_digest: str | None
+    cleanup_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class SupervisorResult:
+    outcome: L0Outcome
+    reason: L0Reason
+    session: RuntimeSessionRecord | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _HostObservation:
     backend_path: str
     backend_version: str
@@ -632,6 +958,15 @@ def _boolean(value: object) -> bool:
     if type(value) is not bool:
         raise _Stop(L0Reason.MALFORMED_INPUT)
     return value
+
+
+def _time(value: object) -> datetime:
+    if type(value) is not str or _UTC_TIME.fullmatch(value) is None:
+        raise _Stop(L0Reason.MALFORMED_INPUT)
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+    except ValueError as error:
+        raise _Stop(L0Reason.MALFORMED_INPUT) from error
 
 
 def _exact(value: object, expected: object) -> None:
@@ -1349,6 +1684,406 @@ def receive_broker_message(
             os.close(duplicate)
 
 
+def _measurement_is_valid(profile: CompiledL0Profile, measurement: object) -> bool:
+    if type(measurement) is not HostMeasurement:
+        return False
+    data = {
+        "backend_path": measurement.backend_path,
+        "backend_version": measurement.backend_version,
+        "backend_digest": measurement.backend_digest,
+        "architecture": measurement.architecture,
+        "kernel_release": measurement.kernel_release,
+        "kernel_features": list(measurement.kernel_features),
+        "cgroup_path": measurement.cgroup_path,
+        "cgroup_controllers": list(measurement.cgroup_controllers),
+        "lsm_stack": list(measurement.lsm_stack),
+        "lsm_policy_name": measurement.lsm_policy_name,
+        "openat2": measurement.openat2,
+        "user_namespaces": measurement.user_namespaces,
+        "profile_digest": profile.profile_digest,
+    }
+    return (
+        measurement.backend_path == profile.backend_path
+        and measurement.backend_version == profile.backend_version
+        and measurement.backend_digest == profile.backend_digest
+        and measurement.architecture == "x86_64"
+        and frozenset(measurement.kernel_features) == _KERNEL_FEATURES
+        and measurement.openat2 is True
+        and measurement.user_namespaces is True
+        and _hash_text(_canonical(data)) == measurement.measurement_digest
+    )
+
+
+def _measure_supply_artifact(raw: object) -> SupplyArtifactBinding:
+    value = _closed_dict(raw, _SUPPLY_ARTIFACT_KEYS)
+    role = _enum(value["role"], set(_SUPPLY_ROLES))
+    artifact_id = _identifier(value["artifact_id"])
+    descriptor = value["descriptor"]
+    expected = _digest(value["expected_bytes_digest"])
+    provenance = _digest(value["provenance_digest"])
+    if type(descriptor) is not int or descriptor < 0:
+        raise _Stop(L0Reason.MALFORMED_INPUT)
+    try:
+        if not fcntl.fcntl(descriptor, fcntl.F_GETFD) & fcntl.FD_CLOEXEC:
+            raise _Stop(L0Reason.ARTIFACT_MISMATCH)
+        duplicate = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+    except OSError as error:
+        raise _Stop(L0Reason.ARTIFACT_MISMATCH) from error
+    try:
+        info = os.fstat(duplicate)
+        mode = stat.S_IMODE(info.st_mode)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or mode & 0o022
+            or info.st_size < 0
+            or info.st_size > _MAX_SUPPLY_ARTIFACT_BYTES
+        ):
+            raise _Stop(L0Reason.ARTIFACT_MISMATCH)
+        actual = _hash_descriptor(duplicate, _MAX_SUPPLY_ARTIFACT_BYTES)
+        if actual != expected:
+            raise _Stop(L0Reason.ARTIFACT_MISMATCH)
+        data = {
+            "role": role,
+            "artifact_id": artifact_id,
+            "expected_bytes_digest": expected,
+            "actual_bytes_digest": actual,
+            "provenance_digest": provenance,
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "size": info.st_size,
+            "mode": mode,
+        }
+        return SupplyArtifactBinding(**data, binding_digest=_hash_text(_canonical(data)))
+    finally:
+        os.close(duplicate)
+
+
+def _supply_verifier_accepts(
+    verifier: object,
+    payload_text: str,
+    verification_text: str,
+    source: dict[str, object],
+    payload_digest: str,
+    verification_digest: str,
+    observed_at: str,
+) -> bool:
+    try:
+        result = verifier.verify(
+            payload_text.encode("utf-8"),
+            verification_text.encode("utf-8"),
+            observed_at,
+        )
+        return (
+            type(result) is VerificationResult
+            and result.status is VerificationStatus.VERIFIED
+            and result.verifier_id == source["verifier_id"]
+            and result.payload_digest == payload_digest
+            and result.record_digest == verification_digest
+        )
+    except Exception:
+        return False
+
+
+def verify_supply(
+    profile: object,
+    measurement: object,
+    raw: object,
+    *,
+    verifier: object | None = None,
+) -> SupplyResult:
+    """Measure exact opened supply bytes and verify their placement externally."""
+
+    try:
+        if not _profile_is_valid(profile) or not _measurement_is_valid(profile, measurement):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        value = _closed_dict(raw, _SUPPLY_KEYS)
+        _exact(value["supply_version"], "1.0.0")
+        observed_at = _time(value["observed_at"])
+        if _digest(value["profile_digest"]) != profile.profile_digest:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        if _digest(value["measurement_digest"]) != measurement.measurement_digest:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        runtime = _closed_dict(value["runtime"], _SUPPLY_RUNTIME_KEYS)
+        _exact(runtime["path"], profile.backend_path)
+        _exact(runtime["version"], profile.backend_version)
+        if (
+            _digest(runtime["digest"]) != profile.backend_digest
+            or _binary_digest(profile.backend_path) != profile.backend_digest
+            or _runtime_output("--version") != profile.backend_version
+        ):
+            raise _Stop(L0Reason.SUPPLY_MISMATCH)
+        image = _closed_dict(value["image"], _SUPPLY_IMAGE_KEYS)
+        _identifier(image["image_id"])
+        _digest(image["rootfs_manifest_digest"])
+        _exact(image["platform"], "linux")
+        _exact(image["architecture"], measurement.architecture)
+        registry = _closed_dict(value["registry"], _SUPPLY_REGISTRY_KEYS)
+        _digest(registry["snapshot_digest"])
+        _identifier(registry["reference"])
+        generation = _integer(registry["generation"])
+        rollback_floor = _integer(registry["rollback_floor"])
+        registry_issued = _time(registry["issued_at"])
+        registry_expires = _time(registry["expires_at"])
+        signer = _closed_dict(value["signer"], _SUPPLY_SIGNER_KEYS)
+        for field in ("trust_root_id", "signer_id", "key_id"):
+            _identifier(signer[field])
+        _exact(signer["algorithm"], "ED25519")
+        signer_revocation = _integer(signer["revocation_epoch"])
+        signer_floor = _integer(signer["rollback_floor"])
+        if generation < rollback_floor or rollback_floor < signer_floor:
+            raise _Stop(L0Reason.SUPPLY_ROLLBACK)
+        placement = _closed_dict(value["placement"], _SUPPLY_PLACEMENT_KEYS)
+        for field in ("placement_id", "host_id", "subject_instance_id", "process_tree_id", "session_id", "nonce"):
+            _identifier(placement[field])
+        for field in (
+            "rootfs_binding_digest",
+            "staging_binding_digest",
+            "cgroup_binding_digest",
+            "broker_binding_digest",
+            "fd_inventory_digest",
+            "namespace_plan_digest",
+        ):
+            _digest(placement[field])
+        fencing_epoch = _integer(placement["fencing_epoch"], minimum=1)
+        revocation_epoch = _integer(placement["revocation_epoch"])
+        placement_issued = _time(placement["issued_at"])
+        placement_expires = _time(placement["expires_at"])
+        worker = _active_principal(profile, "AGENT_WORKER")
+        if placement["session_id"] != worker.session_id or revocation_epoch != signer_revocation:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        if not (
+            registry_issued <= observed_at < registry_expires
+            and placement_issued <= observed_at < placement_expires
+        ):
+            raise _Stop(L0Reason.SUPPLY_STALE)
+        artifact_rows = _list(value["artifacts"], minimum=len(_SUPPLY_ROLES), maximum=len(_SUPPLY_ROLES))
+        artifacts = tuple(sorted((_measure_supply_artifact(row) for row in artifact_rows), key=lambda item: item.role))
+        if tuple(item.role for item in artifacts) != tuple(sorted(_SUPPLY_ROLES)):
+            raise _Stop(L0Reason.SUPPLY_MISMATCH)
+        if len({item.artifact_id for item in artifacts}) != len(artifacts):
+            raise _Stop(L0Reason.SUPPLY_MISMATCH)
+        if len({(item.device, item.inode) for item in artifacts}) != len(artifacts):
+            raise _Stop(L0Reason.ARTIFACT_MISMATCH)
+        by_role = {item.role: item for item in artifacts}
+        profile_source = json.loads(profile.canonical_profile_json)
+        bindings = profile_source["measurement_bindings"]
+        if (
+            image["rootfs_manifest_digest"] != by_role["ROOTFS_MANIFEST"].actual_bytes_digest
+            or bindings["rootfs_manifest_digest"] != by_role["ROOTFS_MANIFEST"].actual_bytes_digest
+            or registry["snapshot_digest"] != by_role["REGISTRY_SNAPSHOT"].actual_bytes_digest
+            or bindings["seccomp_profile_digest"] != by_role["SECCOMP_PROFILE"].actual_bytes_digest
+            or bindings["lsm_policy_digest"] != by_role["LSM_POLICY"].actual_bytes_digest
+        ):
+            raise _Stop(L0Reason.SUPPLY_MISMATCH)
+        verification_source = _closed_dict(value["verification"], _SUPPLY_VERIFICATION_SOURCE_KEYS)
+        for field in ("verifier_id", "issuer_id", "key_id"):
+            _identifier(verification_source[field])
+        proof = verification_source["proof"]
+        if (
+            type(proof) is not str
+            or not proof
+            or len(proof) > 8192
+            or any(unicodedata.category(character) in {"Cc", "Cf"} for character in proof)
+        ):
+            raise _Stop(L0Reason.MALFORMED_INPUT)
+        if verifier is None:
+            raise _Stop(L0Reason.SUPPLY_VERIFIER_ABSENT)
+        runtime_data = {key: runtime[key] for key in sorted(runtime)}
+        image_data = {key: image[key] for key in sorted(image)}
+        registry_data = {key: registry[key] for key in sorted(registry)}
+        signer_data = {key: signer[key] for key in sorted(signer)}
+        placement_data = {
+            **{key: placement[key] for key in sorted(placement)},
+            "profile_digest": profile.profile_digest,
+            "measurement_digest": measurement.measurement_digest,
+            "runtime_digest": profile.backend_digest,
+        }
+        placement_digest = _hash_text(_canonical(placement_data))
+        payload = {
+            "supply_version": "1.0.0",
+            "observed_at": value["observed_at"],
+            "profile_digest": profile.profile_digest,
+            "measurement_digest": measurement.measurement_digest,
+            "runtime": runtime_data,
+            "image": image_data,
+            "registry": registry_data,
+            "signer": signer_data,
+            "placement": placement_data,
+            "placement_digest": placement_digest,
+            "artifacts": [item.data() for item in artifacts],
+        }
+        payload_text = _canonical(payload)
+        supply_digest = _hash_text(payload_text)
+        verification = {
+            "verification_version": 1,
+            "verifier_id": verification_source["verifier_id"],
+            "issuer_id": verification_source["issuer_id"],
+            "key_id": verification_source["key_id"],
+            "payload_digest": supply_digest,
+            "bindings": payload,
+            "proof": proof,
+        }
+        verification_text = _canonical(verification)
+        verification_digest = _hash_text(verification_text)
+        if not _supply_verifier_accepts(
+            verifier,
+            payload_text,
+            verification_text,
+            verification_source,
+            supply_digest,
+            verification_digest,
+            value["observed_at"],
+        ):
+            raise _Stop(L0Reason.SUPPLY_MISMATCH)
+        verified = SupplyVerification(
+            supply_digest=supply_digest,
+            placement_digest=placement_digest,
+            profile_digest=profile.profile_digest,
+            measurement_digest=measurement.measurement_digest,
+            runtime_digest=profile.backend_digest,
+            session_id=placement["session_id"],
+            subject_instance_id=placement["subject_instance_id"],
+            process_tree_id=placement["process_tree_id"],
+            fencing_epoch=fencing_epoch,
+            revocation_epoch=revocation_epoch,
+            observed_at=value["observed_at"],
+            expires_at=placement["expires_at"],
+            verifier_id=verification_source["verifier_id"],
+            artifacts=artifacts,
+            payload_json=payload_text,
+            verification_json=verification_text,
+        )
+        return SupplyResult(L0Outcome.VERIFIED, L0Reason.SUPPLY_VERIFIED, verified)
+    except _Stop as stop:
+        return SupplyResult(L0Outcome.STOP, stop.reason)
+    except (OSError, ValueError, TypeError):
+        return SupplyResult(L0Outcome.STOP, L0Reason.SUPPLY_MISMATCH)
+    except Exception:  # noqa: BLE001 - external verifier and hostile values are total
+        return SupplyResult(L0Outcome.STOP, L0Reason.HOST_FAILURE)
+
+
+def _verified_supply(
+    profile: CompiledL0Profile,
+    measurement: HostMeasurement | None,
+    supply: object,
+    verifier: object,
+    observed_at: str,
+) -> SupplyVerification:
+    """Recheck a frozen supply record; the dataclass itself conveys no trust."""
+
+    if type(supply) is not SupplyVerification:
+        raise _Stop(L0Reason.SUPPLY_MISMATCH)
+    try:
+        payload = _closed_dict(json.loads(supply.payload_json), _SUPPLY_PAYLOAD_KEYS)
+        verification = _closed_dict(json.loads(supply.verification_json), _VERIFICATION_KEYS)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise _Stop(L0Reason.SUPPLY_MISMATCH) from error
+    if _canonical(payload) != supply.payload_json or _canonical(verification) != supply.verification_json:
+        raise _Stop(L0Reason.SUPPLY_MISMATCH)
+    _exact(payload["supply_version"], "1.0.0")
+    payload_observed = _time(payload["observed_at"])
+    requested_observed = _time(observed_at)
+    runtime = _closed_dict(payload["runtime"], _SUPPLY_RUNTIME_KEYS)
+    _closed_dict(payload["image"], _SUPPLY_IMAGE_KEYS)
+    _closed_dict(payload["registry"], _SUPPLY_REGISTRY_KEYS)
+    _closed_dict(payload["signer"], _SUPPLY_SIGNER_KEYS)
+    placement = _closed_dict(payload["placement"], _SUPPLY_PLACEMENT_PAYLOAD_KEYS)
+    artifacts_raw = _list(payload["artifacts"], minimum=len(_SUPPLY_ROLES), maximum=len(_SUPPLY_ROLES))
+    artifacts: list[dict[str, object]] = []
+    for raw_artifact in artifacts_raw:
+        artifact = _closed_dict(raw_artifact, _SUPPLY_ARTIFACT_BINDING_KEYS)
+        _enum(artifact["role"], set(_SUPPLY_ROLES))
+        _identifier(artifact["artifact_id"])
+        for field in (
+            "expected_bytes_digest",
+            "actual_bytes_digest",
+            "provenance_digest",
+            "binding_digest",
+        ):
+            _digest(artifact[field])
+        for field in ("device", "inode", "size", "mode"):
+            _integer(artifact[field])
+        binding_data = {key: artifact[key] for key in artifact if key != "binding_digest"}
+        if (
+            artifact["expected_bytes_digest"] != artifact["actual_bytes_digest"]
+            or _hash_text(_canonical(binding_data)) != artifact["binding_digest"]
+        ):
+            raise _Stop(L0Reason.ARTIFACT_MISMATCH)
+        artifacts.append(artifact)
+    if tuple(item["role"] for item in artifacts) != tuple(sorted(_SUPPLY_ROLES)):
+        raise _Stop(L0Reason.SUPPLY_MISMATCH)
+    if any(type(item) is not SupplyArtifactBinding for item in supply.artifacts):
+        raise _Stop(L0Reason.SUPPLY_MISMATCH)
+    if tuple(item.data() for item in supply.artifacts) != tuple(artifacts):
+        raise _Stop(L0Reason.SUPPLY_MISMATCH)
+    supply_digest = _hash_text(supply.payload_json)
+    placement_digest = _hash_text(_canonical(placement))
+    expires_at = _time(placement["expires_at"])
+    if (
+        supply.supply_digest != supply_digest
+        or supply.placement_digest != placement_digest
+        or payload["placement_digest"] != placement_digest
+        or supply.profile_digest != profile.profile_digest
+        or payload["profile_digest"] != profile.profile_digest
+        or placement["profile_digest"] != profile.profile_digest
+        or supply.measurement_digest != payload["measurement_digest"]
+        or placement["measurement_digest"] != supply.measurement_digest
+        or supply.runtime_digest != profile.backend_digest
+        or placement["runtime_digest"] != profile.backend_digest
+        or runtime["path"] != profile.backend_path
+        or runtime["version"] != profile.backend_version
+        or runtime["digest"] != profile.backend_digest
+        or supply.session_id != placement["session_id"]
+        or supply.subject_instance_id != placement["subject_instance_id"]
+        or supply.process_tree_id != placement["process_tree_id"]
+        or supply.fencing_epoch != placement["fencing_epoch"]
+        or supply.revocation_epoch != placement["revocation_epoch"]
+        or supply.observed_at != payload["observed_at"]
+        or supply.expires_at != placement["expires_at"]
+        or supply.verifier_id != verification["verifier_id"]
+        or not payload_observed <= requested_observed < expires_at
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    if measurement is not None and (
+        not _measurement_is_valid(profile, measurement)
+        or supply.measurement_digest != measurement.measurement_digest
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    if (
+        _binary_digest(profile.backend_path) != profile.backend_digest
+        or _runtime_output("--version") != profile.backend_version
+    ):
+        raise _Stop(L0Reason.SUPPLY_MISMATCH)
+    source = {
+        "verifier_id": verification["verifier_id"],
+        "issuer_id": verification["issuer_id"],
+        "key_id": verification["key_id"],
+    }
+    for value in source.values():
+        _identifier(value)
+    proof = verification["proof"]
+    if type(proof) is not str or not proof or len(proof) > 8192:
+        raise _Stop(L0Reason.SUPPLY_MISMATCH)
+    verification_digest = _hash_text(supply.verification_json)
+    if (
+        verification["verification_version"] != 1
+        or verification["payload_digest"] != supply_digest
+        or verification["bindings"] != payload
+        or not _supply_verifier_accepts(
+            verifier,
+            supply.payload_json,
+            supply.verification_json,
+            source,
+            supply_digest,
+            verification_digest,
+            supply.observed_at,
+        )
+    ):
+        raise _Stop(L0Reason.SUPPLY_MISMATCH)
+    return supply
+
+
 def _verified_claim(
     profile: CompiledL0Profile,
     claim: object,
@@ -1445,13 +2180,1045 @@ def _verified_claim(
     return claim
 
 
+def _session_descriptor(value: object, *, write_only: bool = False) -> int:
+    if type(value) is not int or value < 0:
+        raise _Stop(L0Reason.MALFORMED_INPUT)
+    try:
+        flags = fcntl.fcntl(value, fcntl.F_GETFD)
+        status_flags = fcntl.fcntl(value, fcntl.F_GETFL)
+    except OSError as error:
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH) from error
+    expected_access = os.O_WRONLY if write_only else os.O_RDONLY
+    if not flags & fcntl.FD_CLOEXEC or status_flags & os.O_ACCMODE != expected_access:
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    return value
+
+
+def _directory_observation(descriptor: int, descriptor_id: str, kind: str) -> dict[str, object]:
+    duplicate = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+    try:
+        info = os.fstat(duplicate)
+        mode = stat.S_IMODE(info.st_mode)
+        if not stat.S_ISDIR(info.st_mode) or mode & 0o022:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        return {
+            "kind": kind,
+            "descriptor": descriptor,
+            "descriptor_id": descriptor_id,
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "mount_id": _mount_id(duplicate),
+            "mode": mode,
+            "type": "DIRECTORY",
+        }
+    finally:
+        os.close(duplicate)
+
+
+def _regular_observation(
+    descriptor: int,
+    descriptor_id: str,
+    kind: str,
+    expected_digest: str,
+    maximum: int,
+) -> dict[str, object]:
+    duplicate = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+    try:
+        info = os.fstat(duplicate)
+        mode = stat.S_IMODE(info.st_mode)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or mode & 0o022
+            or info.st_size < 0
+            or info.st_size > maximum
+        ):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        actual = _hash_descriptor(duplicate, maximum)
+        if actual != expected_digest:
+            raise _Stop(L0Reason.ARTIFACT_MISMATCH)
+        return {
+            "kind": kind,
+            "descriptor": descriptor,
+            "descriptor_id": descriptor_id,
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "mount_id": _mount_id(duplicate),
+            "size": info.st_size,
+            "mode": mode,
+            "type": "REGULAR",
+            "bytes_digest": actual,
+        }
+    finally:
+        os.close(duplicate)
+
+
+def _require_minimal_rootfs(descriptor: int) -> None:
+    duplicate = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+    try:
+        if frozenset(os.listdir(duplicate)) != _ROOTFS_TOP_LEVEL:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        for relative in (
+            "inputs",
+            "proc",
+            "run",
+            "run/harness",
+            "usr",
+            "usr/lib",
+            "usr/lib/harness",
+            "workspace",
+        ):
+            info = os.stat(relative, dir_fd=duplicate, follow_symlinks=False)
+            if not stat.S_ISDIR(info.st_mode):
+                raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        placeholder = os.stat("usr/lib/harness/worker-tool", dir_fd=duplicate, follow_symlinks=False)
+        if not stat.S_ISREG(placeholder.st_mode) or placeholder.st_nlink != 1:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH) from error
+    finally:
+        os.close(duplicate)
+
+
+def _artifact_for(supply: SupplyVerification, role: str) -> SupplyArtifactBinding:
+    for artifact in supply.artifacts:
+        if artifact.role == role:
+            return artifact
+    raise _Stop(L0Reason.SUPPLY_MISMATCH)
+
+
+def _artifact_observation_matches(observed: dict[str, object], artifact: SupplyArtifactBinding) -> bool:
+    return (
+        observed["device"] == artifact.device
+        and observed["inode"] == artifact.inode
+        and observed["size"] == artifact.size
+        and observed["mode"] == artifact.mode
+        and observed["bytes_digest"] == artifact.actual_bytes_digest
+    )
+
+
+def _session_observations(
+    profile: CompiledL0Profile,
+    measurement: HostMeasurement,
+    raw: object,
+) -> tuple[PlacementMeasurement, dict[str, object]]:
+    if not _profile_is_valid(profile) or not _measurement_is_valid(profile, measurement):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    value = _closed_dict(raw, _SESSION_KEYS)
+    _exact(value["session_version"], "1.0.0")
+    session_record_id = _identifier(value["session_record_id"])
+    session_id = _identifier(value["session_id"])
+    transaction_id = _identifier(value["transaction_id"])
+    claim_digest = _digest(value["claim_digest"])
+    lineage_root = _digest(value["lineage_root"])
+    fencing_epoch = _integer(value["fencing_epoch"], minimum=1)
+    revocation_epoch = _integer(value["revocation_epoch"])
+    worker_principal = _identifier(value["worker_principal"])
+    executor_principal = _identifier(value["executor_principal"])
+    subject_instance_id = _identifier(value["subject_instance_id"])
+    process_tree_id = _identifier(value["process_tree_id"])
+    worker = _active_principal(profile, "AGENT_WORKER")
+    executor = _active_principal(profile, "EXECUTOR")
+    if (
+        session_id != worker.session_id
+        or worker_principal != worker.principal_id
+        or executor_principal != executor.principal_id
+        or worker_principal == executor_principal
+    ):
+        raise _Stop(L0Reason.SESSION_MISMATCH)
+
+    namespace_value = _closed_dict(value["namespace_ids"], _SESSION_NAMESPACE_KEYS)
+    expected_namespaces = {
+        "user": worker.user_namespace,
+        "mount": worker.mount_namespace,
+        "pid": worker.pid_namespace,
+        "ipc": worker.ipc_namespace,
+        "uts": worker.uts_namespace,
+        "network": worker.network_namespace,
+        "cgroup": worker.cgroup_namespace,
+    }
+    namespace_ids = {key: _identifier(namespace_value[key]) for key in sorted(namespace_value)}
+    if namespace_ids != expected_namespaces or len(set(namespace_ids.values())) != len(namespace_ids):
+        raise _Stop(L0Reason.SESSION_MISMATCH)
+    namespace_data = {
+        "worker_principal": worker_principal,
+        "worker_session": session_id,
+        "uid": worker.uid,
+        "gid": worker.gid,
+        "security_label": worker.security_label,
+        "credential_namespace": worker.credential_namespace,
+        "namespace_ids": namespace_ids,
+    }
+    namespace_digest = _hash_text(_canonical(namespace_data))
+
+    root_value = _closed_dict(value["rootfs"], _SESSION_ROOTFS_KEYS)
+    root_fd = _session_descriptor(root_value["descriptor"])
+    root_data = _directory_observation(root_fd, _identifier(root_value["descriptor_id"]), "ROOTFS")
+    _require_minimal_rootfs(root_fd)
+    rootfs_digest = _hash_text(_canonical(root_data))
+
+    input_rows = _list(value["inputs"], maximum=16)
+    input_data: list[dict[str, object]] = []
+    input_mounts: list[tuple[int, str]] = []
+    for raw_input in input_rows:
+        input_value = _closed_dict(raw_input, _SESSION_INPUT_KEYS)
+        descriptor_id = _identifier(input_value["descriptor_id"])
+        mount_path = input_value["mount_path"]
+        if type(mount_path) is not str or mount_path != f"/inputs/{descriptor_id}":
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        descriptor = _session_descriptor(input_value["descriptor"])
+        observed = _regular_observation(
+            descriptor,
+            descriptor_id,
+            "READ_ONLY_INPUT",
+            _digest(input_value["expected_bytes_digest"]),
+            _MAX_SUPPLY_ARTIFACT_BYTES,
+        )
+        observed["mount_path"] = mount_path
+        input_data.append(observed)
+        input_mounts.append((descriptor, mount_path))
+    if len({item["descriptor_id"] for item in input_data}) != len(input_data):
+        raise _Stop(L0Reason.MALFORMED_INPUT)
+
+    broker_value = _closed_dict(value["broker_ipc"], _SESSION_BROKER_KEYS)
+    broker_fd = _session_descriptor(broker_value["descriptor"])
+    broker_id = _identifier(broker_value["descriptor_id"])
+    socket_name = _identifier(broker_value["socket_name"])
+    profile_source = json.loads(profile.canonical_profile_json)
+    broker_profile = profile_source["broker_ipc"]
+    if (
+        broker_value["worker_endpoint"] != broker_profile["worker_endpoint"]
+        or broker_value["broker_endpoint"] != broker_profile["broker_endpoint"]
+        or broker_value["transport"] != "UNIX_SEQPACKET"
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    broker_root = _directory_observation(broker_fd, broker_id, "BROKER_IPC_ROOT")
+    duplicate = fcntl.fcntl(broker_fd, fcntl.F_DUPFD_CLOEXEC, 3)
+    try:
+        if os.listdir(duplicate) != [socket_name]:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        socket_info = os.stat(socket_name, dir_fd=duplicate, follow_symlinks=False)
+        if not stat.S_ISSOCK(socket_info.st_mode):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    finally:
+        os.close(duplicate)
+    broker_data = {
+        **broker_root,
+        "socket_name": socket_name,
+        "socket_device": socket_info.st_dev,
+        "socket_inode": socket_info.st_ino,
+        "worker_endpoint": broker_value["worker_endpoint"],
+        "broker_endpoint": broker_value["broker_endpoint"],
+        "transport": "UNIX_SEQPACKET",
+        "message_binding_digest": profile.broker_binding_digest,
+    }
+    broker_digest = _hash_text(_canonical(broker_data))
+
+    seccomp_value = _closed_dict(value["seccomp"], _SESSION_SECCOMP_KEYS)
+    seccomp_fd = _session_descriptor(seccomp_value["descriptor"])
+    seccomp_data = _regular_observation(
+        seccomp_fd,
+        _identifier(seccomp_value["descriptor_id"]),
+        "SECCOMP_PROFILE",
+        _digest(seccomp_value["expected_bytes_digest"]),
+        _MAX_SUPPLY_ARTIFACT_BYTES,
+    )
+    tool_value = _closed_dict(value["tool"], _SESSION_TOOL_KEYS)
+    tool_fd = _session_descriptor(tool_value["descriptor"])
+    tool_data = _regular_observation(
+        tool_fd,
+        _identifier(tool_value["descriptor_id"]),
+        "WORKER_TOOL",
+        _digest(tool_value["expected_bytes_digest"]),
+        _MAX_SUPPLY_ARTIFACT_BYTES,
+    )
+    _exact(tool_value["path"], _WORKER_TOOL_PATH)
+    tool_argv_raw = _list(tool_value["argv"], minimum=5, maximum=5)
+    if any(type(item) is not str for item in tool_argv_raw):
+        raise _Stop(L0Reason.MALFORMED_INPUT)
+    expected_argv = (
+        _WORKER_TOOL_PATH,
+        "--broker-socket",
+        f"{_BROKER_MOUNT}/{socket_name}",
+        "--session",
+        session_id,
+    )
+    if tuple(tool_argv_raw) != expected_argv:
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+
+    cgroup_value = _closed_dict(value["cgroup"], _SESSION_CGROUP_KEYS)
+    cgroup_path = cgroup_value["path"]
+    if (
+        type(cgroup_path) is not str
+        or not cgroup_path.startswith(measurement.cgroup_path.rstrip("/") + "/")
+        or "/../" in cgroup_path
+        or "//" in cgroup_path
+        or len(PurePosixPath(cgroup_path).parts) != len(PurePosixPath(measurement.cgroup_path).parts) + 1
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    controllers = _exact_string_set(cgroup_value["controllers"], frozenset({"cpu", "io", "memory", "pids"}))
+    if not _boolean(cgroup_value["delegated"]):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    cgroup_data = {
+        "path": cgroup_path,
+        "controllers": list(controllers),
+        "device_major": _integer(cgroup_value["device_major"]),
+        "device_minor": _integer(cgroup_value["device_minor"]),
+        "delegated": True,
+        "identity_digest": _digest(cgroup_value["identity_digest"]),
+    }
+    cgroup_digest = _hash_text(_canonical(cgroup_data))
+
+    staging_value = _closed_dict(value["staging"], _SESSION_STAGING_KEYS)
+    staging_data = {
+        "root_id": _identifier(staging_value["root_id"]),
+        "root_identity": _digest(staging_value["root_identity"]),
+        "mount_id": _identifier(staging_value["mount_id"]),
+        "mount_identity": _digest(staging_value["mount_identity"]),
+        "files": _integer(staging_value["files"], minimum=1),
+        "inodes": _integer(staging_value["inodes"], minimum=1),
+        "bytes": _integer(staging_value["bytes"], minimum=1),
+    }
+    if (
+        staging_data["files"] != _resource_limit(profile, "FILES")
+        or staging_data["inodes"] != _resource_limit(profile, "INODES")
+        or staging_data["bytes"] != _resource_limit(profile, "OUTPUT_BYTES")
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    staging_digest = _hash_text(_canonical(staging_data))
+
+    supervisor_value = _closed_dict(value["supervisor_fds"], _SESSION_SUPERVISOR_FD_KEYS)
+    gate_fd = _session_descriptor(supervisor_value["gate_read"])
+    gate_release_fd = _session_descriptor(supervisor_value["gate_write"], write_only=True)
+    status_source_fd = _session_descriptor(supervisor_value["status_read"])
+    status_fd = _session_descriptor(supervisor_value["status_write"], write_only=True)
+    pipe_fds = (gate_fd, gate_release_fd, status_source_fd, status_fd)
+    for descriptor in pipe_fds:
+        if not stat.S_ISFIFO(os.fstat(descriptor).st_mode):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    if (
+        os.fstat(gate_fd).st_ino != os.fstat(gate_release_fd).st_ino
+        or os.fstat(status_source_fd).st_ino != os.fstat(status_fd).st_ino
+        or os.fstat(gate_fd).st_ino == os.fstat(status_fd).st_ino
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+
+    cleanup_value = _closed_dict(value["cleanup"], _SESSION_CLEANUP_KEYS)
+    cleanup_data = {
+        "cleanup_id": _identifier(cleanup_value["cleanup_id"]),
+        "staging_root_id": _identifier(cleanup_value["staging_root_id"]),
+        "reuse_forbidden": _boolean(cleanup_value["reuse_forbidden"]),
+        "require_cgroup_empty": _boolean(cleanup_value["require_cgroup_empty"]),
+        "quarantine_on_failure": _boolean(cleanup_value["quarantine_on_failure"]),
+    }
+    if (
+        cleanup_data["staging_root_id"] != staging_data["root_id"]
+        or cleanup_data["reuse_forbidden"] is not True
+        or cleanup_data["require_cgroup_empty"] is not True
+        or cleanup_data["quarantine_on_failure"] is not True
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+
+    pass_descriptors = [root_fd, *(item[0] for item in input_mounts), broker_fd, seccomp_fd, tool_fd, gate_fd, status_fd]
+    descriptors = [*pass_descriptors, gate_release_fd, status_source_fd]
+    if len(set(descriptors)) != len(descriptors):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    fd_inventory = [
+        root_data,
+        *input_data,
+        broker_root,
+        seccomp_data,
+        tool_data,
+        {
+            "kind": "START_GATE",
+            "descriptor": gate_fd,
+            "device": os.fstat(gate_fd).st_dev,
+            "inode": os.fstat(gate_fd).st_ino,
+            "type": "PIPE",
+        },
+        {
+            "kind": "STATUS_SINK",
+            "descriptor": status_fd,
+            "device": os.fstat(status_fd).st_dev,
+            "inode": os.fstat(status_fd).st_ino,
+            "type": "PIPE",
+        },
+        {
+            "kind": "START_GATE_RELEASE",
+            "descriptor": gate_release_fd,
+            "device": os.fstat(gate_release_fd).st_dev,
+            "inode": os.fstat(gate_release_fd).st_ino,
+            "type": "PIPE",
+        },
+        {
+            "kind": "STATUS_SOURCE",
+            "descriptor": status_source_fd,
+            "device": os.fstat(status_source_fd).st_dev,
+            "inode": os.fstat(status_source_fd).st_ino,
+            "type": "PIPE",
+        },
+    ]
+    fd_inventory_digest = _hash_text(_canonical(fd_inventory))
+    runtime_data = {
+        "binding_version": 1,
+        "process": {
+            "session_record_id": session_record_id,
+            "process_tree_id": process_tree_id,
+            "transaction_id": transaction_id,
+            "claim_digest": claim_digest,
+            "lineage_root": lineage_root,
+            "session_id": session_id,
+            "subject_instance_id": subject_instance_id,
+            "worker_principal": worker_principal,
+            "executor_principal": executor_principal,
+            "fencing_epoch": fencing_epoch,
+            "revocation_epoch": revocation_epoch,
+        },
+        "namespaces": namespace_data,
+        "cgroup": cgroup_data,
+        "mounts": {
+            "rootfs": root_data,
+            "read_only_inputs": input_data,
+            "worker_writable_mounts": [],
+            "staging_visible_to_worker": False,
+        },
+        "writable_scope": staging_data,
+        "broker_ipc": broker_data,
+        "fd_allowlist": fd_inventory,
+        "cleanup": cleanup_data,
+    }
+    runtime_json = _canonical(runtime_data)
+    placement = PlacementMeasurement(
+        rootfs_digest,
+        staging_digest,
+        cgroup_digest,
+        broker_digest,
+        fd_inventory_digest,
+        namespace_digest,
+        runtime_json,
+        _hash_text(runtime_json),
+    )
+    parsed: dict[str, object] = {
+        "session_id": session_id,
+        "session_record_id": session_record_id,
+        "transaction_id": transaction_id,
+        "claim_digest": claim_digest,
+        "lineage_root": lineage_root,
+        "fencing_epoch": fencing_epoch,
+        "revocation_epoch": revocation_epoch,
+        "worker_principal": worker_principal,
+        "executor_principal": executor_principal,
+        "subject_instance_id": subject_instance_id,
+        "process_tree_id": process_tree_id,
+        "namespace_ids": namespace_ids,
+        "root_fd": root_fd,
+        "input_mounts": tuple(input_mounts),
+        "broker_fd": broker_fd,
+        "socket_name": socket_name,
+        "seccomp_fd": seccomp_fd,
+        "seccomp_data": seccomp_data,
+        "tool_fd": tool_fd,
+        "tool_data": tool_data,
+        "tool_argv": expected_argv,
+        "cgroup_path": cgroup_path,
+        "cgroup_data": cgroup_data,
+        "staging_data": staging_data,
+        "gate_fd": gate_fd,
+        "gate_release_fd": gate_release_fd,
+        "status_source_fd": status_source_fd,
+        "status_fd": status_fd,
+        "cleanup_data": cleanup_data,
+        "descriptors": tuple(descriptors),
+        "pass_descriptors": tuple(pass_descriptors),
+    }
+    return placement, parsed
+
+
+def measure_placement(profile: object, measurement: object, raw: object) -> PlacementResult:
+    """Read and bind all prospective runtime objects without creating or launching any."""
+
+    try:
+        if type(profile) is not CompiledL0Profile or type(measurement) is not HostMeasurement:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        observed, _ = _session_observations(profile, measurement, raw)
+        return PlacementResult(L0Outcome.RESOLVED, L0Reason.PLACEMENT_MEASURED, observed)
+    except _Stop as stop:
+        return PlacementResult(L0Outcome.STOP, stop.reason)
+    except (OSError, ValueError, TypeError):
+        return PlacementResult(L0Outcome.STOP, L0Reason.PLACEMENT_MISMATCH)
+    except Exception:  # noqa: BLE001 - hostile values and host races are total
+        return PlacementResult(L0Outcome.STOP, L0Reason.HOST_FAILURE)
+
+
+def _session_cgroup_limits(profile: CompiledL0Profile, cgroup: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    cpu_rate = _resource_limit(profile, "CPU_RATE")
+    memory = _resource_limit(profile, "MEMORY") * 1024 * 1024
+    swap = _resource_limit(profile, "SWAP") * 1024 * 1024
+    pids = _resource_limit(profile, "PIDS")
+    device = f"{cgroup['device_major']}:{cgroup['device_minor']}"
+    read_iops = _resource_limit(profile, "BLOCK_IO_READ")
+    write_iops = _resource_limit(profile, "BLOCK_IO_WRITE")
+    return (
+        ("cpu.max", f"{cpu_rate * 100} 100000"),
+        ("io.max", f"{device} riops={read_iops} wiops={write_iops}"),
+        ("memory.max", str(memory)),
+        ("memory.swap.max", str(swap)),
+        ("pids.max", str(pids)),
+    )
+
+
+def prepare_session(
+    profile: object,
+    measurement: object,
+    supply: object,
+    claim: object,
+    raw: object,
+    *,
+    supply_verifier: object | None = None,
+    executor_claim_verifier: object | None = None,
+) -> SessionResult:
+    """Compile the exact launch record; it never starts a process or creates runtime state."""
+
+    try:
+        if type(profile) is not CompiledL0Profile or type(measurement) is not HostMeasurement:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        if supply_verifier is None:
+            raise _Stop(L0Reason.SUPPLY_VERIFIER_ABSENT)
+        if executor_claim_verifier is None:
+            raise _Stop(L0Reason.CLAIM_REQUIRED)
+        durable_claim = _verified_claim(profile, claim, executor_claim_verifier)
+        verified_supply = _verified_supply(
+            profile,
+            measurement,
+            supply,
+            supply_verifier,
+            durable_claim.observed_at,
+        )
+        placement, parsed = _session_observations(profile, measurement, raw)
+        supply_payload = json.loads(verified_supply.payload_json)
+        supplied_placement = supply_payload["placement"]
+        placement_pairs = {
+            "rootfs_binding_digest": placement.rootfs_binding_digest,
+            "staging_binding_digest": placement.staging_binding_digest,
+            "cgroup_binding_digest": placement.cgroup_binding_digest,
+            "broker_binding_digest": placement.broker_binding_digest,
+            "fd_inventory_digest": placement.fd_inventory_digest,
+            "namespace_plan_digest": placement.namespace_plan_digest,
+        }
+        if (
+            any(supplied_placement[key] != digest for key, digest in placement_pairs.items())
+            or durable_claim.transaction_id != parsed["transaction_id"]
+            or durable_claim.claim_digest != parsed["claim_digest"]
+            or durable_claim.lineage_root != parsed["lineage_root"]
+            or durable_claim.fencing_epoch != parsed["fencing_epoch"]
+            or durable_claim.revocation_epoch != parsed["revocation_epoch"]
+            or durable_claim.principal_id != parsed["worker_principal"]
+            or durable_claim.audience_id != parsed["executor_principal"]
+            or durable_claim.session_id != parsed["session_id"]
+            or durable_claim.placement_digest != verified_supply.placement_digest
+            or verified_supply.session_id != parsed["session_id"]
+            or verified_supply.subject_instance_id != parsed["subject_instance_id"]
+            or verified_supply.process_tree_id != parsed["process_tree_id"]
+            or verified_supply.fencing_epoch != parsed["fencing_epoch"]
+            or verified_supply.revocation_epoch != parsed["revocation_epoch"]
+        ):
+            raise _Stop(L0Reason.SESSION_MISMATCH)
+        if not _artifact_observation_matches(parsed["seccomp_data"], _artifact_for(verified_supply, "SECCOMP_PROFILE")):
+            raise _Stop(L0Reason.ARTIFACT_MISMATCH)
+        if not _artifact_observation_matches(parsed["tool_data"], _artifact_for(verified_supply, "TOOL")):
+            raise _Stop(L0Reason.ARTIFACT_MISMATCH)
+
+        worker = _active_principal(profile, "AGENT_WORKER")
+        argv: list[str] = [
+            RUNTIME_PATH,
+            "--block-fd",
+            str(parsed["gate_fd"]),
+            "--json-status-fd",
+            str(parsed["status_fd"]),
+            "--unshare-user",
+            "--uid",
+            str(worker.uid),
+            "--gid",
+            str(worker.gid),
+            "--unshare-ipc",
+            "--unshare-pid",
+            "--unshare-net",
+            "--unshare-uts",
+            "--unshare-cgroup",
+            "--disable-userns",
+            "--assert-userns-disabled",
+            "--hostname",
+            "harness-worker",
+            "--new-session",
+            "--die-with-parent",
+            "--clearenv",
+            "--cap-drop",
+            "ALL",
+            "--exec-label",
+            str(worker.security_label),
+            "--ro-bind-fd",
+            str(parsed["root_fd"]),
+            "/",
+        ]
+        read_only_mounts = [(parsed["root_fd"], "/"), *parsed["input_mounts"]]
+        for descriptor, destination in parsed["input_mounts"]:
+            argv.extend(("--ro-bind-fd", str(descriptor), destination))
+        argv.extend(
+            (
+                "--ro-bind-fd",
+                str(parsed["broker_fd"]),
+                _BROKER_MOUNT,
+                "--ro-bind-fd",
+                str(parsed["tool_fd"]),
+                _WORKER_TOOL_PATH,
+                "--proc",
+                "/proc",
+                "--remount-ro",
+                "/proc",
+                "--seccomp",
+                str(parsed["seccomp_fd"]),
+                "--chdir",
+                "/workspace",
+                "--",
+                *parsed["tool_argv"],
+            )
+        )
+        cgroup_limits = _session_cgroup_limits(profile, parsed["cgroup_data"])
+        quota = tuple(sorted(parsed["staging_data"].items()))
+        runtime_bindings = json.loads(placement.runtime_bindings_json)
+        runtime_process = runtime_bindings["process"]
+        broker = _active_principal(profile, "BROKER")
+        executor = _active_principal(profile, "EXECUTOR")
+        runtime_process.update(
+            {
+                "profile_digest": profile.profile_digest,
+                "measurement_digest": measurement.measurement_digest,
+                "supply_digest": verified_supply.supply_digest,
+                "placement_digest": verified_supply.placement_digest,
+                "runtime_digest": profile.backend_digest,
+                "broker_principal": broker.principal_id,
+                "broker_session": broker.session_id,
+                "executor_session": executor.session_id,
+            }
+        )
+        runtime_bindings_json = _canonical(runtime_bindings)
+        runtime_bindings_digest = _hash_text(runtime_bindings_json)
+        launch_data = {
+            "launch_version": 1,
+            "profile_digest": profile.profile_digest,
+            "measurement_digest": measurement.measurement_digest,
+            "supply_digest": verified_supply.supply_digest,
+            "placement_digest": verified_supply.placement_digest,
+            "claim_digest": durable_claim.claim_digest,
+            "runtime_bindings_digest": runtime_bindings_digest,
+            "runtime_path": RUNTIME_PATH,
+            "runtime_digest": RUNTIME_DIGEST,
+            "argv": argv,
+            "environment": [],
+            "pass_fds": list(parsed["pass_descriptors"]),
+            "cgroup_limits": dict(cgroup_limits),
+            "cpu_time_ms": _resource_limit(profile, "CPU_TIME"),
+            "wall_time_ms": _resource_limit(profile, "WALL_TIME"),
+            "rlimit_nofile": _resource_limit(profile, "OPEN_FDS"),
+            "quota": dict(quota),
+        }
+        launch_json = _canonical(launch_data)
+        plan = SessionPlan(
+            profile.profile_digest,
+            measurement.measurement_digest,
+            verified_supply.supply_digest,
+            verified_supply.placement_digest,
+            str(parsed["session_record_id"]),
+            str(parsed["session_id"]),
+            str(parsed["transaction_id"]),
+            str(parsed["claim_digest"]),
+            str(parsed["lineage_root"]),
+            int(parsed["fencing_epoch"]),
+            int(parsed["revocation_epoch"]),
+            str(parsed["worker_principal"]),
+            str(parsed["executor_principal"]),
+            str(parsed["subject_instance_id"]),
+            tuple(parsed["namespace_ids"].items()),
+            tuple(read_only_mounts),
+            (int(parsed["broker_fd"]), _BROKER_MOUNT),
+            f"{_BROKER_MOUNT}/{parsed['socket_name']}",
+            int(parsed["seccomp_fd"]),
+            int(parsed["tool_fd"]),
+            int(parsed["gate_fd"]),
+            int(parsed["gate_release_fd"]),
+            int(parsed["status_source_fd"]),
+            int(parsed["status_fd"]),
+            tuple(parsed["pass_descriptors"]),
+            tuple(argv),
+            (),
+            str(parsed["cgroup_path"]),
+            cgroup_limits,
+            _resource_limit(profile, "CPU_TIME"),
+            _resource_limit(profile, "WALL_TIME"),
+            _resource_limit(profile, "OPEN_FDS"),
+            quota,
+            _canonical(parsed["cleanup_data"]),
+            runtime_bindings_json,
+            runtime_bindings_digest,
+            _hash_text(launch_json),
+        )
+        return SessionResult(L0Outcome.PREPARED, L0Reason.SESSION_PREPARED, plan)
+    except _Stop as stop:
+        return SessionResult(L0Outcome.STOP, stop.reason)
+    except (OSError, ValueError, TypeError):
+        return SessionResult(L0Outcome.STOP, L0Reason.SESSION_MISMATCH)
+    except Exception:  # noqa: BLE001 - public session boundary is total
+        return SessionResult(L0Outcome.STOP, L0Reason.HOST_FAILURE)
+
+
+def _write_cgroup_control(directory: int, name: str, value: str) -> None:
+    if name not in {"cpu.max", "io.max", "memory.max", "memory.swap.max", "pids.max", "cgroup.procs", "cgroup.kill"}:
+        raise _Stop(L0Reason.RUNTIME_FAILED)
+    descriptor = os.open(name, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=directory)
+    try:
+        encoded = value.encode("ascii")
+        offset = 0
+        while offset < len(encoded):
+            written = os.write(descriptor, encoded[offset:])
+            if written <= 0:
+                raise OSError(errno.EIO, "short cgroup write")
+            offset += written
+    finally:
+        os.close(descriptor)
+
+
+def _read_cgroup_control(directory: int, name: str, maximum: int = 65536) -> str:
+    if name not in {"cpu.max", "cpu.stat", "io.max", "memory.max", "memory.swap.max", "pids.max", "cgroup.events"}:
+        raise _Stop(L0Reason.RUNTIME_FAILED)
+    descriptor = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=directory)
+    try:
+        value = os.read(descriptor, maximum + 1)
+        if len(value) > maximum:
+            raise _Stop(L0Reason.RUNTIME_FAILED)
+        return value.decode("ascii")
+    finally:
+        os.close(descriptor)
+
+
+def _cpu_usage_microseconds(directory: int) -> int:
+    rows = _read_cgroup_control(directory, "cpu.stat").splitlines()
+    usage = [row.split() for row in rows if row.startswith("usage_usec ")]
+    if len(usage) != 1 or len(usage[0]) != 2 or not usage[0][1].isdigit():
+        raise _Stop(L0Reason.RUNTIME_FAILED)
+    return _integer(int(usage[0][1]))
+
+
+def _close_standard_descriptors() -> None:
+    for descriptor in (0, 1, 2):
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+
+def _bounded_status_digest(descriptor: int) -> str:
+    duplicate = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+    try:
+        flags = fcntl.fcntl(duplicate, fcntl.F_GETFL)
+        fcntl.fcntl(duplicate, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            try:
+                chunk = os.read(duplicate, 65536)
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 1 << 20:
+                raise _Stop(L0Reason.RUNTIME_FAILED)
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        if not raw:
+            raise _Stop(L0Reason.RUNTIME_FAILED)
+        for line in raw.splitlines():
+            if not line:
+                continue
+            value = json.loads(line)
+            if type(value) is not dict or any(type(key) is not str for key in value):
+                raise _Stop(L0Reason.RUNTIME_FAILED)
+        return "sha256:" + sha256(raw).hexdigest()
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise _Stop(L0Reason.RUNTIME_FAILED) from error
+    finally:
+        os.close(duplicate)
+
+
+def _runtime_failure_digest(plan: SessionPlan, reason: str, process_id: int | None) -> str:
+    return _hash_text(
+        _canonical(
+            {
+                "session_record_id": plan.session_record_id,
+                "transaction_id": plan.transaction_id,
+                "process_tree_id": json.loads(plan.runtime_bindings_json)["process"]["process_tree_id"],
+                "launch_digest": plan.launch_digest,
+                "reason": reason,
+                "process_id": process_id,
+            }
+        )
+    )
+
+
+def supervise_session(
+    profile: object,
+    measurement: object,
+    supply: object,
+    claim: object,
+    raw: object,
+    store: object,
+    *,
+    supply_verifier: object | None = None,
+    executor_claim_verifier: object | None = None,
+    runtime_verification: object | None = None,
+    terminal_observed_at: object = None,
+    cleanup_evidence: object | None = None,
+    _fault: object | None = None,
+) -> SupervisorResult:
+    """Run exactly one gated bwrap process after the durable PREPARED commit.
+
+    This path has no fallback and never retries.  Ordinary repository tests do
+    not invoke it; exact-profile conformance must run it in an authorized outer
+    containment environment.
+    """
+
+    plan: SessionPlan | None = None
+    parent_fd = -1
+    cgroup_fd = -1
+    cgroup_created = False
+    process: subprocess.Popen[bytes] | None = None
+    process_id: int | None = None
+    status_digest: str | None = None
+    terminal_reason = L0Reason.RUNTIME_FAILED
+    durable_prepared = False
+    try:
+        if type(store) is not DurableStore:
+            raise _Stop(L0Reason.DURABLE_PREPARE_FAILED)
+        _time(terminal_observed_at)
+        if type(profile) is not CompiledL0Profile or type(measurement) is not HostMeasurement:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        observed = _verify_host(profile, _observe_host())
+        if observed != measurement:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        planned = prepare_session(
+            profile,
+            measurement,
+            supply,
+            claim,
+            raw,
+            supply_verifier=supply_verifier,
+            executor_claim_verifier=executor_claim_verifier,
+        )
+        if planned.outcome is not L0Outcome.PREPARED or planned.plan is None:
+            raise _Stop(planned.reason)
+        plan = planned.plan
+        if type(runtime_verification) is not dict:
+            raise _Stop(L0Reason.DURABLE_PREPARE_FAILED)
+        durable = store.prepare_runtime_session(
+            {
+                "session_record_id": plan.session_record_id,
+                "transaction_id": plan.transaction_id,
+                "observed_at": claim.observed_at,
+                "executor_id": plan.executor_principal,
+                "profile_digest": plan.profile_digest,
+                "placement_digest": plan.placement_digest,
+                "session_id": plan.session_id,
+                "fencing_epoch": plan.fencing_epoch,
+                "runtime_bindings": json.loads(plan.runtime_bindings_json),
+                "runtime_verification": runtime_verification,
+            }
+        )
+        if durable.outcome is not DurableOutcome.COMMITTED or durable.runtime_session is None:
+            raise _Stop(L0Reason.DURABLE_PREPARE_FAILED)
+        durable_prepared = True
+        if _fault is not None:
+            _fault("supervisor_after_durable_prepare")  # type: ignore[operator]
+
+        parent_logical = PurePosixPath(measurement.cgroup_path)
+        child_logical = PurePosixPath(plan.cgroup_path)
+        if child_logical.parent != parent_logical or child_logical.name in {"", ".", ".."}:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        parent_path = Path("/sys/fs/cgroup", measurement.cgroup_path.lstrip("/"))
+        parent_fd = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        os.mkdir(child_logical.name, mode=0o700, dir_fd=parent_fd)
+        cgroup_created = True
+        cgroup_fd = os.open(
+            child_logical.name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+        for name, value in plan.cgroup_limits:
+            _write_cgroup_control(cgroup_fd, name, value)
+        for name, expected in plan.cgroup_limits:
+            observed_value = _read_cgroup_control(cgroup_fd, name).strip()
+            if observed_value != expected:
+                raise _Stop(L0Reason.RUNTIME_FAILED)
+        if _fault is not None:
+            _fault("supervisor_before_popen")  # type: ignore[operator]
+
+        process = subprocess.Popen(
+            list(plan.bwrap_argv),
+            shell=False,
+            close_fds=True,
+            pass_fds=plan.pass_fds,
+            env=dict(plan.environment),
+            cwd="/",
+            preexec_fn=_close_standard_descriptors,
+        )
+        process_id = process.pid
+        _write_cgroup_control(cgroup_fd, "cgroup.procs", str(process.pid))
+        resource.prlimit(process.pid, resource.RLIMIT_NOFILE, (plan.rlimit_nofile, plan.rlimit_nofile))
+        cpu_start = _cpu_usage_microseconds(cgroup_fd)
+        if os.write(plan.gate_write_fd, b"1") != 1:
+            raise _Stop(L0Reason.RUNTIME_FAILED)
+        if _fault is not None:
+            _fault("supervisor_after_gate_release")  # type: ignore[operator]
+
+        deadline = time.monotonic() + (plan.wall_time_ms / 1000)
+        timed_out = False
+        while process.poll() is None:
+            if time.monotonic() >= deadline or _cpu_usage_microseconds(cgroup_fd) - cpu_start > plan.cpu_time_ms * 1000:
+                timed_out = True
+                terminal_reason = L0Reason.SESSION_TIMED_OUT
+                _write_cgroup_control(cgroup_fd, "cgroup.kill", "1")
+                break
+            time.sleep(0.001)
+        try:
+            return_code = process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            _write_cgroup_control(cgroup_fd, "cgroup.kill", "1")
+            return_code = process.wait(timeout=1)
+            timed_out = True
+            terminal_reason = L0Reason.SESSION_TIMED_OUT
+        status_digest = _bounded_status_digest(plan.status_read_fd)
+        if return_code != 0 and not timed_out:
+            raise _Stop(L0Reason.RUNTIME_FAILED)
+
+        # Revoke the only worker IPC route and prove the cgroup is empty before reuse.
+        runtime_value = json.loads(plan.runtime_bindings_json)
+        broker_record = runtime_value["broker_ipc"]
+        broker_fd = plan.broker_root_mount[0]
+        socket_name = PurePosixPath(plan.broker_socket_path).name
+        socket_info = os.stat(socket_name, dir_fd=broker_fd, follow_symlinks=False)
+        if socket_info.st_dev != broker_record["socket_device"] or socket_info.st_ino != broker_record["socket_inode"]:
+            raise _Stop(L0Reason.CLEANUP_FAILED)
+        os.unlink(socket_name, dir_fd=broker_fd)
+        _write_cgroup_control(cgroup_fd, "cgroup.kill", "1")
+        events = dict(row.split() for row in _read_cgroup_control(cgroup_fd, "cgroup.events").splitlines())
+        if events.get("populated") != "0":
+            raise _Stop(L0Reason.CLEANUP_FAILED)
+        os.close(cgroup_fd)
+        cgroup_fd = -1
+        os.rmdir(child_logical.name, dir_fd=parent_fd)
+        cgroup_created = False
+        cleanup_digest = _runtime_failure_digest(plan, "CLEAN", process_id)
+
+        if timed_out:
+            terminal = store.finalize_runtime_session(
+                {
+                    "session_record_id": plan.session_record_id,
+                    "observed_at": terminal_observed_at,
+                    "state": "TIMED_OUT",
+                    "evidence": {"evidence_digest": cleanup_digest},
+                }
+            )
+        elif type(cleanup_evidence) is dict:
+            terminal = store.finalize_runtime_session(
+                {
+                    "session_record_id": plan.session_record_id,
+                    "observed_at": terminal_observed_at,
+                    "state": "STOPPED",
+                    "evidence": cleanup_evidence,
+                }
+            )
+        else:
+            terminal = store.finalize_runtime_session(
+                {
+                    "session_record_id": plan.session_record_id,
+                    "observed_at": terminal_observed_at,
+                    "state": "QUARANTINED",
+                    "evidence": {"evidence_digest": cleanup_digest},
+                }
+            )
+        released = terminal.outcome is DurableOutcome.COMMITTED and terminal.reason.value == "RELEASED"
+        state = "STOPPED" if released else ("TIMED_OUT" if timed_out else "QUARANTINED")
+        record = RuntimeSessionRecord(
+            plan.session_record_id,
+            plan.transaction_id,
+            runtime_value["process"]["process_tree_id"],
+            process_id,
+            state,
+            plan.cgroup_path,
+            plan.launch_digest,
+            status_digest,
+            cleanup_digest,
+        )
+        if released:
+            return SupervisorResult(L0Outcome.STOPPED, L0Reason.SESSION_STOPPED, record)
+        return SupervisorResult(L0Outcome.QUARANTINED, terminal_reason, record)
+    except _Stop as stop:
+        terminal_reason = stop.reason
+    except Exception:  # noqa: BLE001 - runtime boundary is fail-closed and total
+        terminal_reason = L0Reason.RUNTIME_FAILED
+    finally:
+        if process is not None and process.poll() is None and cgroup_fd >= 0:
+            try:
+                _write_cgroup_control(cgroup_fd, "cgroup.kill", "1")
+                process.wait(timeout=1)
+            except Exception:
+                pass
+        if cgroup_fd >= 0:
+            os.close(cgroup_fd)
+        if cgroup_created and parent_fd >= 0 and plan is not None:
+            try:
+                os.rmdir(PurePosixPath(plan.cgroup_path).name, dir_fd=parent_fd)
+            except OSError:
+                terminal_reason = L0Reason.CLEANUP_FAILED
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+    if plan is None or not durable_prepared:
+        return SupervisorResult(L0Outcome.STOP, terminal_reason)
+    cleanup_digest = _runtime_failure_digest(plan, terminal_reason.value, process_id)
+    terminal = store.finalize_runtime_session(
+        {
+            "session_record_id": plan.session_record_id,
+            "observed_at": terminal_observed_at,
+            "state": "QUARANTINED",
+            "evidence": {"evidence_digest": cleanup_digest},
+        }
+    )
+    runtime_value = json.loads(plan.runtime_bindings_json)
+    record = RuntimeSessionRecord(
+        plan.session_record_id,
+        plan.transaction_id,
+        runtime_value["process"]["process_tree_id"],
+        process_id,
+        "QUARANTINED",
+        plan.cgroup_path,
+        plan.launch_digest,
+        status_digest,
+        cleanup_digest,
+    )
+    if terminal.outcome is not DurableOutcome.COMMITTED:
+        return SupervisorResult(L0Outcome.QUARANTINED, L0Reason.CLEANUP_FAILED, record)
+    return SupervisorResult(L0Outcome.QUARANTINED, terminal_reason, record)
+
+
 def stage_committed_intent(
     profile: object,
     claim: object,
+    supply: object,
     root_descriptor: object,
     raw: object,
     *,
     executor_claim_verifier: object | None = None,
+    supply_verifier: object | None = None,
     _fault: object | None = None,
 ) -> StageResult:
     """Perform the sole M3 effect: one exact replace inside a trusted staging root."""
@@ -1464,7 +3231,23 @@ def stage_committed_intent(
             raise _Stop(L0Reason.MISMATCHED_PROFILE)
         if executor_claim_verifier is None:
             raise _Stop(L0Reason.CLAIM_REQUIRED)
+        if supply_verifier is None:
+            raise _Stop(L0Reason.SUPPLY_VERIFIER_ABSENT)
         durable_claim = _verified_claim(profile, claim, executor_claim_verifier)
+        verified_supply = _verified_supply(
+            profile,
+            None,
+            supply,
+            supply_verifier,
+            durable_claim.observed_at,
+        )
+        if (
+            durable_claim.placement_digest != verified_supply.placement_digest
+            or durable_claim.session_id != verified_supply.session_id
+            or durable_claim.fencing_epoch != verified_supply.fencing_epoch
+            or durable_claim.revocation_epoch != verified_supply.revocation_epoch
+        ):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
         if type(root_descriptor) is not int or root_descriptor < 0:
             raise _Stop(L0Reason.MALFORMED_INPUT)
         value = _closed_dict(raw, _STAGE_REQUEST_KEYS)
@@ -1790,6 +3573,7 @@ def _verify_host(profile: CompiledL0Profile, observed: _HostObservation) -> Host
         observed.backend_digest,
         observed.architecture,
         observed.kernel_release,
+        observed.kernel_features,
         observed.cgroup_path,
         observed.cgroup_controllers,
         observed.lsm_stack,
@@ -1815,6 +3599,21 @@ def host_preflight(raw: object) -> L0Result:
         return L0Result(L0Outcome.STOP, L0Reason.HOST_FAILURE)
 
 
+def runtime_conformance(raw_profile: object) -> ConformanceResult:
+    """Report exact-profile conformance availability; never skip or weaken a blocker."""
+
+    try:
+        preflight = host_preflight(raw_profile)
+        if preflight.outcome is not L0Outcome.READY:
+            return ConformanceResult(L0Outcome.ABSENT, preflight.reason)
+        # A ready host is necessary but cannot self-attest its supply, placement,
+        # cleanup, and attack-test evidence.  The command remains ABSENT until an
+        # external trust root and privileged conformance runner are supplied.
+        return ConformanceResult(L0Outcome.ABSENT, L0Reason.CONFORMANCE_ABSENT)
+    except Exception:  # noqa: BLE001 - exact gate is total and non-skipping
+        return ConformanceResult(L0Outcome.ABSENT, L0Reason.HOST_FAILURE)
+
+
 __all__ = [
     "ENVIRONMENT",
     "PROFILE_ID",
@@ -1832,13 +3631,28 @@ __all__ = [
     "L0Result",
     "PathBinding",
     "PathResult",
+    "PlacementMeasurement",
+    "PlacementResult",
     "PrincipalPlan",
     "ResourceLimit",
+    "RuntimeSessionRecord",
+    "SessionPlan",
+    "SessionResult",
     "StageRecord",
     "StageResult",
+    "SupplyArtifactBinding",
+    "SupplyResult",
+    "SupplyVerification",
+    "SupervisorResult",
+    "ConformanceResult",
     "compile_profile",
     "host_preflight",
+    "measure_placement",
+    "prepare_session",
     "receive_broker_message",
     "resolve_target",
+    "runtime_conformance",
     "stage_committed_intent",
+    "supervise_session",
+    "verify_supply",
 ]

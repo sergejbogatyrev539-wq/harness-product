@@ -3,7 +3,7 @@
 This document describes the intended implementation boundary. It does not attest
 that a runtime exists.
 
-## Implemented M1/M2 and M3 draft-preflight boundary
+## Implemented M1/M2 and M3 exact-profile code boundary
 
 The current implementation is one pure in-memory pipeline:
 
@@ -28,8 +28,8 @@ shell adapter in M1. Trusted facts are model inputs; M1 does not attest their
 provenance. Decision digests are deterministic bindings, not signatures.
 
 M2 is one direct `harness_product.durable` stdlib SQLite module, deliberately
-outside the package-root API. Schema v2 (with exact audited v1 migration) uses
-`STRICT` tables and foreign keys;
+outside the package-root API. Format version 1/schema version 3 (with exact
+audited v1-to-v2-to-v3 migrations) uses `STRICT` tables and foreign keys;
 each competing mutation uses `BEGIN IMMEDIATE`, rollback-journal (`DELETE`) mode,
 and `synchronous=FULL`. Capability issue reruns M1 and stores its full canonical
 inputs, exact bindings, canonical decision digest, and full verifier record.
@@ -50,6 +50,13 @@ second canonical executor record, and persists the one-attempt claim plus its
 journal/outbox event before returning a frozen envelope. Recovery returns only
 `ATTEMPT_CLAIMED`; it never recreates the envelope or retries.
 
+The same store durably records an exact pre-exec session only after the complete
+claim/capability/verification/expiry/revocation/fence checks and an external
+runtime-verifier check. One transaction appends `PREPARED` plus its mandatory
+journal/outbox event. Terminal state is exactly `STOPPED`, `TIMED_OUT`, or
+`QUARANTINED`; only independently verified no-effect cleanup releases budget.
+Recovery exposes frozen summaries and never resumes or retries them.
+
 M3 adds one direct `harness_product.l0` module without exporting it from the
 package root. Its first slice is a pure closed compiler for the exact draft
 `L0-LX-A / DISCONNECTED_STAGEABLE_WORKER` profile and a read-only host
@@ -60,6 +67,13 @@ root-owned `/usr/bin/bwrap` binary (bubblewrap 0.9.0, exact SHA-256 bound in
 code). Preflight verifies the binary and required platform capabilities with
 typed absolute argv and no shell. It creates no runtime object or effect.
 
+The supply boundary hashes actual bytes from pre-opened immutable descriptors
+and binds the rootfs manifest, runtime and loader, dependency closure, tools,
+SBOM, registry snapshot/generation, signer/key/algorithm/lifecycle/rollback,
+profile and placement. It requires a separate verifier over the full canonical
+payload and verification record; it has no default trust root and never accepts
+a caller boolean, bare hash, image tag, or self-signed fixture as proof.
+
 The next slice remains in the same deep module. `receive_broker_message`
 accepts one bounded canonical message from an exact `AF_UNIX/SOCK_SEQPACKET`
 descriptor only after `SO_PEERCRED`, process-session, worker/session/nonce/fence,
@@ -67,19 +81,43 @@ and broker-binding checks. `resolve_target` opens one existing file relative to
 a trusted root descriptor with `openat2(BENEATH|NO_MAGICLINKS|NO_SYMLINKS|NO_XDEV)`
 and binds path, descriptor/root/mount/epoch, final device/inode/type/content, and
 one composite digest. `stage_committed_intent` is the sole effect surface: after
-revalidating an exact M2 claim and external claim-verifier record, it can replace
-that file inside a 0700 disposable staging root. It has no project-root path,
+revalidating exact M2 claim and supply-verifier records, it can replace that file
+inside a 0700 disposable staging root. It has no project-root path,
 durable DB handle, network, shell, commit, seal, JOIN, or retry surface. A fault
 after the first write becomes `QUARANTINED/STAGE_OUTCOME_UNKNOWN`.
+
+`prepare_session` remeasures the complete prospective runtime inventory and
+binds namespace identities, non-host UID/GID, rootfs and read-only inputs,
+broker socket, seccomp/tool bytes, cgroup, all inherited FDs, process-tree,
+quota and cleanup records. Staging is deliberately absent from worker mounts and
+FDs. `supervise_session` has one bwrap backend and no fallback: it remeasures the
+host, commits the durable `PREPARED` record before launch, writes and verifies
+the cgroup-v2 limits, uses exact typed argv with `shell=False`, starts behind an
+early gate, applies RLIMIT and external wall/CPU termination, kills the complete
+cgroup and terminally releases or quarantines the reservation. The implementation
+does not retry after any uncertain outcome.
 
 The current host result is a structured `STOP/CGROUP_DELEGATION_ABSENT`: the
 application cgroup is shared and lacks delegated CPU/IO controllers. The
 preflight consequently returns no partial compiled/measurement authority and
 does not fall back to Docker or a weaker profile.
 
-The boundaries above implement the powerless proposal/claim/staging edges, but
-the following physical principal topology remains unfinished and unattested M3
-work.
+The boundaries above implement the powerless proposal/claim/session/staging
+edges. The following physical principal topology remains unattested on this
+host; a compiled role record is not proof that the processes were separated.
+
+The safe regression mapping is explicit; `UNIT` below proves the closed code
+boundary only, while `ABSENT` means the physical exact-profile oracle still
+requires the non-skipping conformance environment.
+
+| Normative rows | Regression boundary | Claim |
+|---|---|---|
+| `ATK-001`, `ATK-019`, `T-Q43-DESCRIPTOR-ROOT-SUBSTITUTION` | `test_l0.py` descriptor/path/link/mount/epoch/object cases and unchanged external canaries | UNIT; runtime TCB evidence ABSENT |
+| `ATK-003`, `T-Q46-DIRECT-WORKER-MUTATE-DENY`, `T-Q47-MUTATION-SELF-AUDIENCE-DENY`, `T-DECISION-ALLOW-EXACT` | `test_l0.py`, `test_l0_stage.py`, and retained M1 decision tests | UNIT; distinct-principal attestation ABSENT |
+| `ATK-028`, `T-Q39-SUPPLY-EXTERNAL-BUNDLE-SUBSTITUTION` | `test_l0_supply.py` exact opened-byte and every-component substitution matrix | UNIT; production trust root ABSENT |
+| `ATK-002`, `ATK-020`, `ATK-021`, `ATK-034` | `test_l0.py` and `test_l0_lifecycle.py` closed network/FD/secret/IPC/process plans | UNIT; syscall/TCB attack evidence ABSENT |
+| `ATK-007`, `ATK-010`, `ATK-022` | exact Q-56 compiler rows, lifecycle cgroup/RLIMIT/watchdog plan, durable budget conservation | UNIT; physical limit receipts ABSENT |
+| `ATK-011`, `ATK-012`, `ATK-026` | no checkout/`.git`/home/staging visibility, disposable-root stage tests, durable cleanup/quarantine state | UNIT; cross-session cleanup proof ABSENT |
 
 ```text
 untrusted worker ── powerless proposal ──> Controller / PEP
@@ -121,9 +159,13 @@ adapter, external cryptography/trust root/attestation, OS enforcement, or
 non-bypassable path. The local hash chain cannot detect a coherent whole-database
 rollback without an independent external anchor. `synchronous=FULL` depends on
 filesystem/device flush and ordering behavior and is not proof of power-loss
-durability. The M3 compiler/preflight and local staging tests prove closed
-planning, descriptor mediation, and the one disposable-root operation only;
-they have not launched or attested an isolated worker.
+durability. The M3 compiler/preflight, supply, lifecycle and local staging tests
+prove closed planning, durable ordering, descriptor mediation, fail-closed error
+handling and the one disposable-root operation only. `scripts/check_m3_l0.py`
+is a separate non-skipping exact-profile gate and currently exits nonzero with
+`ABSENT/CGROUP_DELEGATION_ABSENT`. No worker has been successfully launched or
+attested under the exact profile; no production external trust root, privileged
+runtime attestor, same-profile attack evidence, or restart cleanup proof exists.
 Therefore the product remains `NOT_IMPLEMENTED`, `NOT_ATTESTED`, and
 `NOT_READY`; runtime enforcement and external evidence remain absent.
 

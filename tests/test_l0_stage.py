@@ -22,6 +22,8 @@ from tests.test_durable import (
     _verification_source,
 )
 from tests.test_l0 import valid_raw
+from tests.test_l0_supply import ExactSupplyVerifier
+import tests.test_l0_supply as l0_supply_tests
 
 
 class L0CommittedIntentStageTests(unittest.TestCase):
@@ -32,14 +34,27 @@ class L0CommittedIntentStageTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def profile(self) -> l0.CompiledL0Profile:
-        result = l0.compile_profile(valid_raw())
-        self.assertEqual(result.outcome, l0.L0Outcome.COMPILED_DRAFT)
-        self.assertIsNotNone(result.profile)
-        return result.profile
+    def supply(self, *, expires_at: str = "2026-08-25T13:00:00Z") -> tuple[l0.CompiledL0Profile, l0.SupplyVerification]:
+        """Create an externally verified fixture; the frozen record is rechecked at staging."""
 
-    def stage_setup(self) -> tuple[l0.CompiledL0Profile, DurableStore, object, str, int, dict[str, object], str]:
-        profile = self.profile()
+        fixture = l0_supply_tests.L0SupplyBoundaryTests(methodName="runTest")
+        fixture.setUp()
+        try:
+            profile, measurement, raw, descriptors, _ = fixture.fixture()
+            raw["placement"]["expires_at"] = expires_at
+            with patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION):
+                result = l0.verify_supply(profile, measurement, raw, verifier=ExactSupplyVerifier())
+            self.assertEqual((result.outcome, result.reason), (l0.L0Outcome.VERIFIED, l0.L0Reason.SUPPLY_VERIFIED))
+            self.assertIsNotNone(result.verification)
+            return profile, result.verification
+        finally:
+            fixture.close(descriptors)
+            fixture.tearDown()
+
+    def stage_setup(
+        self, *, supply_expires_at: str = "2026-08-25T13:00:00Z"
+    ) -> tuple[l0.CompiledL0Profile, l0.SupplyVerification, DurableStore, object, str, int, dict[str, object], str]:
+        profile, supply = self.supply(expires_at=supply_expires_at)
         content = "updated"
         scope = l0._hash_text(l0._canonical({"kind": "PATH_EXACT", "value": "/staging/artifact.txt"}))
         bootstrap = _bootstrap_raw()
@@ -60,7 +75,10 @@ class L0CommittedIntentStageTests(unittest.TestCase):
             request=request,
             audience_id="executor-3",
             profile_digest=profile.profile_digest,
+            placement_digest=supply.placement_digest,
             session_id="session-1",
+            revocation_epoch=supply.revocation_epoch,
+            fencing_epoch=supply.fencing_epoch,
             budget=[{**issue["budget"][0], "scope_digest": scope}],
         )
         verifier = ExactVerifier()
@@ -93,7 +111,7 @@ class L0CommittedIntentStageTests(unittest.TestCase):
             {"canonical_path": "/staging/artifact.txt", "descriptor_id": "stage-target", "root_id": "stage-root", "resolution_epoch": 1},
         )
         self.assertIsNotNone(binding.binding)
-        return profile, store, claim.dispatch_claim, content, descriptor, binding.binding.data(), str(target)
+        return profile, supply, store, claim.dispatch_claim, content, descriptor, binding.binding.data(), str(target)
 
     def stage_raw(self, claim: object, content: str, binding: dict[str, object]) -> dict[str, object]:
         return {
@@ -105,36 +123,73 @@ class L0CommittedIntentStageTests(unittest.TestCase):
             "target_binding": binding,
         }
 
+    def stage(
+        self,
+        profile: object,
+        claim: object,
+        supply: object,
+        descriptor: int,
+        raw: object,
+        *,
+        claim_verifier: object | None = None,
+        supply_verifier: object | None = None,
+        fault: object | None = None,
+    ) -> l0.StageResult:
+        with patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION):
+            return l0.stage_committed_intent(
+                profile,
+                claim,
+                supply,
+                descriptor,
+                raw,
+                executor_claim_verifier=claim_verifier,
+                supply_verifier=supply_verifier,
+                _fault=fault,
+            )
+
     def test_exact_claim_stages_once_inside_temp_0700_root_and_replay_never_writes_again(self) -> None:
-        profile, _, claim, content, descriptor, binding, target = self.stage_setup()
+        profile, supply, _, claim, content, descriptor, binding, target = self.stage_setup()
         try:
             raw = self.stage_raw(claim, content, binding)
-            result = l0.stage_committed_intent(profile, claim, descriptor, raw, executor_claim_verifier=ExactVerifier())
+            result = self.stage(profile, claim, supply, descriptor, raw, claim_verifier=ExactVerifier(), supply_verifier=ExactSupplyVerifier())
             self.assertEqual((result.outcome, result.reason), (l0.L0Outcome.STAGED, l0.L0Reason.STAGED))
             self.assertIsNotNone(result.record)
             self.assertEqual(Path(target).read_text(encoding="utf-8"), content)
-            replay = l0.stage_committed_intent(profile, claim, descriptor, raw, executor_claim_verifier=ExactVerifier())
+            replay = self.stage(profile, claim, supply, descriptor, raw, claim_verifier=ExactVerifier(), supply_verifier=ExactSupplyVerifier())
             self.assertEqual(replay.outcome, l0.L0Outcome.STOP)
             self.assertEqual(Path(target).read_text(encoding="utf-8"), content)
         finally:
             os.close(descriptor)
 
-    def test_forged_claim_bindings_profile_material_and_target_are_rejected_before_effect(self) -> None:
-        profile, _, claim, content, descriptor, binding, target = self.stage_setup()
+    def test_claim_and_supply_substitutions_are_rejected_before_effect(self) -> None:
+        profile, supply, _, claim, content, descriptor, binding, target = self.stage_setup()
         try:
             raw = self.stage_raw(claim, content, binding)
             cases = (
-                (profile, True, raw, None),
-                (profile, replace(claim, audience_id="other-executor"), raw, ExactVerifier()),
-                (replace(profile, profile_digest=_digest("f")), claim, raw, ExactVerifier()),
-                (profile, claim, {**raw, "content_digest": _digest("e")}, ExactVerifier()),
-                (profile, claim, {**raw, "target_binding": {**binding, "final_digest": _digest("d")}}, ExactVerifier()),
-                (profile, claim, raw, None),
+                (profile, True, supply, raw, ExactVerifier(), ExactSupplyVerifier()),
+                (profile, replace(claim, audience_id="other-executor"), supply, raw, ExactVerifier(), ExactSupplyVerifier()),
+                (replace(profile, profile_digest=_digest("f")), claim, supply, raw, ExactVerifier(), ExactSupplyVerifier()),
+                (profile, claim, supply, {**raw, "content_digest": _digest("e")}, ExactVerifier(), ExactSupplyVerifier()),
+                (profile, claim, supply, {**raw, "target_binding": {**binding, "final_digest": _digest("d")}}, ExactVerifier(), ExactSupplyVerifier()),
+                (profile, claim, None, raw, ExactVerifier(), ExactSupplyVerifier()),
+                (profile, claim, replace(supply, supply_digest=_digest("b")), raw, ExactVerifier(), ExactSupplyVerifier()),
+                (profile, claim, replace(supply, placement_digest=_digest("c")), raw, ExactVerifier(), ExactSupplyVerifier()),
+                (profile, claim, replace(supply, session_id="other-session"), raw, ExactVerifier(), ExactSupplyVerifier()),
+                (profile, claim, replace(supply, fencing_epoch=12), raw, ExactVerifier(), ExactSupplyVerifier()),
+                (profile, claim, replace(supply, revocation_epoch=8), raw, ExactVerifier(), ExactSupplyVerifier()),
+                (profile, claim, supply, raw, None, ExactSupplyVerifier()),
+                (profile, claim, supply, raw, ExactVerifier(), None),
             )
-            for tested_profile, tested_claim, tested_raw, verifier in cases:
-                with self.subTest(tested_claim=tested_claim, verifier=verifier):
-                    result = l0.stage_committed_intent(
-                        tested_profile, tested_claim, descriptor, deepcopy(tested_raw), executor_claim_verifier=verifier
+            for tested_profile, tested_claim, tested_supply, tested_raw, claim_verifier, supply_verifier in cases:
+                with self.subTest(tested_claim=tested_claim, tested_supply=tested_supply):
+                    result = self.stage(
+                        tested_profile,
+                        tested_claim,
+                        tested_supply,
+                        descriptor,
+                        deepcopy(tested_raw),
+                        claim_verifier=claim_verifier,
+                        supply_verifier=supply_verifier,
                     )
                     self.assertEqual(result.outcome, l0.L0Outcome.STOP)
                     self.assertIsNone(result.record)
@@ -142,15 +197,33 @@ class L0CommittedIntentStageTests(unittest.TestCase):
         finally:
             os.close(descriptor)
 
+    def test_stale_externally_verified_supply_stops_before_staging_effect(self) -> None:
+        profile, supply, _, claim, content, descriptor, binding, target = self.stage_setup(supply_expires_at="2026-08-25T12:01:00Z")
+        try:
+            result = self.stage(
+                profile,
+                claim,
+                supply,
+                descriptor,
+                self.stage_raw(claim, content, binding),
+                claim_verifier=ExactVerifier(),
+                supply_verifier=ExactSupplyVerifier(),
+            )
+            self.assertEqual(result.outcome, l0.L0Outcome.STOP)
+            self.assertIsNone(result.record)
+            self.assertEqual(Path(target).read_text(encoding="utf-8"), "old")
+        finally:
+            os.close(descriptor)
+
     def test_post_effect_fault_is_quarantined_and_cannot_retry_the_same_binding(self) -> None:
-        profile, _, claim, content, descriptor, binding, target = self.stage_setup()
+        profile, supply, _, claim, content, descriptor, binding, target = self.stage_setup()
         try:
             raw = self.stage_raw(claim, content, binding)
             with patch.object(l0.os, "fsync", side_effect=OSError("forced post-write failure")):
-                uncertain = l0.stage_committed_intent(profile, claim, descriptor, raw, executor_claim_verifier=ExactVerifier())
+                uncertain = self.stage(profile, claim, supply, descriptor, raw, claim_verifier=ExactVerifier(), supply_verifier=ExactSupplyVerifier())
             self.assertEqual((uncertain.outcome, uncertain.reason), (l0.L0Outcome.QUARANTINED, l0.L0Reason.STAGE_OUTCOME_UNKNOWN))
             self.assertEqual(Path(target).read_text(encoding="utf-8"), content)
-            retry = l0.stage_committed_intent(profile, claim, descriptor, raw, executor_claim_verifier=ExactVerifier())
+            retry = self.stage(profile, claim, supply, descriptor, raw, claim_verifier=ExactVerifier(), supply_verifier=ExactSupplyVerifier())
             self.assertEqual(retry.outcome, l0.L0Outcome.STOP)
         finally:
             os.close(descriptor)

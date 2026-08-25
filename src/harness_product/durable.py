@@ -41,7 +41,7 @@ from .model import (
 
 
 FORMAT_VERSION = 1
-STORE_SCHEMA_VERSION = 2
+STORE_SCHEMA_VERSION = 3
 _APPLICATION_ID = 0x48524E53
 _MAX_INTEGER = (1 << 63) - 1
 _MAX_VECTOR = 256
@@ -56,6 +56,7 @@ _TABLES = frozenset(
         "capabilities",
         "dispatch_attempt_claims",
         "dispatch_intents",
+        "execution_sessions",
         "journal_entries",
         "outbox_events",
         "store_meta",
@@ -182,6 +183,10 @@ class DurableReason(str, Enum):
     CAPABILITY_ISSUED = "CAPABILITY_ISSUED"
     INTENT_COMMITTED = "INTENT_COMMITTED"
     DISPATCH_ATTEMPT_CLAIMED = "DISPATCH_ATTEMPT_CLAIMED"
+    RUNTIME_SESSION_PREPARED = "RUNTIME_SESSION_PREPARED"
+    RUNTIME_SESSION_STOPPED = "RUNTIME_SESSION_STOPPED"
+    RUNTIME_SESSION_TIMED_OUT = "RUNTIME_SESSION_TIMED_OUT"
+    RUNTIME_SESSION_QUARANTINED = "RUNTIME_SESSION_QUARANTINED"
     REVOKED = "REVOKED"
     FENCE_ADVANCED = "FENCE_ADVANCED"
     SPENT = "SPENT"
@@ -210,6 +215,7 @@ class DurableReason(str, Enum):
     CORRUPT_STORE = "CORRUPT_STORE"
     ACKNOWLEDGEMENT_UNKNOWN = "ACKNOWLEDGEMENT_UNKNOWN"
     EXECUTOR_VERIFIER_ABSENT = "EXECUTOR_VERIFIER_ABSENT"
+    RUNTIME_VERIFIER_ABSENT = "RUNTIME_VERIFIER_ABSENT"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -236,6 +242,17 @@ class CapabilityVerifier(Protocol):
 
 
 class ExecutorClaimVerifier(Protocol):
+    def verify(
+        self,
+        payload: bytes,
+        record: bytes,
+        observed_at: str,
+    ) -> VerificationResult: ...
+
+
+class RuntimeSessionVerifier(Protocol):
+    """External verifier boundary for an exact pre-exec runtime placement."""
+
     def verify(
         self,
         payload: bytes,
@@ -285,6 +302,31 @@ class RecoveryIntent:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeSession:
+    session_record_id: str
+    transaction_id: str
+    claim_digest: str
+    state: str
+    profile_digest: str
+    placement_digest: str
+    executor_id: str
+    session_id: str
+    fencing_epoch: int
+    prepared_at: str
+    runtime_bindings_json: str
+    runtime_verification_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecoverySession:
+    session_record_id: str
+    transaction_id: str
+    claim_digest: str
+    state: str
+    fencing_epoch: int
+
+
+@dataclass(frozen=True, slots=True)
 class DurableResult:
     outcome: DurableOutcome
     reason: DurableReason
@@ -293,6 +335,8 @@ class DurableResult:
     journal_sequence: int | None = None
     recovery_intents: tuple[RecoveryIntent, ...] = ()
     dispatch_claim: DispatchClaim | None = None
+    runtime_session: RuntimeSession | None = None
+    recovery_sessions: tuple[RecoverySession, ...] = ()
 
     @property
     def committed(self) -> bool:
@@ -401,6 +445,187 @@ def _parse_time(value: object) -> datetime | None:
         return None
 
 
+_RUNTIME_BINDING_KEYS = frozenset(
+    {
+        "binding_version", "process", "namespaces", "cgroup", "mounts",
+        "writable_scope", "broker_ipc", "fd_allowlist", "cleanup",
+    }
+)
+_RUNTIME_PROCESS_KEYS = frozenset(
+    {
+        "session_record_id", "process_tree_id", "transaction_id", "claim_digest", "lineage_root", "session_id",
+        "subject_instance_id", "worker_principal", "broker_principal", "executor_principal",
+        "broker_session", "executor_session", "fencing_epoch", "revocation_epoch",
+        "profile_digest", "measurement_digest", "supply_digest", "placement_digest",
+        "runtime_digest",
+    }
+)
+_RUNTIME_NAMESPACE_KEYS = frozenset(
+    {"worker_principal", "worker_session", "uid", "gid", "security_label", "credential_namespace", "namespace_ids"}
+)
+_RUNTIME_NAMESPACE_ID_KEYS = frozenset({"user", "mount", "pid", "ipc", "uts", "network", "cgroup"})
+_RUNTIME_CGROUP_KEYS = frozenset(
+    {"path", "controllers", "device_major", "device_minor", "delegated", "identity_digest"}
+)
+_RUNTIME_MOUNT_KEYS = frozenset(
+    {"rootfs", "read_only_inputs", "worker_writable_mounts", "staging_visible_to_worker"}
+)
+_RUNTIME_DIRECTORY_KEYS = frozenset(
+    {"kind", "descriptor", "descriptor_id", "device", "inode", "mount_id", "mode", "type"}
+)
+_RUNTIME_REGULAR_KEYS = _RUNTIME_DIRECTORY_KEYS | frozenset({"size", "bytes_digest"})
+_RUNTIME_INPUT_KEYS = _RUNTIME_REGULAR_KEYS | frozenset({"mount_path"})
+_RUNTIME_PIPE_KEYS = frozenset({"kind", "descriptor", "device", "inode", "type"})
+_RUNTIME_WRITABLE_KEYS = frozenset(
+    {"root_id", "root_identity", "mount_id", "mount_identity", "files", "inodes", "bytes"}
+)
+_RUNTIME_BROKER_KEYS = _RUNTIME_DIRECTORY_KEYS | frozenset(
+    {
+        "socket_name", "socket_device", "socket_inode", "worker_endpoint", "broker_endpoint",
+        "transport", "message_binding_digest",
+    }
+)
+_RUNTIME_CLEANUP_KEYS = frozenset(
+    {"cleanup_id", "staging_root_id", "reuse_forbidden", "require_cgroup_empty", "quarantine_on_failure"}
+)
+
+
+def _valid_descriptor_row(value: object, keys: frozenset[str], kinds: frozenset[str]) -> bool:
+    return (
+        _closed_dict(value, keys)
+        and type(value.get("kind")) is str
+        and value.get("kind") in kinds
+        and _bounded_integer(value.get("descriptor"))
+        and _bounded_integer(value.get("device"))
+        and _bounded_integer(value.get("inode"))
+        and type(value.get("type")) is str
+    )
+
+
+def _valid_runtime_bindings(value: object) -> bool:
+    """Accept one closed full runtime object inventory, never digest-only claims."""
+
+    if not _closed_dict(value, _RUNTIME_BINDING_KEYS) or value.get("binding_version") != FORMAT_VERSION:
+        return False
+    process = value.get("process")
+    namespaces = value.get("namespaces")
+    cgroup = value.get("cgroup")
+    mounts = value.get("mounts")
+    writable = value.get("writable_scope")
+    broker = value.get("broker_ipc")
+    inventory = value.get("fd_allowlist")
+    cleanup = value.get("cleanup")
+    if (
+        not _closed_dict(process, _RUNTIME_PROCESS_KEYS)
+        or not all(
+            _valid_identifier(process.get(field))
+            for field in (
+                "session_record_id", "process_tree_id", "transaction_id", "session_id", "subject_instance_id",
+                "worker_principal", "broker_principal", "executor_principal", "broker_session",
+                "executor_session",
+            )
+        )
+        or not all(
+            _valid_digest(process.get(field))
+            for field in (
+                "claim_digest", "lineage_root", "profile_digest", "measurement_digest",
+                "supply_digest", "placement_digest", "runtime_digest",
+            )
+        )
+        or not _bounded_integer(process.get("fencing_epoch"), 1)
+        or not _bounded_integer(process.get("revocation_epoch"))
+        or len({process["worker_principal"], process["broker_principal"], process["executor_principal"]}) != 3
+        or len({process["session_id"], process["broker_session"], process["executor_session"]}) != 3
+    ):
+        return False
+    if (
+        not _closed_dict(namespaces, _RUNTIME_NAMESPACE_KEYS)
+        or not _closed_dict(namespaces.get("namespace_ids"), _RUNTIME_NAMESPACE_ID_KEYS)
+        or not all(_valid_identifier(namespaces.get(field)) for field in ("worker_principal", "worker_session", "security_label", "credential_namespace"))
+        or not all(_bounded_integer(namespaces.get(field), 1) for field in ("uid", "gid"))
+        or not all(_valid_identifier(item) for item in namespaces["namespace_ids"].values())
+        or len(set(namespaces["namespace_ids"].values())) != len(_RUNTIME_NAMESPACE_ID_KEYS)
+    ):
+        return False
+    if (
+        not _closed_dict(cgroup, _RUNTIME_CGROUP_KEYS)
+        or type(cgroup.get("path")) is not str
+        or not cgroup["path"].startswith("/")
+        or type(cgroup.get("controllers")) is not list
+        or cgroup["controllers"] != ["cpu", "io", "memory", "pids"]
+        or cgroup.get("delegated") is not True
+        or not all(_bounded_integer(cgroup.get(field)) for field in ("device_major", "device_minor"))
+        or not _valid_digest(cgroup.get("identity_digest"))
+    ):
+        return False
+    if (
+        not _closed_dict(mounts, _RUNTIME_MOUNT_KEYS)
+        or not _valid_descriptor_row(mounts.get("rootfs"), _RUNTIME_DIRECTORY_KEYS, frozenset({"ROOTFS"}))
+        or mounts["rootfs"].get("type") != "DIRECTORY"
+        or type(mounts.get("read_only_inputs")) is not list
+        or len(mounts["read_only_inputs"]) > 16
+        or any(
+            not _valid_descriptor_row(row, _RUNTIME_INPUT_KEYS, frozenset({"READ_ONLY_INPUT"}))
+            or not _valid_identifier(row.get("descriptor_id"))
+            or not _valid_digest(row.get("bytes_digest"))
+            or type(row.get("mount_path")) is not str
+            for row in mounts["read_only_inputs"]
+        )
+        or mounts.get("worker_writable_mounts") != []
+        or mounts.get("staging_visible_to_worker") is not False
+    ):
+        return False
+    if (
+        not _closed_dict(writable, _RUNTIME_WRITABLE_KEYS)
+        or not all(_valid_identifier(writable.get(field)) for field in ("root_id", "mount_id"))
+        or not all(_valid_digest(writable.get(field)) for field in ("root_identity", "mount_identity"))
+        or not all(_bounded_integer(writable.get(field), 1) for field in ("files", "inodes", "bytes"))
+    ):
+        return False
+    if (
+        not _valid_descriptor_row(broker, _RUNTIME_BROKER_KEYS, frozenset({"BROKER_IPC_ROOT"}))
+        or broker.get("type") != "DIRECTORY"
+        or not all(_valid_identifier(broker.get(field)) for field in ("descriptor_id", "socket_name", "worker_endpoint", "broker_endpoint"))
+        or not all(_bounded_integer(broker.get(field)) for field in ("socket_device", "socket_inode"))
+        or broker.get("transport") != "UNIX_SEQPACKET"
+        or not _valid_digest(broker.get("message_binding_digest"))
+    ):
+        return False
+    if type(inventory) is not list or len(inventory) < 6 or len(inventory) > 23:
+        return False
+    descriptors: list[int] = []
+    for row in inventory:
+        if type(row) is not dict:
+            return False
+        kind = row.get("kind")
+        if kind in {"ROOTFS", "BROKER_IPC_ROOT"}:
+            valid = _valid_descriptor_row(row, _RUNTIME_DIRECTORY_KEYS, frozenset({kind}))
+        elif kind == "READ_ONLY_INPUT":
+            valid = _valid_descriptor_row(row, _RUNTIME_INPUT_KEYS, frozenset({kind})) and _valid_digest(row.get("bytes_digest"))
+        elif kind in {"SECCOMP_PROFILE", "WORKER_TOOL"}:
+            valid = _valid_descriptor_row(row, _RUNTIME_REGULAR_KEYS, frozenset({kind})) and _valid_digest(row.get("bytes_digest"))
+        elif kind in {"START_GATE", "START_GATE_RELEASE", "STATUS_SOURCE", "STATUS_SINK"}:
+            valid = _valid_descriptor_row(row, _RUNTIME_PIPE_KEYS, frozenset({kind})) and row.get("type") == "PIPE"
+        else:
+            valid = False
+        if not valid:
+            return False
+        descriptors.append(row["descriptor"])
+    if len(set(descriptors)) != len(descriptors):
+        return False
+    return (
+        _closed_dict(cleanup, _RUNTIME_CLEANUP_KEYS)
+        and _valid_identifier(cleanup.get("cleanup_id"))
+        and _valid_identifier(cleanup.get("staging_root_id"))
+        and cleanup.get("reuse_forbidden") is True
+        and cleanup.get("require_cgroup_empty") is True
+        and cleanup.get("quarantine_on_failure") is True
+        and process["worker_principal"] == namespaces["worker_principal"]
+        and process["session_id"] == namespaces["worker_session"]
+        and writable["root_id"] == cleanup["staging_root_id"]
+    )
+
+
 def _time_text(value: datetime) -> str:
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -490,7 +715,7 @@ _SCHEMA = (
     """
     CREATE TABLE store_meta (
         id INTEGER PRIMARY KEY CHECK (id = 1),
-        schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+        schema_version INTEGER NOT NULL CHECK (schema_version = 3),
         lineage_root TEXT,
         revocation_epoch INTEGER NOT NULL CHECK (revocation_epoch >= 0),
         fencing_epoch INTEGER NOT NULL CHECK (fencing_epoch >= 0),
@@ -600,6 +825,35 @@ _SCHEMA = (
     ) STRICT
     """,
     """
+    CREATE TABLE execution_sessions (
+        session_record_id TEXT PRIMARY KEY,
+        transaction_id TEXT NOT NULL UNIQUE REFERENCES dispatch_attempt_claims(transaction_id),
+        claim_digest TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL CHECK (state IN ('PREPARED', 'STOPPED', 'TIMED_OUT', 'QUARANTINED')),
+        profile_digest TEXT NOT NULL,
+        placement_digest TEXT NOT NULL,
+        executor_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        fencing_epoch INTEGER NOT NULL CHECK (fencing_epoch >= 0),
+        prepared_at TEXT NOT NULL,
+        runtime_bindings_json TEXT NOT NULL,
+        runtime_bindings_digest TEXT NOT NULL,
+        runtime_verification_json TEXT NOT NULL,
+        runtime_verification_digest TEXT NOT NULL,
+        prepared_journal_sequence INTEGER NOT NULL UNIQUE REFERENCES journal_entries(sequence)
+            DEFERRABLE INITIALLY DEFERRED,
+        terminal_at TEXT,
+        terminal_reason TEXT,
+        terminal_journal_sequence INTEGER UNIQUE REFERENCES journal_entries(sequence)
+            DEFERRABLE INITIALLY DEFERRED,
+        CHECK ((state = 'PREPARED' AND terminal_at IS NULL AND terminal_reason IS NULL
+                AND terminal_journal_sequence IS NULL)
+            OR (state IN ('STOPPED', 'TIMED_OUT', 'QUARANTINED')
+                AND terminal_at IS NOT NULL AND terminal_reason IS NOT NULL
+                AND terminal_journal_sequence IS NOT NULL))
+    ) STRICT
+    """,
+    """
     CREATE TABLE budget_reservations (
         transaction_id TEXT NOT NULL REFERENCES dispatch_intents(transaction_id),
         name TEXT NOT NULL,
@@ -651,10 +905,16 @@ _SCHEMA = (
     "CREATE INDEX reservations_disposition ON budget_reservations(disposition)",
 )
 
-_TABLES_V1 = _TABLES - {"dispatch_attempt_claims"}
+_TABLES_V2 = _TABLES - {"execution_sessions"}
+_TABLES_V1 = _TABLES_V2 - {"dispatch_attempt_claims"}
+_SCHEMA_V2 = tuple(
+    statement.replace("schema_version = 3", "schema_version = 2")
+    for statement in _SCHEMA
+    if "execution_sessions" not in statement
+)
 _SCHEMA_V1 = tuple(
     statement.replace("schema_version = 2", "schema_version = 1")
-    for statement in _SCHEMA
+    for statement in _SCHEMA_V2
     if "dispatch_attempt_claims" not in statement
 )
 
@@ -669,12 +929,14 @@ class DurableStore:
         *,
         no_effect_verifier: object | None = None,
         executor_claim_verifier: ExecutorClaimVerifier | None = None,
+        runtime_session_verifier: RuntimeSessionVerifier | None = None,
         _fault: object | None = None,
     ) -> None:
         self._path = path if type(path) is str else ""
         self._verifier = verifier
         self._no_effect_verifier = no_effect_verifier
         self._executor_claim_verifier = executor_claim_verifier
+        self._runtime_session_verifier = runtime_session_verifier
         self._fault = _fault
         self._usable = False
         self._stopped_reason = DurableReason.MALFORMED_INPUT
@@ -737,18 +999,22 @@ class DurableStore:
                 raise
             return
         if version == 1 and application_id == _APPLICATION_ID and tables == _TABLES_V1:
-            self._migrate_v1(connection)
+            self._migrate_v1_to_v2(connection)
+            self._migrate_v2_to_v3(connection)
+            return
+        if version == 2 and application_id == _APPLICATION_ID and tables == _TABLES_V2:
+            self._migrate_v2_to_v3(connection)
             return
         if version != STORE_SCHEMA_VERSION or application_id != _APPLICATION_ID or tables != _TABLES:
             raise _StoreCorrupt("unknown durable store schema")
 
-    def _migrate_v1(self, connection: sqlite3.Connection) -> None:
+    def _migrate_v1_to_v2(self, connection: sqlite3.Connection) -> None:
         self._audit_legacy_v1(connection)
         connection.execute("BEGIN IMMEDIATE")
         try:
             self._audit_legacy_v1(connection)
             connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v1")
-            connection.execute(_SCHEMA[0])
+            connection.execute(_SCHEMA_V2[0])
             connection.execute(
                 """
                 INSERT INTO store_meta
@@ -757,11 +1023,39 @@ class DurableStore:
                        outbox_head_sequence, outbox_head_digest
                 FROM store_meta_v1
                 """,
-                (STORE_SCHEMA_VERSION,),
+                (2,),
             )
             connection.execute("DROP TABLE store_meta_v1")
-            claim_schema = next(statement for statement in _SCHEMA if "dispatch_attempt_claims" in statement)
+            claim_schema = next(statement for statement in _SCHEMA_V2 if "dispatch_attempt_claims" in statement)
             connection.execute(claim_schema)
+            connection.execute("PRAGMA user_version=2")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def _migrate_v2_to_v3(self, connection: sqlite3.Connection) -> None:
+        """Add the pre-exec session table atomically after a v2 integrity audit."""
+
+        self._audit_legacy_v2(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._audit_legacy_v2(connection)
+            connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v2")
+            connection.execute(_SCHEMA[0])
+            connection.execute(
+                """
+                INSERT INTO store_meta
+                SELECT id, ?, lineage_root, revocation_epoch, fencing_epoch,
+                       dispatch_counter, journal_head_sequence, journal_head_digest,
+                       outbox_head_sequence, outbox_head_digest
+                FROM store_meta_v2
+                """,
+                (STORE_SCHEMA_VERSION,),
+            )
+            connection.execute("DROP TABLE store_meta_v2")
+            session_schema = next(statement for statement in _SCHEMA if "execution_sessions" in statement)
+            connection.execute(session_schema)
             connection.execute(f"PRAGMA user_version={STORE_SCHEMA_VERSION}")
             connection.commit()
         except Exception:
@@ -799,6 +1093,36 @@ class DurableStore:
         self._audit_history(connection, meta)
         self._audit_capabilities(connection, lineage)
         self._audit_dispatch(connection, meta)
+
+    def _audit_legacy_v2(self, connection: sqlite3.Connection) -> None:
+        if connection.execute("PRAGMA user_version").fetchone()[0] != 2:
+            raise _StoreCorrupt("legacy v2 schema version mismatch")
+        if connection.execute("PRAGMA application_id").fetchone()[0] != _APPLICATION_ID:
+            raise _StoreCorrupt("legacy v2 application id mismatch")
+        self._audit_schema(connection, schema=_SCHEMA_V2, tables=_TABLES_V2)
+        if tuple(connection.execute("PRAGMA quick_check").fetchone()) != ("ok",):
+            raise _StoreCorrupt("legacy v2 SQLite quick check failed")
+        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise _StoreCorrupt("legacy v2 foreign key mismatch")
+        meta_rows = connection.execute("SELECT * FROM store_meta").fetchall()
+        if len(meta_rows) != 1 or meta_rows[0]["id"] != 1 or meta_rows[0]["schema_version"] != 2:
+            raise _StoreCorrupt("invalid legacy v2 metadata")
+        meta = meta_rows[0]
+        lineage = meta["lineage_root"]
+        if lineage is not None and not _valid_digest(lineage):
+            raise _StoreCorrupt("invalid legacy v2 lineage")
+        for field in (
+            "revocation_epoch", "fencing_epoch", "dispatch_counter",
+            "journal_head_sequence", "outbox_head_sequence",
+        ):
+            if not _bounded_integer(meta[field]):
+                raise _StoreCorrupt("invalid legacy v2 monotonic metadata")
+        self._audit_budgets(connection, lineage)
+        self._audit_chains(connection, meta)
+        self._audit_history(connection, meta)
+        self._audit_capabilities(connection, lineage)
+        self._audit_dispatch(connection, meta)
+        self._audit_claims(connection, meta)
 
     def _audit(self, connection: sqlite3.Connection) -> None:
         if connection.execute("PRAGMA user_version").fetchone()[0] != STORE_SCHEMA_VERSION:
@@ -844,6 +1168,7 @@ class DurableStore:
         self._audit_capabilities(connection, lineage)
         self._audit_dispatch(connection, meta)
         self._audit_claims(connection, meta)
+        self._audit_sessions(connection, meta)
 
     def _audit_schema(
         self,
@@ -993,6 +1318,10 @@ class DurableStore:
             "CAPABILITY_ISSUED",
             "CAPABILITY_CONSUMED_WITH_INTENT",
             "DISPATCH_ATTEMPT_CLAIMED",
+            "RUNTIME_SESSION_PREPARED",
+            "RUNTIME_SESSION_STOPPED",
+            "RUNTIME_SESSION_TIMED_OUT",
+            "RUNTIME_SESSION_QUARANTINED",
             "CAPABILITY_REVOKED",
             "FENCE_ADVANCED",
             "BUDGET_TERMINAL_SPENT",
@@ -1058,6 +1387,7 @@ class DurableStore:
                 "CAPABILITY_ISSUED",
                 "CAPABILITY_CONSUMED_WITH_INTENT",
                 "DISPATCH_ATTEMPT_CLAIMED",
+                "RUNTIME_SESSION_PREPARED",
             }:
                 if payload.get("revocation_epoch", revocation_epoch) != revocation_epoch:
                     raise _StoreCorrupt("event revocation history mismatch")
@@ -1089,6 +1419,23 @@ class DurableStore:
         )
         if observed_counts != expected_counts:
             raise _StoreCorrupt("transition history cardinality mismatch")
+        if connection.execute("PRAGMA user_version").fetchone()[0] != STORE_SCHEMA_VERSION:
+            return
+        session_counts = {
+            row["event_type"]: row["amount"]
+            for row in connection.execute(
+                "SELECT event_type, COUNT(*) AS amount FROM journal_entries "
+                "WHERE event_type LIKE 'RUNTIME_SESSION_%' GROUP BY event_type"
+            )
+        }
+        session_rows = connection.execute("SELECT state FROM execution_sessions").fetchall()
+        if session_counts.get("RUNTIME_SESSION_PREPARED", 0) != len(session_rows):
+            raise _StoreCorrupt("runtime session prepare cardinality mismatch")
+        for state in ("STOPPED", "TIMED_OUT", "QUARANTINED"):
+            if session_counts.get("RUNTIME_SESSION_" + state, 0) != sum(
+                row["state"] == state for row in session_rows
+            ):
+                raise _StoreCorrupt("runtime session terminal cardinality mismatch")
 
     def _audit_capabilities(self, connection: sqlite3.Connection, lineage: str | None) -> None:
         for row in connection.execute("SELECT * FROM capabilities"):
@@ -1702,6 +2049,109 @@ class DurableStore:
         ).fetchone()[0]
         if event_count != len(rows) or len(rows) > meta["dispatch_counter"]:
             raise _StoreCorrupt("dispatch claim cardinality mismatch")
+
+    def _audit_sessions(self, connection: sqlite3.Connection, meta: sqlite3.Row) -> None:
+        rows = connection.execute("SELECT * FROM execution_sessions").fetchall()
+        for row in rows:
+            bindings = _json_value(row["runtime_bindings_json"])
+            verification = _json_value(row["runtime_verification_json"])
+            claim_row = connection.execute(
+                "SELECT * FROM dispatch_attempt_claims WHERE transaction_id=?",
+                (row["transaction_id"],),
+            ).fetchone()
+            if claim_row is None or not _valid_runtime_bindings(bindings):
+                raise _StoreCorrupt("runtime session binding mismatch")
+            claim = _json_value(claim_row["claim_json"])
+            process = bindings["process"]
+            payload = {
+                "runtime_session_version": FORMAT_VERSION,
+                "session_record_id": row["session_record_id"],
+                "transaction_id": row["transaction_id"],
+                "claim_digest": row["claim_digest"],
+                "profile_digest": row["profile_digest"],
+                "placement_digest": row["placement_digest"],
+                "executor_id": row["executor_id"],
+                "session_id": row["session_id"],
+                "fencing_epoch": row["fencing_epoch"],
+                "prepared_at": row["prepared_at"],
+                "runtime_bindings": bindings,
+                "claim": claim,
+            }
+            if (
+                not _closed_dict(verification, _VERIFICATION_RECORD_KEYS)
+                or verification.get("verification_version") != FORMAT_VERSION
+                or canonical_digest(bindings) != row["runtime_bindings_digest"]
+                or canonical_digest(verification) != row["runtime_verification_digest"]
+                or verification.get("payload_digest") != canonical_digest(payload)
+                or verification.get("bindings") != payload
+                or not all(_valid_identifier(verification.get(field)) for field in ("verifier_id", "issuer_id", "key_id"))
+                or not _valid_proof(verification.get("proof"))
+                or row["claim_digest"] != claim_row["claim_digest"]
+                or row["profile_digest"] != claim.get("profile_digest")
+                or row["placement_digest"] != claim.get("placement_digest")
+                or row["session_id"] != claim.get("session_id")
+                or row["fencing_epoch"] != claim.get("fencing_epoch")
+                or row["executor_id"] != claim.get("audience_id")
+                or process.get("transaction_id") != row["transaction_id"]
+                or process.get("session_record_id") != row["session_record_id"]
+                or process.get("claim_digest") != row["claim_digest"]
+                or process.get("lineage_root") != claim.get("lineage_root")
+                or process.get("profile_digest") != row["profile_digest"]
+                or process.get("placement_digest") != row["placement_digest"]
+                or process.get("session_id") != row["session_id"]
+                or process.get("fencing_epoch") != row["fencing_epoch"]
+                or process.get("revocation_epoch") != claim.get("revocation_epoch")
+                or process.get("executor_principal") != row["executor_id"]
+                or process.get("worker_principal") != claim.get("principal_id")
+                or _parse_time(row["prepared_at"]) is None
+            ):
+                raise _StoreCorrupt("runtime session record mismatch")
+            event = connection.execute(
+                "SELECT event_type, subject_id, payload_json FROM journal_entries WHERE sequence=?",
+                (row["prepared_journal_sequence"],),
+            ).fetchone()
+            expected_prepare = {
+                "session_record_id": row["session_record_id"],
+                "transaction_id": row["transaction_id"],
+                "claim_digest": row["claim_digest"],
+                "revocation_epoch": claim["revocation_epoch"],
+                "fencing_epoch": row["fencing_epoch"],
+                "runtime_session": payload,
+                "runtime_verification_digest": row["runtime_verification_digest"],
+            }
+            if (
+                event is None or tuple(event[:2]) != ("RUNTIME_SESSION_PREPARED", row["session_record_id"])
+                or _json_value(event["payload_json"]) != expected_prepare
+            ):
+                raise _StoreCorrupt("runtime session prepare event mismatch")
+            if row["state"] == "PREPARED":
+                continue
+            if row["state"] not in {"STOPPED", "TIMED_OUT", "QUARANTINED"}:
+                raise _StoreCorrupt("runtime session state mismatch")
+            terminal_event = connection.execute(
+                "SELECT event_type, subject_id, payload_json FROM journal_entries WHERE sequence=?",
+                (row["terminal_journal_sequence"],),
+            ).fetchone()
+            expected_terminal = {
+                "session_record_id": row["session_record_id"],
+                "transaction_id": row["transaction_id"],
+                "claim_digest": row["claim_digest"],
+                "state": row["state"],
+                "disposition": row["terminal_reason"],
+                "observed_at": row["terminal_at"],
+                "revocation_epoch": claim["revocation_epoch"],
+                "fencing_epoch": row["fencing_epoch"],
+            }
+            if (
+                _parse_time(row["terminal_at"]) is None
+                or row["terminal_reason"] not in {"RELEASED", "QUARANTINED_ESCROW"}
+                or terminal_event is None
+                or tuple(terminal_event[:2]) != ("RUNTIME_SESSION_" + row["state"], row["session_record_id"])
+                or _json_value(terminal_event["payload_json"]) != expected_terminal
+            ):
+                raise _StoreCorrupt("runtime session terminal event mismatch")
+        if len(rows) > meta["dispatch_counter"]:
+            raise _StoreCorrupt("runtime session cardinality mismatch")
 
     def _append_event(
         self,
@@ -2840,6 +3290,394 @@ class DurableStore:
             if connection is not None:
                 connection.close()
 
+    def _runtime_session_verification_is_valid(
+        self,
+        payload_text: str,
+        payload_digest: str,
+        verification: dict[str, object],
+        verification_text: str,
+        verification_digest: str,
+        observed_at: str,
+    ) -> bool:
+        try:
+            verifier = self._runtime_session_verifier
+            if verifier is None:
+                return False
+            result = verifier.verify(
+                payload_text.encode("utf-8"), verification_text.encode("utf-8"), observed_at
+            )
+            return (
+                type(result) is VerificationResult
+                and result.status is VerificationStatus.VERIFIED
+                and result.verifier_id == verification["verifier_id"]
+                and result.payload_digest == payload_digest
+                and result.record_digest == verification_digest
+            )
+        except Exception:
+            return False
+
+    def prepare_runtime_session(self, raw: object) -> DurableResult:
+        """Durably bind an exact runtime placement before any untrusted exec.
+
+        This operation only records a session.  It never creates processes, sockets,
+        mounts, or a retry; the injected verifier is the only authority boundary.
+        """
+
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        keys = frozenset(
+            {
+                "session_record_id", "transaction_id", "observed_at", "executor_id",
+                "profile_digest", "placement_digest", "session_id", "fencing_epoch",
+                "runtime_bindings", "runtime_verification",
+            }
+        )
+        verification_keys = frozenset({"verifier_id", "issuer_id", "key_id", "proof"})
+        if not _closed_dict(raw, keys):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if (
+            not all(_valid_identifier(raw[field]) for field in ("session_record_id", "transaction_id", "executor_id", "session_id"))
+            or _parse_time(raw["observed_at"]) is None
+            or not all(_valid_digest(raw[field]) for field in ("profile_digest", "placement_digest"))
+            or not _bounded_integer(raw["fencing_epoch"])
+            or not _valid_runtime_bindings(raw["runtime_bindings"])
+            or not _closed_dict(raw["runtime_verification"], verification_keys)
+            or not all(_valid_identifier(raw["runtime_verification"][field]) for field in ("verifier_id", "issuer_id", "key_id"))
+            or not _valid_proof(raw["runtime_verification"]["proof"])
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if self._runtime_session_verifier is None:
+            return _result(DurableOutcome.STOP, DurableReason.RUNTIME_VERIFIER_ABSENT)
+        bindings = raw["runtime_bindings"]
+        process = bindings["process"]
+        compared = {
+            "session_id": raw["session_id"],
+            "profile_digest": raw["profile_digest"],
+            "placement_digest": raw["placement_digest"],
+            "fencing_epoch": raw["fencing_epoch"],
+            "executor_principal": raw["executor_id"],
+            "transaction_id": raw["transaction_id"],
+            "session_record_id": raw["session_record_id"],
+        }
+        if any(process[field] != expected for field, expected in compared.items()):
+            return _result(DurableOutcome.DENY, DurableReason.BINDING_MISMATCH)
+        connection: sqlite3.Connection | None = None
+        try:
+            self._hit("runtime_session_before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("runtime_session_after_begin")
+            self._audit(connection)
+            meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+            claim_row = connection.execute(
+                "SELECT * FROM dispatch_attempt_claims WHERE transaction_id=?", (raw["transaction_id"],)
+            ).fetchone()
+            intent = connection.execute(
+                "SELECT * FROM dispatch_intents WHERE transaction_id=?", (raw["transaction_id"],)
+            ).fetchone()
+            if meta is None:
+                raise _StoreCorrupt("missing metadata")
+            if claim_row is None or intent is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.UNKNOWN_INTENT)
+            if connection.execute(
+                "SELECT 1 FROM execution_sessions WHERE transaction_id=? OR session_record_id=?",
+                (raw["transaction_id"], raw["session_record_id"]),
+            ).fetchone() is not None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.REPLAY)
+            capability = connection.execute(
+                "SELECT * FROM capabilities WHERE capability_id=?", (intent["capability_id"],)
+            ).fetchone()
+            if (
+                capability is None or intent["state"] != "PENDING"
+                or capability["state"] != "CONSUMED"
+                or capability["consumed_transaction_id"] != raw["transaction_id"]
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            if capability["revocation_epoch"] != meta["revocation_epoch"]:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.STALE_REVOCATION)
+            if any(
+                value != meta["fencing_epoch"]
+                for value in (capability["fencing_epoch"], intent["fencing_epoch"], claim_row["fencing_epoch"], raw["fencing_epoch"])
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.STALE_FENCE)
+            claim = _json_value(claim_row["claim_json"])
+            if (
+                raw["profile_digest"] != claim["profile_digest"]
+                or raw["placement_digest"] != claim_row["placement_digest"]
+                or raw["session_id"] != claim_row["session_id"]
+                or raw["executor_id"] != claim_row["audience_id"]
+                or process["claim_digest"] != claim_row["claim_digest"]
+                or process["lineage_root"] != claim["lineage_root"]
+                or process["revocation_epoch"] != claim["revocation_epoch"]
+                or process["worker_principal"] != claim["principal_id"]
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.BINDING_MISMATCH)
+            observed = _parse_time(raw["observed_at"])
+            not_before = _parse_time(capability["not_before"])
+            expires_at = _parse_time(capability["expires_at"])
+            if observed is None or not_before is None or expires_at is None or not (not_before <= observed < expires_at):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.EXPIRED)
+            if (
+                not self._stored_verification_is_valid(capability, raw["observed_at"])
+                or not self._executor_claim_verification_is_valid(
+                    claim_row["claim_json"], claim_row["claim_digest"],
+                    _json_value(claim_row["executor_verification_json"]),
+                    claim_row["executor_verification_json"], claim_row["executor_verification_digest"],
+                    raw["observed_at"],
+                )
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.CAPABILITY_INVALID)
+            payload = {
+                "runtime_session_version": FORMAT_VERSION,
+                "session_record_id": raw["session_record_id"],
+                "transaction_id": raw["transaction_id"],
+                "claim_digest": claim_row["claim_digest"],
+                "profile_digest": raw["profile_digest"],
+                "placement_digest": raw["placement_digest"],
+                "executor_id": raw["executor_id"],
+                "session_id": raw["session_id"],
+                "fencing_epoch": raw["fencing_epoch"],
+                "prepared_at": raw["observed_at"],
+                "runtime_bindings": bindings,
+                "claim": claim,
+            }
+            payload_text = _canonical_text(payload)
+            payload_digest = canonical_digest(payload)
+            verification = {
+                "verification_version": FORMAT_VERSION,
+                "verifier_id": raw["runtime_verification"]["verifier_id"],
+                "issuer_id": raw["runtime_verification"]["issuer_id"],
+                "key_id": raw["runtime_verification"]["key_id"],
+                "payload_digest": payload_digest,
+                "bindings": payload,
+                "proof": raw["runtime_verification"]["proof"],
+            }
+            verification_text = _canonical_text(verification)
+            verification_digest = canonical_digest(verification)
+            if not self._runtime_session_verification_is_valid(
+                payload_text, payload_digest, verification, verification_text, verification_digest, raw["observed_at"]
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.CAPABILITY_INVALID)
+            sequence = meta["journal_head_sequence"] + 1
+            connection.execute(
+                """INSERT INTO execution_sessions (
+                       session_record_id, transaction_id, claim_digest, state,
+                       profile_digest, placement_digest, executor_id, session_id,
+                       fencing_epoch, prepared_at, runtime_bindings_json,
+                       runtime_bindings_digest, runtime_verification_json,
+                       runtime_verification_digest, prepared_journal_sequence
+                   ) VALUES (?, ?, ?, 'PREPARED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    raw["session_record_id"], raw["transaction_id"], claim_row["claim_digest"],
+                    raw["profile_digest"], raw["placement_digest"], raw["executor_id"], raw["session_id"],
+                    raw["fencing_epoch"], raw["observed_at"], _canonical_text(bindings), canonical_digest(bindings),
+                    verification_text, verification_digest, sequence,
+                ),
+            )
+            event_payload = {
+                "session_record_id": raw["session_record_id"], "transaction_id": raw["transaction_id"],
+                "claim_digest": claim_row["claim_digest"], "revocation_epoch": claim["revocation_epoch"],
+                "fencing_epoch": raw["fencing_epoch"], "runtime_session": payload,
+                "runtime_verification_digest": verification_digest,
+            }
+            if self._append_event(connection, "RUNTIME_SESSION_PREPARED", raw["session_record_id"], event_payload) != sequence:
+                raise _StoreCorrupt("runtime session sequence mismatch")
+            self._hit("runtime_session_after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("runtime_session_after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            runtime_session = RuntimeSession(
+                raw["session_record_id"], raw["transaction_id"], claim_row["claim_digest"], "PREPARED",
+                raw["profile_digest"], raw["placement_digest"], raw["executor_id"], raw["session_id"],
+                raw["fencing_epoch"], raw["observed_at"], _canonical_text(bindings), verification_text,
+            )
+            return DurableResult(
+                DurableOutcome.COMMITTED, DurableReason.RUNTIME_SESSION_PREPARED,
+                transaction_id=raw["transaction_id"], journal_sequence=sequence, runtime_session=runtime_session,
+            )
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def finalize_runtime_session(self, raw: object) -> DurableResult:
+        """Close one prepared session and atomically release or quarantine its budget.
+
+        A stopped session releases only with independently verified no-effect
+        evidence.  Timeout and cleanup uncertainty are always escrowed.
+        """
+
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        keys = frozenset({"session_record_id", "observed_at", "state", "evidence"})
+        if not _closed_dict(raw, keys) or not _valid_identifier(raw["session_record_id"]) or _parse_time(raw["observed_at"]) is None:
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if type(raw["state"]) is not str or raw["state"] not in {"STOPPED", "TIMED_OUT", "QUARANTINED"}:
+            return _result(DurableOutcome.STOP, DurableReason.UNKNOWN_INPUT if type(raw["state"]) is str else DurableReason.MALFORMED_INPUT)
+        evidence = raw["evidence"]
+        no_effect_keys = frozenset({"verifier_id", "observer_id", "key_id", "proof"})
+        digest_keys = frozenset({"evidence_digest"})
+        required = no_effect_keys if raw["state"] == "STOPPED" else digest_keys
+        if not _closed_dict(evidence, required):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if required is no_effect_keys:
+            if not all(_valid_identifier(evidence[field]) for field in ("verifier_id", "observer_id", "key_id")) or not _valid_proof(evidence["proof"]):
+                return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        elif not _valid_digest(evidence["evidence_digest"]):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        connection: sqlite3.Connection | None = None
+        try:
+            self._hit("runtime_finalize_before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("runtime_finalize_after_begin")
+            self._audit(connection)
+            session = connection.execute(
+                "SELECT * FROM execution_sessions WHERE session_record_id=?", (raw["session_record_id"],)
+            ).fetchone()
+            if session is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.UNKNOWN_INTENT)
+            if session["state"] != "PREPARED":
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            intent = connection.execute(
+                "SELECT * FROM dispatch_intents WHERE transaction_id=?", (session["transaction_id"],)
+            ).fetchone()
+            if intent is None or intent["state"] != "PENDING":
+                raise _StoreCorrupt("runtime session intent mismatch")
+            reservations = connection.execute(
+                "SELECT * FROM budget_reservations WHERE transaction_id=? ORDER BY name, unit, scope_digest, lineage_root",
+                (session["transaction_id"],),
+            ).fetchall()
+            if not reservations or any(row["disposition"] is not None for row in reservations):
+                raise _StoreCorrupt("runtime session reservation mismatch")
+            actual = "QUARANTINED_ESCROW"
+            if raw["state"] == "STOPPED":
+                attempted, verified = self._no_effect_record(intent, evidence, raw["observed_at"])
+                if verified:
+                    actual = "RELEASED"
+                    terminal_record = attempted
+                else:
+                    terminal_record = {
+                        "record_type": "QUARANTINED_ESCROW", "reason": DurableReason.NO_EFFECT_UNVERIFIED.value,
+                        "transaction_id": intent["transaction_id"], "intent_digest": intent["intent_digest"],
+                        "fencing_epoch": intent["fencing_epoch"], "observed_at": raw["observed_at"],
+                        "attempted_no_effect_record_digest": canonical_digest(attempted),
+                    }
+            else:
+                terminal_record = {
+                    "record_type": "QUARANTINED_ESCROW", "transaction_id": intent["transaction_id"],
+                    "intent_digest": intent["intent_digest"], "fencing_epoch": intent["fencing_epoch"],
+                    "observed_at": raw["observed_at"], "evidence_digest": evidence["evidence_digest"],
+                }
+            terminal_text = _canonical_text(terminal_record)
+            terminal_digest = canonical_digest(terminal_record)
+            if actual == "RELEASED":
+                for reservation in reservations:
+                    key = (reservation["name"], reservation["unit"], reservation["scope_digest"], reservation["lineage_root"])
+                    changed = connection.execute(
+                        """UPDATE budgets SET reserved=reserved-?, remaining=remaining+?
+                           WHERE name=? AND unit=? AND scope_digest=? AND lineage_root=?
+                             AND reserved>=? AND remaining<=?""",
+                        (reservation["amount"], reservation["amount"], *key, reservation["amount"], _MAX_INTEGER - reservation["amount"]),
+                    )
+                    if changed.rowcount != 1:
+                        raise _StoreCorrupt("runtime release conservation failure")
+            changed = connection.execute(
+                """UPDATE budget_reservations SET disposition=?, terminal_record_json=?, terminal_record_digest=?
+                   WHERE transaction_id=? AND disposition IS NULL""",
+                (actual, terminal_text, terminal_digest, session["transaction_id"]),
+            )
+            if changed.rowcount != len(reservations):
+                raise _StoreCorrupt("runtime terminal reservation update mismatch")
+            if connection.execute(
+                "UPDATE dispatch_intents SET state=? WHERE transaction_id=? AND state='PENDING'",
+                (actual, session["transaction_id"]),
+            ).rowcount != 1:
+                raise _StoreCorrupt("runtime terminal intent update mismatch")
+            terminal_sequence = self._append_event(
+                connection, "RUNTIME_SESSION_" + raw["state"], raw["session_record_id"],
+                {
+                    "session_record_id": raw["session_record_id"], "transaction_id": session["transaction_id"],
+                    "claim_digest": session["claim_digest"], "state": raw["state"],
+                    "disposition": actual, "observed_at": raw["observed_at"],
+                    "revocation_epoch": _json_value(
+                        connection.execute("SELECT claim_json FROM dispatch_attempt_claims WHERE transaction_id=?", (session["transaction_id"],)).fetchone()["claim_json"]
+                    )["revocation_epoch"],
+                    "fencing_epoch": session["fencing_epoch"],
+                },
+            )
+            self._append_event(
+                connection, "BUDGET_TERMINAL_" + actual, session["transaction_id"],
+                {
+                    "transaction_id": session["transaction_id"], "intent_digest": intent["intent_digest"],
+                    "disposition": actual, "terminal_record_digest": terminal_digest,
+                    "fencing_epoch": intent["fencing_epoch"],
+                },
+            )
+            if connection.execute(
+                """UPDATE execution_sessions SET state=?, terminal_at=?, terminal_reason=?, terminal_journal_sequence=?
+                   WHERE session_record_id=? AND state='PREPARED'""",
+                (raw["state"], raw["observed_at"], actual, terminal_sequence, raw["session_record_id"]),
+            ).rowcount != 1:
+                raise _StoreCorrupt("runtime terminal session update mismatch")
+            self._hit("runtime_finalize_after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("runtime_finalize_after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            return DurableResult(
+                DurableOutcome.COMMITTED, DurableReason(actual), transaction_id=session["transaction_id"],
+                journal_sequence=terminal_sequence,
+            )
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
     def revoke(self, raw: object) -> DurableResult:
         if not self._usable:
             return _result(DurableOutcome.STOP, self._stopped_reason)
@@ -3261,6 +4099,8 @@ class DurableStore:
                     SELECT i.transaction_id, i.capability_id, i.intent_digest,
                            i.idempotency_key_digest,
                            CASE
+                               WHEN i.state='PENDING' AND s.session_record_id IS NOT NULL
+                               THEN 'RUNTIME_SESSION_PREPARED'
                                WHEN i.state='PENDING' AND c.transaction_id IS NOT NULL
                                THEN 'ATTEMPT_CLAIMED'
                                ELSE i.state
@@ -3269,6 +4109,8 @@ class DurableStore:
                     FROM dispatch_intents AS i
                     LEFT JOIN dispatch_attempt_claims AS c
                       ON c.transaction_id=i.transaction_id
+                    LEFT JOIN execution_sessions AS s
+                      ON s.transaction_id=i.transaction_id
                     WHERE i.state IN ('PENDING', 'QUARANTINED_ESCROW')
                     ORDER BY i.dispatch_counter
                     """
@@ -3284,12 +4126,24 @@ class DurableStore:
                     )
                     for row in rows
                 )
+                session_rows = connection.execute(
+                    """SELECT session_record_id, transaction_id, claim_digest, state, fencing_epoch
+                       FROM execution_sessions ORDER BY prepared_journal_sequence"""
+                ).fetchall()
+                sessions = tuple(
+                    RecoverySession(
+                        row["session_record_id"], row["transaction_id"], row["claim_digest"],
+                        row["state"], row["fencing_epoch"],
+                    )
+                    for row in session_rows
+                )
             finally:
                 connection.close()
             return DurableResult(
                 DurableOutcome.OK,
                 DurableReason.RECOVERED,
                 recovery_intents=intents,
+                recovery_sessions=sessions,
             )
         except sqlite3.OperationalError as error:
             if "locked" in str(error).lower() or "busy" in str(error).lower():
