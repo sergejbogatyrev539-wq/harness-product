@@ -10,17 +10,22 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import fcntl
 import json
 import os
 import platform
 import re
+import socket
 import stat
+import struct
 import subprocess
 import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
+
+from .durable import DispatchClaim, VerificationResult, VerificationStatus
 
 PROFILE_ID = "L0-LX-A"
 WORKLOAD_CLASS = "DISCONNECTED_STAGEABLE_WORKER"
@@ -249,11 +254,95 @@ _MEASUREMENT_KEYS = frozenset(
         "broker_message_schema_digest",
     }
 )
+_PATH_REQUEST_KEYS = frozenset({"canonical_path", "descriptor_id", "root_id", "resolution_epoch"})
+_PATH_BINDING_KEYS = frozenset(
+    {
+        "canonical_path",
+        "descriptor_id",
+        "root_id",
+        "root_identity",
+        "mount_id",
+        "mount_identity",
+        "resolution_epoch",
+        "final_device",
+        "final_inode",
+        "final_type",
+        "final_digest",
+        "composite_binding_digest",
+    }
+)
+_BROKER_MESSAGE_KEYS = frozenset(
+    {
+        "message_version",
+        "operation_id",
+        "worker_principal",
+        "worker_session",
+        "nonce",
+        "fencing_epoch",
+        "binding_digest",
+        "proposal",
+        "proposal_digest",
+    }
+)
+_STAGE_REQUEST_KEYS = frozenset(
+    {"transaction_id", "claim_digest", "operation", "content", "content_digest", "target_binding"}
+)
+_BROKER_EXPECTED_KEYS = frozenset(
+    {"operation_id", "worker_principal", "worker_session", "nonce", "fencing_epoch", "binding_digest", "peer"}
+)
+_PEER_KEYS = frozenset({"pid", "uid", "gid", "process_session"})
+_M1_REQUEST_KEYS = frozenset(
+    {"evaluation_time", "proposal", "manifest", "policy", "physical_ceiling", "trusted_facts"}
+)
+_M1_PROPOSAL_KEYS = frozenset(
+    {"operation_id", "principal_id", "material_digest", "authority"}
+)
+_DURABLE_CLAIM_KEYS = frozenset(
+    {
+        "claim_version",
+        "transaction_id",
+        "capability_id",
+        "intent_digest",
+        "idempotency_key_digest",
+        "principal_id",
+        "audience_id",
+        "purpose",
+        "profile_digest",
+        "placement_digest",
+        "session_id",
+        "lineage_root",
+        "nonce",
+        "revocation_epoch",
+        "fencing_epoch",
+        "observed_at",
+        "target_scope_digest",
+        "material_digest",
+        "request",
+        "decision",
+        "authorized_envelope",
+        "capability_payload",
+        "capability_verification",
+        "intent",
+    }
+)
+_VERIFICATION_KEYS = frozenset(
+    {"verification_version", "verifier_id", "issuer_id", "key_id", "payload_digest", "bindings", "proof"}
+)
+
+_RESOLVE_NO_XDEV = 0x01
+_RESOLVE_NO_MAGICLINKS = 0x02
+_RESOLVE_NO_SYMLINKS = 0x04
+_RESOLVE_BENEATH = 0x08
+_OPENAT2_RESOLVE = _RESOLVE_NO_XDEV | _RESOLVE_NO_MAGICLINKS | _RESOLVE_NO_SYMLINKS | _RESOLVE_BENEATH
 
 
 class L0Outcome(str, Enum):
     COMPILED_DRAFT = "COMPILED_DRAFT"
     READY = "READY"
+    RESOLVED = "RESOLVED"
+    ACCEPTED = "ACCEPTED"
+    STAGED = "STAGED"
+    QUARANTINED = "QUARANTINED"
     STOP = "STOP"
     ABSENT = "ABSENT"
 
@@ -276,6 +365,23 @@ class L0Reason(str, Enum):
     LSM_ABSENT = "LSM_ABSENT"
     LSM_POLICY_ABSENT = "LSM_POLICY_ABSENT"
     OPENAT2_ABSENT = "OPENAT2_ABSENT"
+    PATH_RESOLVED = "PATH_RESOLVED"
+    PATH_DENIED = "PATH_DENIED"
+    ROOT_MISMATCH = "ROOT_MISMATCH"
+    MOUNT_MISMATCH = "MOUNT_MISMATCH"
+    EPOCH_MISMATCH = "EPOCH_MISMATCH"
+    OBJECT_MISMATCH = "OBJECT_MISMATCH"
+    HARDLINK_DENIED = "HARDLINK_DENIED"
+    BROKER_MESSAGE_ACCEPTED = "BROKER_MESSAGE_ACCEPTED"
+    BROKER_BINDING_MISMATCH = "BROKER_BINDING_MISMATCH"
+    PEER_MISMATCH = "PEER_MISMATCH"
+    MESSAGE_TOO_LARGE = "MESSAGE_TOO_LARGE"
+    CLAIM_REQUIRED = "CLAIM_REQUIRED"
+    CLAIM_MISMATCH = "CLAIM_MISMATCH"
+    MATERIAL_MISMATCH = "MATERIAL_MISMATCH"
+    STAGE_LIMIT_EXCEEDED = "STAGE_LIMIT_EXCEEDED"
+    STAGED = "STAGED"
+    STAGE_OUTCOME_UNKNOWN = "STAGE_OUTCOME_UNKNOWN"
     HOST_FAILURE = "HOST_FAILURE"
 
 
@@ -354,6 +460,91 @@ class L0Result:
     @property
     def successful(self) -> bool:
         return self.outcome in {L0Outcome.COMPILED_DRAFT, L0Outcome.READY}
+
+
+@dataclass(frozen=True, slots=True)
+class PathBinding:
+    canonical_path: str
+    descriptor_id: str
+    root_id: str
+    root_identity: str
+    mount_id: str
+    mount_identity: str
+    resolution_epoch: int
+    final_device: int
+    final_inode: int
+    final_type: str
+    final_digest: str
+    composite_binding_digest: str
+
+    def data(self) -> dict[str, object]:
+        return {
+            "canonical_path": self.canonical_path,
+            "descriptor_id": self.descriptor_id,
+            "root_id": self.root_id,
+            "root_identity": self.root_identity,
+            "mount_id": self.mount_id,
+            "mount_identity": self.mount_identity,
+            "resolution_epoch": self.resolution_epoch,
+            "final_device": self.final_device,
+            "final_inode": self.final_inode,
+            "final_type": self.final_type,
+            "final_digest": self.final_digest,
+            "composite_binding_digest": self.composite_binding_digest,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PathResult:
+    outcome: L0Outcome
+    reason: L0Reason
+    binding: PathBinding | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerPeer:
+    pid: int
+    uid: int
+    gid: int
+    process_session: int
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerMessage:
+    operation_id: str
+    worker_principal: str
+    worker_session: str
+    nonce: str
+    fencing_epoch: int
+    binding_digest: str
+    proposal_json: str
+    proposal_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerResult:
+    outcome: L0Outcome
+    reason: L0Reason
+    peer: BrokerPeer | None = None
+    message: BrokerMessage | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StageRecord:
+    transaction_id: str
+    claim_digest: str
+    binding_digest: str
+    before_digest: str
+    after_digest: str
+    bytes_written: int
+    record_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class StageResult:
+    outcome: L0Outcome
+    reason: L0Reason
+    record: StageRecord | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -793,6 +984,589 @@ def compile_profile(raw: object) -> L0Result:
         return L0Result(L0Outcome.STOP, L0Reason.MALFORMED_INPUT)
 
 
+def _profile_is_valid(profile: object) -> bool:
+    if type(profile) is not CompiledL0Profile:
+        return False
+    if (
+        profile.profile_id != PROFILE_ID
+        or profile.profile_version != "1.0.0"
+        or profile.workload_class != WORKLOAD_CLASS
+        or profile.environment != ENVIRONMENT
+        or profile.backend_path != RUNTIME_PATH
+        or profile.backend_version != RUNTIME_VERSION
+        or profile.backend_digest != RUNTIME_DIGEST
+        or _hash_text(profile.canonical_profile_json) != profile.profile_digest
+    ):
+        return False
+    if tuple(item.resource for item in profile.resources) != _RESOURCE_ORDER:
+        return False
+    vector = [
+        {
+            "resource": item.resource,
+            "unit": item.unit,
+            "limit": item.limit,
+            "enforcement": item.enforcement,
+        }
+        for item in profile.resources
+    ]
+    return _hash_text(_canonical(vector)) == profile.resource_vector_digest
+
+
+def _resource_limit(profile: CompiledL0Profile, name: str) -> int:
+    for item in profile.resources:
+        if item.resource == name:
+            return item.limit
+    raise _Stop(L0Reason.MISMATCHED_PROFILE)
+
+
+def _canonical_stage_path(value: object) -> tuple[str, str]:
+    if (
+        type(value) is not str
+        or unicodedata.normalize("NFC", value) != value
+        or not value.startswith("/staging/")
+        or len(value) > 2048
+    ):
+        raise _Stop(L0Reason.PATH_DENIED)
+    if "//" in value or "\\" in value or "%" in value:
+        raise _Stop(L0Reason.PATH_DENIED)
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf"}
+        or character in {"\u2044", "\u2215", "\uff0f", "\uff3c"}
+        for character in value
+    ):
+        raise _Stop(L0Reason.PATH_DENIED)
+    components = value.split("/")[2:]
+    if (
+        not components
+        or any(component in {"", ".", "..", ".git"} for component in components)
+        or components[0] == "proc"
+        or any(_IDENTIFIER.fullmatch(component) is None for component in components)
+    ):
+        raise _Stop(L0Reason.PATH_DENIED)
+    return value, "/".join(components)
+
+
+def _mount_id(descriptor: int) -> int:
+    text = _read_text(f"/proc/self/fdinfo/{descriptor}", 8192)
+    matches = [line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("mnt_id:")]
+    if len(matches) != 1 or not matches[0].isdigit():
+        raise _Stop(L0Reason.MOUNT_MISMATCH)
+    return _integer(int(matches[0]), minimum=1)
+
+
+def _openat2(descriptor: int, relative: str, flags: int) -> int:
+    class OpenHow(ctypes.Structure):
+        _fields_ = [("flags", ctypes.c_uint64), ("mode", ctypes.c_uint64), ("resolve", ctypes.c_uint64)]
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    syscall = libc.syscall
+    syscall.restype = ctypes.c_long
+    how = OpenHow(flags, 0, _OPENAT2_RESOLVE)
+    result = syscall(
+        437,
+        descriptor,
+        ctypes.c_char_p(relative.encode("utf-8")),
+        ctypes.byref(how),
+        ctypes.sizeof(how),
+    )
+    if result < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), relative)
+    return int(result)
+
+
+def _hash_descriptor(descriptor: int, maximum: int) -> str:
+    info = os.fstat(descriptor)
+    if info.st_size < 0 or info.st_size > maximum:
+        raise _Stop(L0Reason.STAGE_LIMIT_EXCEEDED)
+    digest = sha256()
+    offset = 0
+    while offset < info.st_size:
+        chunk = os.pread(descriptor, min(65536, info.st_size - offset), offset)
+        if not chunk:
+            raise _Stop(L0Reason.OBJECT_MISMATCH)
+        digest.update(chunk)
+        offset += len(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def _root_identity(descriptor: int) -> tuple[os.stat_result, int, str, str]:
+    info = os.fstat(descriptor)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise _Stop(L0Reason.ROOT_MISMATCH)
+    mount = _mount_id(descriptor)
+    data = {
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "mode": stat.S_IFMT(info.st_mode),
+        "mount_id": mount,
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+    }
+    identity = _hash_text(_canonical(data))
+    mount_identity = _hash_text(_canonical({"mount_id": mount, "device": info.st_dev}))
+    return info, mount, identity, mount_identity
+
+
+def _binding_for_open_target(
+    profile: CompiledL0Profile,
+    root_descriptor: int,
+    target_descriptor: int,
+    canonical_path: str,
+    descriptor_id: str,
+    root_id: str,
+    resolution_epoch: int,
+) -> PathBinding:
+    root_info, root_mount, root_identity, mount_identity = _root_identity(root_descriptor)
+    target_info = os.fstat(target_descriptor)
+    target_mount = _mount_id(target_descriptor)
+    if target_mount != root_mount or target_info.st_dev != root_info.st_dev:
+        raise _Stop(L0Reason.MOUNT_MISMATCH)
+    if not stat.S_ISREG(target_info.st_mode):
+        raise _Stop(L0Reason.OBJECT_MISMATCH)
+    if target_info.st_nlink != 1:
+        raise _Stop(L0Reason.HARDLINK_DENIED)
+    digest = _hash_descriptor(target_descriptor, _resource_limit(profile, "OUTPUT_BYTES"))
+    data = {
+        "canonical_path": canonical_path,
+        "descriptor_id": descriptor_id,
+        "root_id": root_id,
+        "root_identity": root_identity,
+        "mount_id": f"mnt:{root_mount}",
+        "mount_identity": mount_identity,
+        "resolution_epoch": resolution_epoch,
+        "final_device": target_info.st_dev,
+        "final_inode": target_info.st_ino,
+        "final_type": "REGULAR_FILE",
+        "final_digest": digest,
+    }
+    return PathBinding(**data, composite_binding_digest=_hash_text(_canonical(data)))
+
+
+def _parse_path_request(raw: object) -> tuple[str, str, str, int, str]:
+    value = _closed_dict(raw, _PATH_REQUEST_KEYS)
+    canonical_path, relative = _canonical_stage_path(value["canonical_path"])
+    return (
+        canonical_path,
+        _identifier(value["descriptor_id"]),
+        _identifier(value["root_id"]),
+        _integer(value["resolution_epoch"], minimum=1),
+        relative,
+    )
+
+
+def resolve_target(profile: object, root_descriptor: object, raw: object) -> PathResult:
+    """Resolve and bind one existing staging file through an open trusted root."""
+
+    duplicate = -1
+    target = -1
+    try:
+        if not _profile_is_valid(profile):
+            raise _Stop(L0Reason.MISMATCHED_PROFILE)
+        if type(root_descriptor) is not int or root_descriptor < 0:
+            raise _Stop(L0Reason.MALFORMED_INPUT)
+        canonical_path, descriptor_id, root_id, epoch, relative = _parse_path_request(raw)
+        duplicate = fcntl.fcntl(root_descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+        _root_identity(duplicate)
+        target = _openat2(duplicate, relative, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        binding = _binding_for_open_target(
+            profile,
+            duplicate,
+            target,
+            canonical_path,
+            descriptor_id,
+            root_id,
+            epoch,
+        )
+        return PathResult(L0Outcome.RESOLVED, L0Reason.PATH_RESOLVED, binding)
+    except _Stop as stop:
+        return PathResult(L0Outcome.STOP, stop.reason)
+    except OSError:
+        return PathResult(L0Outcome.STOP, L0Reason.PATH_DENIED)
+    except Exception:  # noqa: BLE001 - descriptor boundary is total
+        return PathResult(L0Outcome.STOP, L0Reason.HOST_FAILURE)
+    finally:
+        if target >= 0:
+            os.close(target)
+        if duplicate >= 0:
+            os.close(duplicate)
+
+
+def _parse_path_binding(raw: object) -> PathBinding:
+    value = _closed_dict(raw, _PATH_BINDING_KEYS)
+    canonical_path, _ = _canonical_stage_path(value["canonical_path"])
+    binding = PathBinding(
+        canonical_path=canonical_path,
+        descriptor_id=_identifier(value["descriptor_id"]),
+        root_id=_identifier(value["root_id"]),
+        root_identity=_digest(value["root_identity"]),
+        mount_id=_identifier(value["mount_id"]),
+        mount_identity=_digest(value["mount_identity"]),
+        resolution_epoch=_integer(value["resolution_epoch"], minimum=1),
+        final_device=_integer(value["final_device"]),
+        final_inode=_integer(value["final_inode"], minimum=1),
+        final_type=_enum(value["final_type"], {"REGULAR_FILE"}),
+        final_digest=_digest(value["final_digest"]),
+        composite_binding_digest=_digest(value["composite_binding_digest"]),
+    )
+    data = binding.data()
+    supplied = data.pop("composite_binding_digest")
+    if _hash_text(_canonical(data)) != supplied:
+        raise _Stop(L0Reason.OBJECT_MISMATCH)
+    return binding
+
+
+def _active_principal(profile: CompiledL0Profile, role: str) -> PrincipalPlan:
+    for principal in profile.principals:
+        if principal.role == role and principal.enabled:
+            return principal
+    raise _Stop(L0Reason.MISMATCHED_PROFILE)
+
+
+def _parse_peer(raw: object) -> BrokerPeer:
+    value = _closed_dict(raw, _PEER_KEYS)
+    return BrokerPeer(
+        pid=_integer(value["pid"], minimum=1),
+        uid=_integer(value["uid"]),
+        gid=_integer(value["gid"]),
+        process_session=_integer(value["process_session"], minimum=1),
+    )
+
+
+def _parse_broker_expected(
+    profile: CompiledL0Profile, raw: object
+) -> tuple[str, str, str, str, int, str, BrokerPeer]:
+    value = _closed_dict(raw, _BROKER_EXPECTED_KEYS)
+    worker = _active_principal(profile, "AGENT_WORKER")
+    operation_id = _identifier(value["operation_id"])
+    worker_principal = _identifier(value["worker_principal"])
+    worker_session = _identifier(value["worker_session"])
+    nonce = _identifier(value["nonce"])
+    fencing_epoch = _integer(value["fencing_epoch"], minimum=1)
+    binding_digest = _digest(value["binding_digest"])
+    if (
+        worker_principal != worker.principal_id
+        or worker_session != worker.session_id
+        or binding_digest != profile.broker_binding_digest
+    ):
+        raise _Stop(L0Reason.BROKER_BINDING_MISMATCH)
+    return operation_id, worker_principal, worker_session, nonce, fencing_epoch, binding_digest, _parse_peer(
+        value["peer"]
+    )
+
+
+def _decode_broker_message(
+    profile: CompiledL0Profile,
+    packet: bytes,
+    expected: tuple[str, str, str, str, int, str, BrokerPeer],
+) -> BrokerMessage:
+    try:
+        raw = json.loads(packet)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise _Stop(L0Reason.MALFORMED_INPUT) from error
+    value = _closed_dict(raw, _BROKER_MESSAGE_KEYS)
+    _exact(value["message_version"], "1")
+    operation_id = _identifier(value["operation_id"])
+    worker_principal = _identifier(value["worker_principal"])
+    worker_session = _identifier(value["worker_session"])
+    nonce = _identifier(value["nonce"])
+    fencing_epoch = _integer(value["fencing_epoch"], minimum=1)
+    binding_digest = _digest(value["binding_digest"])
+    proposal_digest = _digest(value["proposal_digest"])
+    expected_operation, expected_principal, expected_session, expected_nonce, expected_fence, expected_binding, _ = (
+        expected
+    )
+    if (
+        operation_id != expected_operation
+        or worker_principal != expected_principal
+        or worker_session != expected_session
+        or nonce != expected_nonce
+        or fencing_epoch != expected_fence
+        or binding_digest != expected_binding
+        or binding_digest != profile.broker_binding_digest
+    ):
+        raise _Stop(L0Reason.BROKER_BINDING_MISMATCH)
+    proposal = _closed_dict(value["proposal"], _M1_REQUEST_KEYS)
+    proposal_header = _closed_dict(proposal["proposal"], _M1_PROPOSAL_KEYS)
+    if proposal_header["operation_id"] != operation_id or proposal_header["principal_id"] != worker_principal:
+        raise _Stop(L0Reason.BROKER_BINDING_MISMATCH)
+    proposal_json = _canonical(proposal)
+    if _hash_text(proposal_json) != proposal_digest:
+        raise _Stop(L0Reason.BROKER_BINDING_MISMATCH)
+    return BrokerMessage(
+        operation_id,
+        worker_principal,
+        worker_session,
+        nonce,
+        fencing_epoch,
+        binding_digest,
+        proposal_json,
+        proposal_digest,
+    )
+
+
+def receive_broker_message(
+    profile: object,
+    connection_descriptor: object,
+    raw_expected: object,
+) -> BrokerResult:
+    """Receive one bounded exact UNIX_SEQPACKET message and verify its peer."""
+
+    duplicate = -1
+    connection: socket.socket | None = None
+    try:
+        if not _profile_is_valid(profile):
+            raise _Stop(L0Reason.MISMATCHED_PROFILE)
+        if type(connection_descriptor) is not int or connection_descriptor < 0:
+            raise _Stop(L0Reason.MALFORMED_INPUT)
+        expected = _parse_broker_expected(profile, raw_expected)
+        duplicate = fcntl.fcntl(connection_descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+        connection = socket.socket(fileno=duplicate)
+        duplicate = -1
+        if connection.family != socket.AF_UNIX or connection.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
+            raise _Stop(L0Reason.BROKER_BINDING_MISMATCH)
+        credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+        pid, uid, gid = struct.unpack("3i", credentials)
+        observed_peer = BrokerPeer(pid, uid, gid, os.getsid(pid))
+        if observed_peer != expected[-1]:
+            raise _Stop(L0Reason.PEER_MISMATCH)
+        maximum = _integer(json.loads(profile.canonical_profile_json)["broker_ipc"]["max_message_bytes"], minimum=1)
+        packet, ancillary, flags, _ = connection.recvmsg(maximum + 1, 1)
+        if ancillary or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(packet) > maximum:
+            raise _Stop(L0Reason.MESSAGE_TOO_LARGE)
+        message = _decode_broker_message(profile, packet, expected)
+        return BrokerResult(L0Outcome.ACCEPTED, L0Reason.BROKER_MESSAGE_ACCEPTED, observed_peer, message)
+    except _Stop as stop:
+        return BrokerResult(L0Outcome.STOP, stop.reason)
+    except (OSError, ValueError, TypeError):
+        return BrokerResult(L0Outcome.STOP, L0Reason.BROKER_BINDING_MISMATCH)
+    except Exception:  # noqa: BLE001 - IPC boundary is total
+        return BrokerResult(L0Outcome.STOP, L0Reason.HOST_FAILURE)
+    finally:
+        if connection is not None:
+            connection.close()
+        elif duplicate >= 0:
+            os.close(duplicate)
+
+
+def _verified_claim(
+    profile: CompiledL0Profile,
+    claim: object,
+    verifier: object,
+) -> DispatchClaim:
+    if type(claim) is not DispatchClaim:
+        raise _Stop(L0Reason.CLAIM_REQUIRED)
+    try:
+        claim_value = json.loads(claim.claim_json)
+        verification = json.loads(claim.executor_verification_json)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise _Stop(L0Reason.CLAIM_MISMATCH) from error
+    claim_value = _closed_dict(claim_value, _DURABLE_CLAIM_KEYS)
+    verification = _closed_dict(verification, _VERIFICATION_KEYS)
+    if _canonical(claim_value) != claim.claim_json or _canonical(verification) != claim.executor_verification_json:
+        raise _Stop(L0Reason.CLAIM_MISMATCH)
+    scalar_bindings = {
+        "transaction_id": claim.transaction_id,
+        "capability_id": claim.capability_id,
+        "intent_digest": claim.intent_digest,
+        "idempotency_key_digest": claim.idempotency_key_digest,
+        "principal_id": claim.principal_id,
+        "audience_id": claim.audience_id,
+        "purpose": claim.purpose,
+        "profile_digest": claim.profile_digest,
+        "placement_digest": claim.placement_digest,
+        "session_id": claim.session_id,
+        "lineage_root": claim.lineage_root,
+        "nonce": claim.nonce,
+        "revocation_epoch": claim.revocation_epoch,
+        "fencing_epoch": claim.fencing_epoch,
+        "observed_at": claim.observed_at,
+        "target_scope_digest": claim.target_scope_digest,
+        "material_digest": claim.material_digest,
+    }
+    try:
+        nested_bindings = {
+            "request": json.loads(claim.request_json),
+            "decision": json.loads(claim.decision_json),
+            "authorized_envelope": json.loads(claim.authorized_envelope_json),
+            "capability_payload": json.loads(claim.capability_payload_json),
+            "capability_verification": json.loads(claim.capability_verification_json),
+            "intent": json.loads(claim.intent_json),
+        }
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise _Stop(L0Reason.CLAIM_MISMATCH) from error
+    if (
+        claim_value.get("claim_version") != 1
+        or claim.profile_digest != profile.profile_digest
+        or any(claim_value.get(name) != value for name, value in scalar_bindings.items())
+        or any(claim_value.get(name) != value for name, value in nested_bindings.items())
+        or _hash_text(claim.claim_json) != claim.claim_digest
+        or verification.get("verification_version") != 1
+        or verification.get("payload_digest") != claim.claim_digest
+        or verification.get("bindings") != claim_value
+        or claim.principal_id == claim.audience_id
+    ):
+        raise _Stop(L0Reason.CLAIM_MISMATCH)
+    worker = _active_principal(profile, "AGENT_WORKER")
+    executor = _active_principal(profile, "EXECUTOR")
+    if (
+        claim.principal_id != worker.principal_id
+        or claim.session_id != worker.session_id
+        or claim.audience_id != executor.principal_id
+    ):
+        raise _Stop(L0Reason.CLAIM_MISMATCH)
+    for field in ("verifier_id", "issuer_id", "key_id"):
+        _identifier(verification[field])
+    proof = verification["proof"]
+    if (
+        type(proof) is not str
+        or not proof
+        or len(proof) > 8192
+        or any(unicodedata.category(character) in {"Cc", "Cf"} for character in proof)
+    ):
+        raise _Stop(L0Reason.CLAIM_MISMATCH)
+    try:
+        result = verifier.verify(
+            claim.claim_json.encode("utf-8"),
+            claim.executor_verification_json.encode("utf-8"),
+            claim.observed_at,
+        )
+    except Exception as error:
+        raise _Stop(L0Reason.CLAIM_MISMATCH) from error
+    verification_digest = _hash_text(claim.executor_verification_json)
+    if (
+        type(result) is not VerificationResult
+        or result.status is not VerificationStatus.VERIFIED
+        or result.verifier_id != verification["verifier_id"]
+        or result.payload_digest != claim.claim_digest
+        or result.record_digest != verification_digest
+    ):
+        raise _Stop(L0Reason.CLAIM_MISMATCH)
+    return claim
+
+
+def stage_committed_intent(
+    profile: object,
+    claim: object,
+    root_descriptor: object,
+    raw: object,
+    *,
+    executor_claim_verifier: object | None = None,
+    _fault: object | None = None,
+) -> StageResult:
+    """Perform the sole M3 effect: one exact replace inside a trusted staging root."""
+
+    root = -1
+    target = -1
+    effect_started = False
+    try:
+        if not _profile_is_valid(profile):
+            raise _Stop(L0Reason.MISMATCHED_PROFILE)
+        if executor_claim_verifier is None:
+            raise _Stop(L0Reason.CLAIM_REQUIRED)
+        durable_claim = _verified_claim(profile, claim, executor_claim_verifier)
+        if type(root_descriptor) is not int or root_descriptor < 0:
+            raise _Stop(L0Reason.MALFORMED_INPUT)
+        value = _closed_dict(raw, _STAGE_REQUEST_KEYS)
+        transaction_id = _identifier(value["transaction_id"])
+        claim_digest = _digest(value["claim_digest"])
+        _exact(value["operation"], "WRITE_FILE_REPLACE")
+        content = value["content"]
+        content_digest = _digest(value["content_digest"])
+        if (
+            type(content) is not str
+            or unicodedata.normalize("NFC", content) != content
+            or "\x00" in content
+        ):
+            raise _Stop(L0Reason.MALFORMED_INPUT)
+        content_bytes = content.encode("utf-8")
+        if not content_bytes or len(content_bytes) > _resource_limit(profile, "OUTPUT_BYTES"):
+            raise _Stop(L0Reason.STAGE_LIMIT_EXCEEDED)
+        if (
+            _hash_text(content) != content_digest
+            or transaction_id != durable_claim.transaction_id
+            or claim_digest != durable_claim.claim_digest
+            or content_digest != durable_claim.material_digest
+        ):
+            raise _Stop(L0Reason.MATERIAL_MISMATCH)
+        binding = _parse_path_binding(value["target_binding"])
+        expected_scope = _hash_text(_canonical({"kind": "PATH_EXACT", "value": binding.canonical_path}))
+        if durable_claim.target_scope_digest != expected_scope or binding.final_digest == content_digest:
+            raise _Stop(L0Reason.MATERIAL_MISMATCH)
+        _, relative = _canonical_stage_path(binding.canonical_path)
+        root = fcntl.fcntl(root_descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+        _root_identity(root)
+        target = _openat2(root, relative, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            fcntl.flock(target, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise _Stop(L0Reason.OBJECT_MISMATCH) from error
+        current = _binding_for_open_target(
+            profile,
+            root,
+            target,
+            binding.canonical_path,
+            binding.descriptor_id,
+            binding.root_id,
+            binding.resolution_epoch,
+        )
+        if current != binding:
+            raise _Stop(L0Reason.OBJECT_MISMATCH)
+        if _fault is not None:
+            _fault("stage_before_effect")  # type: ignore[operator]
+        effect_started = True
+        offset = 0
+        while offset < len(content_bytes):
+            written = os.pwrite(target, content_bytes[offset:], offset)
+            if written <= 0:
+                raise OSError(errno.EIO, "short staging write")
+            offset += written
+        os.ftruncate(target, len(content_bytes))
+        if _fault is not None:
+            _fault("stage_after_write")  # type: ignore[operator]
+        os.fsync(target)
+        if _fault is not None:
+            _fault("stage_after_fsync")  # type: ignore[operator]
+        after_info = os.fstat(target)
+        if (
+            after_info.st_dev != binding.final_device
+            or after_info.st_ino != binding.final_inode
+            or not stat.S_ISREG(after_info.st_mode)
+            or after_info.st_nlink != 1
+            or _mount_id(target) != int(binding.mount_id.removeprefix("mnt:"))
+        ):
+            raise OSError(errno.ESTALE, "staging object changed")
+        after_digest = _hash_descriptor(target, _resource_limit(profile, "OUTPUT_BYTES"))
+        if after_digest != content_digest or after_info.st_size != len(content_bytes):
+            raise OSError(errno.EIO, "staging verification failed")
+        os.fsync(root)
+        if _fault is not None:
+            _fault("stage_after_verify")  # type: ignore[operator]
+        record_data = {
+            "transaction_id": durable_claim.transaction_id,
+            "claim_digest": durable_claim.claim_digest,
+            "binding_digest": binding.composite_binding_digest,
+            "before_digest": binding.final_digest,
+            "after_digest": after_digest,
+            "bytes_written": len(content_bytes),
+        }
+        record = StageRecord(**record_data, record_digest=_hash_text(_canonical(record_data)))
+        return StageResult(L0Outcome.STAGED, L0Reason.STAGED, record)
+    except _Stop as stop:
+        outcome = L0Outcome.QUARANTINED if effect_started else L0Outcome.STOP
+        reason = L0Reason.STAGE_OUTCOME_UNKNOWN if effect_started else stop.reason
+        return StageResult(outcome, reason)
+    except Exception:  # noqa: BLE001 - post-effect faults must remain uncertain
+        if effect_started:
+            return StageResult(L0Outcome.QUARANTINED, L0Reason.STAGE_OUTCOME_UNKNOWN)
+        return StageResult(L0Outcome.STOP, L0Reason.HOST_FAILURE)
+    finally:
+        if target >= 0:
+            os.close(target)
+        if root >= 0:
+            os.close(root)
+
+
 def _read_text(path: str, maximum: int = 1 << 20) -> str:
     descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
@@ -1048,13 +1822,23 @@ __all__ = [
     "RUNTIME_PATH",
     "RUNTIME_VERSION",
     "WORKLOAD_CLASS",
+    "BrokerMessage",
+    "BrokerPeer",
+    "BrokerResult",
     "CompiledL0Profile",
     "HostMeasurement",
     "L0Outcome",
     "L0Reason",
     "L0Result",
+    "PathBinding",
+    "PathResult",
     "PrincipalPlan",
     "ResourceLimit",
+    "StageRecord",
+    "StageResult",
     "compile_profile",
     "host_preflight",
+    "receive_broker_message",
+    "resolve_target",
+    "stage_committed_intent",
 ]

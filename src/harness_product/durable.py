@@ -41,6 +41,7 @@ from .model import (
 
 
 FORMAT_VERSION = 1
+STORE_SCHEMA_VERSION = 2
 _APPLICATION_ID = 0x48524E53
 _MAX_INTEGER = (1 << 63) - 1
 _MAX_VECTOR = 256
@@ -53,6 +54,7 @@ _TABLES = frozenset(
         "budget_reservations",
         "budgets",
         "capabilities",
+        "dispatch_attempt_claims",
         "dispatch_intents",
         "journal_entries",
         "outbox_events",
@@ -137,6 +139,34 @@ _INTENT_KEYS = frozenset(
         "dispatch_counter",
     }
 )
+_CLAIM_KEYS = frozenset(
+    {
+        "claim_version",
+        "transaction_id",
+        "capability_id",
+        "intent_digest",
+        "idempotency_key_digest",
+        "principal_id",
+        "audience_id",
+        "purpose",
+        "profile_digest",
+        "placement_digest",
+        "session_id",
+        "lineage_root",
+        "nonce",
+        "revocation_epoch",
+        "fencing_epoch",
+        "observed_at",
+        "target_scope_digest",
+        "material_digest",
+        "request",
+        "decision",
+        "authorized_envelope",
+        "capability_payload",
+        "capability_verification",
+        "intent",
+    }
+)
 
 
 class DurableOutcome(str, Enum):
@@ -151,6 +181,7 @@ class DurableReason(str, Enum):
     BOOTSTRAPPED = "BOOTSTRAPPED"
     CAPABILITY_ISSUED = "CAPABILITY_ISSUED"
     INTENT_COMMITTED = "INTENT_COMMITTED"
+    DISPATCH_ATTEMPT_CLAIMED = "DISPATCH_ATTEMPT_CLAIMED"
     REVOKED = "REVOKED"
     FENCE_ADVANCED = "FENCE_ADVANCED"
     SPENT = "SPENT"
@@ -166,6 +197,7 @@ class DurableReason(str, Enum):
     EXPIRED = "EXPIRED"
     REPLAY = "REPLAY"
     UNKNOWN_CAPABILITY = "UNKNOWN_CAPABILITY"
+    UNKNOWN_INTENT = "UNKNOWN_INTENT"
     STALE_REVOCATION = "STALE_REVOCATION"
     STALE_FENCE = "STALE_FENCE"
     BUDGET_MISMATCH = "BUDGET_MISMATCH"
@@ -177,6 +209,7 @@ class DurableReason(str, Enum):
     STORE_BUSY = "STORE_BUSY"
     CORRUPT_STORE = "CORRUPT_STORE"
     ACKNOWLEDGEMENT_UNKNOWN = "ACKNOWLEDGEMENT_UNKNOWN"
+    EXECUTOR_VERIFIER_ABSENT = "EXECUTOR_VERIFIER_ABSENT"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -202,6 +235,45 @@ class CapabilityVerifier(Protocol):
     ) -> VerificationResult: ...
 
 
+class ExecutorClaimVerifier(Protocol):
+    def verify(
+        self,
+        payload: bytes,
+        record: bytes,
+        observed_at: str,
+    ) -> VerificationResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchClaim:
+    transaction_id: str
+    claim_digest: str
+    intent_digest: str
+    capability_id: str
+    idempotency_key_digest: str
+    principal_id: str
+    audience_id: str
+    purpose: str
+    profile_digest: str
+    placement_digest: str
+    session_id: str
+    lineage_root: str
+    nonce: str
+    revocation_epoch: int
+    fencing_epoch: int
+    observed_at: str
+    target_scope_digest: str
+    material_digest: str
+    request_json: str
+    decision_json: str
+    authorized_envelope_json: str
+    capability_payload_json: str
+    capability_verification_json: str
+    intent_json: str
+    claim_json: str
+    executor_verification_json: str
+
+
 @dataclass(frozen=True, slots=True)
 class RecoveryIntent:
     transaction_id: str
@@ -220,6 +292,7 @@ class DurableResult:
     transaction_id: str | None = None
     journal_sequence: int | None = None
     recovery_intents: tuple[RecoveryIntent, ...] = ()
+    dispatch_claim: DispatchClaim | None = None
 
     @property
     def committed(self) -> bool:
@@ -417,7 +490,7 @@ _SCHEMA = (
     """
     CREATE TABLE store_meta (
         id INTEGER PRIMARY KEY CHECK (id = 1),
-        schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+        schema_version INTEGER NOT NULL CHECK (schema_version = 2),
         lineage_root TEXT,
         revocation_epoch INTEGER NOT NULL CHECK (revocation_epoch >= 0),
         fencing_epoch INTEGER NOT NULL CHECK (fencing_epoch >= 0),
@@ -508,6 +581,25 @@ _SCHEMA = (
     ) STRICT
     """,
     """
+    CREATE TABLE dispatch_attempt_claims (
+        transaction_id TEXT PRIMARY KEY REFERENCES dispatch_intents(transaction_id),
+        claim_digest TEXT NOT NULL UNIQUE,
+        intent_digest TEXT NOT NULL UNIQUE,
+        capability_id TEXT NOT NULL UNIQUE REFERENCES capabilities(capability_id),
+        audience_id TEXT NOT NULL,
+        placement_digest TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        revocation_epoch INTEGER NOT NULL CHECK (revocation_epoch >= 0),
+        fencing_epoch INTEGER NOT NULL CHECK (fencing_epoch >= 0),
+        observed_at TEXT NOT NULL,
+        claim_json TEXT NOT NULL,
+        executor_verification_json TEXT NOT NULL,
+        executor_verification_digest TEXT NOT NULL,
+        journal_sequence INTEGER NOT NULL UNIQUE REFERENCES journal_entries(sequence)
+            DEFERRABLE INITIALLY DEFERRED
+    ) STRICT
+    """,
+    """
     CREATE TABLE budget_reservations (
         transaction_id TEXT NOT NULL REFERENCES dispatch_intents(transaction_id),
         name TEXT NOT NULL,
@@ -559,6 +651,13 @@ _SCHEMA = (
     "CREATE INDEX reservations_disposition ON budget_reservations(disposition)",
 )
 
+_TABLES_V1 = _TABLES - {"dispatch_attempt_claims"}
+_SCHEMA_V1 = tuple(
+    statement.replace("schema_version = 2", "schema_version = 1")
+    for statement in _SCHEMA
+    if "dispatch_attempt_claims" not in statement
+)
+
 
 class DurableStore:
     """One-lineage SQLite durability domain with no effect execution surface."""
@@ -569,11 +668,13 @@ class DurableStore:
         verifier: CapabilityVerifier,
         *,
         no_effect_verifier: object | None = None,
+        executor_claim_verifier: ExecutorClaimVerifier | None = None,
         _fault: object | None = None,
     ) -> None:
         self._path = path if type(path) is str else ""
         self._verifier = verifier
         self._no_effect_verifier = no_effect_verifier
+        self._executor_claim_verifier = executor_claim_verifier
         self._fault = _fault
         self._usable = False
         self._stopped_reason = DurableReason.MALFORMED_INPUT
@@ -626,20 +727,81 @@ class DurableStore:
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO store_meta VALUES (1, ?, NULL, 0, 0, 0, 0, NULL, 0, NULL)",
-                    (FORMAT_VERSION,),
+                    (STORE_SCHEMA_VERSION,),
                 )
                 connection.execute(f"PRAGMA application_id={_APPLICATION_ID}")
-                connection.execute(f"PRAGMA user_version={FORMAT_VERSION}")
+                connection.execute(f"PRAGMA user_version={STORE_SCHEMA_VERSION}")
                 connection.commit()
             except Exception:
                 connection.rollback()
                 raise
             return
-        if version != FORMAT_VERSION or application_id != _APPLICATION_ID or tables != _TABLES:
+        if version == 1 and application_id == _APPLICATION_ID and tables == _TABLES_V1:
+            self._migrate_v1(connection)
+            return
+        if version != STORE_SCHEMA_VERSION or application_id != _APPLICATION_ID or tables != _TABLES:
             raise _StoreCorrupt("unknown durable store schema")
 
+    def _migrate_v1(self, connection: sqlite3.Connection) -> None:
+        self._audit_legacy_v1(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._audit_legacy_v1(connection)
+            connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v1")
+            connection.execute(_SCHEMA[0])
+            connection.execute(
+                """
+                INSERT INTO store_meta
+                SELECT id, ?, lineage_root, revocation_epoch, fencing_epoch,
+                       dispatch_counter, journal_head_sequence, journal_head_digest,
+                       outbox_head_sequence, outbox_head_digest
+                FROM store_meta_v1
+                """,
+                (STORE_SCHEMA_VERSION,),
+            )
+            connection.execute("DROP TABLE store_meta_v1")
+            claim_schema = next(statement for statement in _SCHEMA if "dispatch_attempt_claims" in statement)
+            connection.execute(claim_schema)
+            connection.execute(f"PRAGMA user_version={STORE_SCHEMA_VERSION}")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def _audit_legacy_v1(self, connection: sqlite3.Connection) -> None:
+        if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
+            raise _StoreCorrupt("legacy schema version mismatch")
+        if connection.execute("PRAGMA application_id").fetchone()[0] != _APPLICATION_ID:
+            raise _StoreCorrupt("legacy application id mismatch")
+        self._audit_schema(connection, schema=_SCHEMA_V1, tables=_TABLES_V1)
+        if tuple(connection.execute("PRAGMA quick_check").fetchone()) != ("ok",):
+            raise _StoreCorrupt("legacy SQLite quick check failed")
+        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise _StoreCorrupt("legacy foreign key mismatch")
+        meta_rows = connection.execute("SELECT * FROM store_meta").fetchall()
+        if len(meta_rows) != 1 or meta_rows[0]["id"] != 1 or meta_rows[0]["schema_version"] != 1:
+            raise _StoreCorrupt("invalid legacy metadata")
+        meta = meta_rows[0]
+        lineage = meta["lineage_root"]
+        if lineage is not None and not _valid_digest(lineage):
+            raise _StoreCorrupt("invalid legacy lineage")
+        for field in (
+            "revocation_epoch",
+            "fencing_epoch",
+            "dispatch_counter",
+            "journal_head_sequence",
+            "outbox_head_sequence",
+        ):
+            if not _bounded_integer(meta[field]):
+                raise _StoreCorrupt("invalid legacy monotonic metadata")
+        self._audit_budgets(connection, lineage)
+        self._audit_chains(connection, meta)
+        self._audit_history(connection, meta)
+        self._audit_capabilities(connection, lineage)
+        self._audit_dispatch(connection, meta)
+
     def _audit(self, connection: sqlite3.Connection) -> None:
-        if connection.execute("PRAGMA user_version").fetchone()[0] != FORMAT_VERSION:
+        if connection.execute("PRAGMA user_version").fetchone()[0] != STORE_SCHEMA_VERSION:
             raise _StoreCorrupt("schema version mismatch")
         if connection.execute("PRAGMA application_id").fetchone()[0] != _APPLICATION_ID:
             raise _StoreCorrupt("application id mismatch")
@@ -657,7 +819,11 @@ class DurableStore:
         if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise _StoreCorrupt("foreign key mismatch")
         meta_rows = connection.execute("SELECT * FROM store_meta").fetchall()
-        if len(meta_rows) != 1 or meta_rows[0]["id"] != 1 or meta_rows[0]["schema_version"] != FORMAT_VERSION:
+        if (
+            len(meta_rows) != 1
+            or meta_rows[0]["id"] != 1
+            or meta_rows[0]["schema_version"] != STORE_SCHEMA_VERSION
+        ):
             raise _StoreCorrupt("invalid store metadata")
         meta = meta_rows[0]
         lineage = meta["lineage_root"]
@@ -677,10 +843,17 @@ class DurableStore:
         self._audit_history(connection, meta)
         self._audit_capabilities(connection, lineage)
         self._audit_dispatch(connection, meta)
+        self._audit_claims(connection, meta)
 
-    def _audit_schema(self, connection: sqlite3.Connection) -> None:
+    def _audit_schema(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        schema: tuple[str, ...] = _SCHEMA,
+        tables: frozenset[str] = _TABLES,
+    ) -> None:
         expected: dict[str, str] = {}
-        for statement in _SCHEMA:
+        for statement in schema:
             normalized = " ".join(statement.split())
             match = re.match(r"^CREATE (?:TABLE|INDEX) ([A-Za-z_][A-Za-z0-9_]*) ", normalized)
             if match is None:
@@ -700,9 +873,9 @@ class DurableStore:
         strict = {
             row[1]: row[5]
             for row in connection.execute("PRAGMA table_list")
-            if row[1] in _TABLES
+            if row[1] in tables
         }
-        if set(strict) != _TABLES or any(value != 1 for value in strict.values()):
+        if set(strict) != tables or any(value != 1 for value in strict.values()):
             raise _StoreCorrupt("non-STRICT durable table")
 
     def _audit_budgets(self, connection: sqlite3.Connection, lineage: str | None) -> None:
@@ -819,6 +992,7 @@ class DurableStore:
         allowed = {
             "CAPABILITY_ISSUED",
             "CAPABILITY_CONSUMED_WITH_INTENT",
+            "DISPATCH_ATTEMPT_CLAIMED",
             "CAPABILITY_REVOKED",
             "FENCE_ADVANCED",
             "BUDGET_TERMINAL_SPENT",
@@ -880,7 +1054,11 @@ class DurableStore:
                 ):
                     raise _StoreCorrupt("fence history mismatch")
                 fencing_epoch = payload["fencing_epoch"]
-            elif event_type in {"CAPABILITY_ISSUED", "CAPABILITY_CONSUMED_WITH_INTENT"}:
+            elif event_type in {
+                "CAPABILITY_ISSUED",
+                "CAPABILITY_CONSUMED_WITH_INTENT",
+                "DISPATCH_ATTEMPT_CLAIMED",
+            }:
                 if payload.get("revocation_epoch", revocation_epoch) != revocation_epoch:
                     raise _StoreCorrupt("event revocation history mismatch")
                 if payload.get("fencing_epoch") != fencing_epoch:
@@ -1379,6 +1557,151 @@ class DurableStore:
             key = (budget["name"], budget["unit"], budget["scope_digest"], budget["lineage_root"])
             if budget["reserved"] != expected_reserved.get(key, 0) or budget["spent"] != expected_spent.get(key, 0):
                 raise _StoreCorrupt("budget ledger/reservation mismatch")
+
+    def _audit_claims(self, connection: sqlite3.Connection, meta: sqlite3.Row) -> None:
+        rows = connection.execute("SELECT * FROM dispatch_attempt_claims").fetchall()
+        for row in rows:
+            claim = _json_value(row["claim_json"])
+            verification = _json_value(row["executor_verification_json"])
+            intent_row = connection.execute(
+                "SELECT * FROM dispatch_intents WHERE transaction_id=?",
+                (row["transaction_id"],),
+            ).fetchone()
+            capability = connection.execute(
+                "SELECT * FROM capabilities WHERE capability_id=?",
+                (row["capability_id"],),
+            ).fetchone()
+            if intent_row is None or capability is None:
+                raise _StoreCorrupt("orphan dispatch claim")
+            intent = _json_value(intent_row["intent_json"])
+            request = _json_value(capability["request_json"])
+            decision = _json_value(capability["decision_json"])
+            envelope = _json_value(capability["authorized_envelope_json"])
+            payload = _json_value(capability["payload_json"])
+            capability_verification = _json_value(capability["verification_json"])
+            if (
+                not _closed_dict(claim, _CLAIM_KEYS)
+                or not _closed_dict(verification, _VERIFICATION_RECORD_KEYS)
+                or claim.get("claim_version") != FORMAT_VERSION
+                or verification.get("verification_version") != FORMAT_VERSION
+                or canonical_digest(claim) != row["claim_digest"]
+                or canonical_digest(verification) != row["executor_verification_digest"]
+                or verification.get("payload_digest") != row["claim_digest"]
+                or verification.get("bindings") != claim
+                or not all(
+                    _valid_identifier(claim.get(field))
+                    for field in (
+                        "transaction_id",
+                        "principal_id",
+                        "audience_id",
+                        "purpose",
+                        "session_id",
+                        "nonce",
+                    )
+                )
+                or not all(
+                    _valid_identifier(verification.get(field))
+                    for field in ("verifier_id", "issuer_id", "key_id")
+                )
+                or not _valid_proof(verification.get("proof"))
+                or not all(
+                    _valid_digest(claim.get(field))
+                    for field in (
+                        "capability_id",
+                        "intent_digest",
+                        "idempotency_key_digest",
+                        "profile_digest",
+                        "placement_digest",
+                        "lineage_root",
+                        "target_scope_digest",
+                        "material_digest",
+                    )
+                )
+                or not _bounded_integer(claim.get("revocation_epoch"))
+                or not _bounded_integer(claim.get("fencing_epoch"))
+                or _parse_time(claim.get("observed_at")) is None
+                or claim.get("principal_id") == claim.get("audience_id")
+                or claim.get("intent") != intent
+                or claim.get("request") != request
+                or claim.get("decision") != decision
+                or claim.get("authorized_envelope") != envelope
+                or claim.get("capability_payload") != payload
+                or claim.get("capability_verification") != capability_verification
+            ):
+                raise _StoreCorrupt("dispatch claim binding mismatch")
+            claim_columns = {
+                "transaction_id": "transaction_id",
+                "capability_id": "capability_id",
+                "intent_digest": "intent_digest",
+                "audience_id": "audience_id",
+                "placement_digest": "placement_digest",
+                "session_id": "session_id",
+                "revocation_epoch": "revocation_epoch",
+                "fencing_epoch": "fencing_epoch",
+                "observed_at": "observed_at",
+            }
+            if any(claim.get(claim_name) != row[column] for claim_name, column in claim_columns.items()):
+                raise _StoreCorrupt("dispatch claim column mismatch")
+            intent_bindings = {
+                "transaction_id": "transaction_id",
+                "capability_id": "capability_id",
+                "idempotency_key_digest": "idempotency_key_digest",
+                "principal_id": "principal_id",
+                "audience_id": "audience_id",
+                "purpose": "purpose",
+                "profile_digest": "profile_digest",
+                "placement_digest": "placement_digest",
+                "session_id": "session_id",
+                "lineage_root": "lineage_root",
+                "nonce": "nonce",
+                "revocation_epoch": "revocation_epoch",
+                "fencing_epoch": "fencing_epoch",
+                "target_scope_digest": "target_scope_digest",
+                "material_digest": "material_digest",
+            }
+            if (
+                intent_row["capability_id"] != capability["capability_id"]
+                or claim.get("intent_digest") != intent_row["intent_digest"]
+                or capability["state"] != "CONSUMED"
+                or capability["consumed_transaction_id"] != row["transaction_id"]
+                or row["journal_sequence"] <= intent_row["journal_sequence"]
+                or any(claim.get(claim_name) != intent.get(intent_name) for claim_name, intent_name in intent_bindings.items())
+            ):
+                raise _StoreCorrupt("dispatch claim intent mismatch")
+            event = connection.execute(
+                "SELECT event_type, subject_id, payload_json FROM journal_entries WHERE sequence=?",
+                (row["journal_sequence"],),
+            ).fetchone()
+            expected_event = {
+                "transaction_id": row["transaction_id"],
+                "capability_id": row["capability_id"],
+                "intent_digest": row["intent_digest"],
+                "claim_digest": row["claim_digest"],
+                "executor_verification_digest": row["executor_verification_digest"],
+                "audience_id": row["audience_id"],
+                "placement_digest": row["placement_digest"],
+                "session_id": row["session_id"],
+                "revocation_epoch": row["revocation_epoch"],
+                "fencing_epoch": row["fencing_epoch"],
+                "claim": claim,
+            }
+            if (
+                event is None
+                or tuple(event[:2]) != ("DISPATCH_ATTEMPT_CLAIMED", row["transaction_id"])
+                or _json_value(event["payload_json"]) != expected_event
+                or connection.execute(
+                    "SELECT COUNT(*) FROM journal_entries "
+                    "WHERE event_type='DISPATCH_ATTEMPT_CLAIMED' AND subject_id=?",
+                    (row["transaction_id"],),
+                ).fetchone()[0]
+                != 1
+            ):
+                raise _StoreCorrupt("dispatch claim event mismatch")
+        event_count = connection.execute(
+            "SELECT COUNT(*) FROM journal_entries WHERE event_type='DISPATCH_ATTEMPT_CLAIMED'"
+        ).fetchone()[0]
+        if event_count != len(rows) or len(rows) > meta["dispatch_counter"]:
+            raise _StoreCorrupt("dispatch claim cardinality mismatch")
 
     def _append_event(
         self,
@@ -2245,6 +2568,278 @@ class DurableStore:
             if connection is not None:
                 connection.close()
 
+    def _executor_claim_verification_is_valid(
+        self,
+        claim_text: str,
+        claim_digest: str,
+        verification: dict[str, object],
+        verification_text: str,
+        verification_digest: str,
+        observed_at: str,
+    ) -> bool:
+        try:
+            verifier = self._executor_claim_verifier
+            if verifier is None:
+                return False
+            result = verifier.verify(
+                claim_text.encode("utf-8"),
+                verification_text.encode("utf-8"),
+                observed_at,
+            )
+            return (
+                type(result) is VerificationResult
+                and result.status is VerificationStatus.VERIFIED
+                and result.verifier_id == verification["verifier_id"]
+                and result.payload_digest == claim_digest
+                and result.record_digest == verification_digest
+            )
+        except Exception:
+            return False
+
+    def claim_dispatch(self, raw: object) -> DurableResult:
+        """Atomically claim one committed intent; never execute or retry it."""
+
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        keys = frozenset({"transaction_id", "observed_at", "executor_verification"})
+        verification_keys = frozenset({"verifier_id", "issuer_id", "key_id", "proof"})
+        if not _closed_dict(raw, keys):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if not _valid_identifier(raw["transaction_id"]) or _parse_time(raw["observed_at"]) is None:
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        source = raw["executor_verification"]
+        if not _closed_dict(source, verification_keys):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if not all(_valid_identifier(source[field]) for field in ("verifier_id", "issuer_id", "key_id")):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if not _valid_proof(source["proof"]):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if self._executor_claim_verifier is None:
+            return _result(DurableOutcome.STOP, DurableReason.EXECUTOR_VERIFIER_ABSENT)
+        connection: sqlite3.Connection | None = None
+        try:
+            self._hit("claim_before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("claim_after_begin")
+            self._audit(connection)
+            meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+            intent_row = connection.execute(
+                "SELECT * FROM dispatch_intents WHERE transaction_id=?",
+                (raw["transaction_id"],),
+            ).fetchone()
+            if meta is None:
+                raise _StoreCorrupt("missing metadata")
+            if intent_row is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.UNKNOWN_INTENT)
+            if connection.execute(
+                "SELECT 1 FROM dispatch_attempt_claims WHERE transaction_id=?",
+                (raw["transaction_id"],),
+            ).fetchone() is not None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.REPLAY)
+            if intent_row["state"] != "PENDING":
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            capability = connection.execute(
+                "SELECT * FROM capabilities WHERE capability_id=?",
+                (intent_row["capability_id"],),
+            ).fetchone()
+            if (
+                capability is None
+                or capability["state"] != "CONSUMED"
+                or capability["consumed_transaction_id"] != raw["transaction_id"]
+            ):
+                raise _StoreCorrupt("claim capability mismatch")
+            if capability["revocation_epoch"] != meta["revocation_epoch"]:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.STALE_REVOCATION)
+            if (
+                capability["fencing_epoch"] != meta["fencing_epoch"]
+                or intent_row["fencing_epoch"] != meta["fencing_epoch"]
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.STALE_FENCE)
+            observed = _parse_time(raw["observed_at"])
+            intent = _json_value(intent_row["intent_json"])
+            intent_observed = _parse_time(intent.get("observed_at"))
+            not_before = _parse_time(capability["not_before"])
+            expires_at = _parse_time(capability["expires_at"])
+            if observed is None or intent_observed is None or not_before is None or expires_at is None:
+                raise _StoreCorrupt("claim time mismatch")
+            if not (not_before <= intent_observed <= observed < expires_at):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.EXPIRED)
+            if not self._stored_verification_is_valid(capability, raw["observed_at"]):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.CAPABILITY_INVALID)
+            payload = _json_value(capability["payload_json"])
+            request = _json_value(capability["request_json"])
+            decision = _json_value(capability["decision_json"])
+            envelope = _json_value(capability["authorized_envelope_json"])
+            capability_verification = _json_value(capability["verification_json"])
+            if payload.get("principal_id") == payload.get("audience_id"):
+                raise _StoreCorrupt("self-audience capability")
+            claim = {
+                "claim_version": FORMAT_VERSION,
+                "transaction_id": intent["transaction_id"],
+                "capability_id": intent["capability_id"],
+                "intent_digest": intent_row["intent_digest"],
+                "idempotency_key_digest": intent["idempotency_key_digest"],
+                "principal_id": intent["principal_id"],
+                "audience_id": intent["audience_id"],
+                "purpose": intent["purpose"],
+                "profile_digest": intent["profile_digest"],
+                "placement_digest": intent["placement_digest"],
+                "session_id": intent["session_id"],
+                "lineage_root": intent["lineage_root"],
+                "nonce": intent["nonce"],
+                "revocation_epoch": intent["revocation_epoch"],
+                "fencing_epoch": intent["fencing_epoch"],
+                "observed_at": raw["observed_at"],
+                "target_scope_digest": intent["target_scope_digest"],
+                "material_digest": intent["material_digest"],
+                "request": request,
+                "decision": decision,
+                "authorized_envelope": envelope,
+                "capability_payload": payload,
+                "capability_verification": capability_verification,
+                "intent": intent,
+            }
+            claim_text = _canonical_text(claim)
+            claim_digest = canonical_digest(claim)
+            verification = {
+                "verification_version": FORMAT_VERSION,
+                "verifier_id": source["verifier_id"],
+                "issuer_id": source["issuer_id"],
+                "key_id": source["key_id"],
+                "payload_digest": claim_digest,
+                "bindings": claim,
+                "proof": source["proof"],
+            }
+            verification_text = _canonical_text(verification)
+            verification_digest = canonical_digest(verification)
+            if not self._executor_claim_verification_is_valid(
+                claim_text,
+                claim_digest,
+                verification,
+                verification_text,
+                verification_digest,
+                raw["observed_at"],
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.CAPABILITY_INVALID)
+            self._hit("claim_after_verification")
+            sequence = meta["journal_head_sequence"] + 1
+            if not _bounded_integer(sequence, 1):
+                raise _StoreCorrupt("claim sequence overflow")
+            connection.execute(
+                """
+                INSERT INTO dispatch_attempt_claims VALUES
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    raw["transaction_id"],
+                    claim_digest,
+                    intent_row["intent_digest"],
+                    capability["capability_id"],
+                    capability["audience_id"],
+                    capability["placement_digest"],
+                    capability["session_id"],
+                    capability["revocation_epoch"],
+                    capability["fencing_epoch"],
+                    raw["observed_at"],
+                    claim_text,
+                    verification_text,
+                    verification_digest,
+                    sequence,
+                ),
+            )
+            self._hit("claim_after_insert")
+            event_payload = {
+                "transaction_id": raw["transaction_id"],
+                "capability_id": capability["capability_id"],
+                "intent_digest": intent_row["intent_digest"],
+                "claim_digest": claim_digest,
+                "executor_verification_digest": verification_digest,
+                "audience_id": capability["audience_id"],
+                "placement_digest": capability["placement_digest"],
+                "session_id": capability["session_id"],
+                "revocation_epoch": capability["revocation_epoch"],
+                "fencing_epoch": capability["fencing_epoch"],
+                "claim": claim,
+            }
+            observed_sequence = self._append_event(
+                connection,
+                "DISPATCH_ATTEMPT_CLAIMED",
+                raw["transaction_id"],
+                event_payload,
+            )
+            if observed_sequence != sequence:
+                raise _StoreCorrupt("claim sequence mismatch")
+            self._hit("claim_after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("claim_after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            dispatch_claim = DispatchClaim(
+                transaction_id=raw["transaction_id"],
+                claim_digest=claim_digest,
+                intent_digest=intent_row["intent_digest"],
+                capability_id=capability["capability_id"],
+                idempotency_key_digest=capability["idempotency_key_digest"],
+                principal_id=capability["principal_id"],
+                audience_id=capability["audience_id"],
+                purpose=capability["purpose"],
+                profile_digest=capability["profile_digest"],
+                placement_digest=capability["placement_digest"],
+                session_id=capability["session_id"],
+                lineage_root=capability["lineage_root"],
+                nonce=capability["nonce"],
+                revocation_epoch=capability["revocation_epoch"],
+                fencing_epoch=capability["fencing_epoch"],
+                observed_at=raw["observed_at"],
+                target_scope_digest=intent["target_scope_digest"],
+                material_digest=intent["material_digest"],
+                request_json=capability["request_json"],
+                decision_json=capability["decision_json"],
+                authorized_envelope_json=capability["authorized_envelope_json"],
+                capability_payload_json=capability["payload_json"],
+                capability_verification_json=capability["verification_json"],
+                intent_json=intent_row["intent_json"],
+                claim_json=claim_text,
+                executor_verification_json=verification_text,
+            )
+            return DurableResult(
+                DurableOutcome.COMMITTED,
+                DurableReason.DISPATCH_ATTEMPT_CLAIMED,
+                capability_id=capability["capability_id"],
+                transaction_id=raw["transaction_id"],
+                journal_sequence=sequence,
+                dispatch_claim=dispatch_claim,
+            )
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
     def revoke(self, raw: object) -> DurableResult:
         if not self._usable:
             return _result(DurableOutcome.STOP, self._stopped_reason)
@@ -2663,11 +3258,19 @@ class DurableStore:
                 self._audit(connection)
                 rows = connection.execute(
                     """
-                    SELECT transaction_id, capability_id, intent_digest,
-                           idempotency_key_digest, state, fencing_epoch
-                    FROM dispatch_intents
-                    WHERE state IN ('PENDING', 'QUARANTINED_ESCROW')
-                    ORDER BY dispatch_counter
+                    SELECT i.transaction_id, i.capability_id, i.intent_digest,
+                           i.idempotency_key_digest,
+                           CASE
+                               WHEN i.state='PENDING' AND c.transaction_id IS NOT NULL
+                               THEN 'ATTEMPT_CLAIMED'
+                               ELSE i.state
+                           END AS recovery_state,
+                           i.fencing_epoch
+                    FROM dispatch_intents AS i
+                    LEFT JOIN dispatch_attempt_claims AS c
+                      ON c.transaction_id=i.transaction_id
+                    WHERE i.state IN ('PENDING', 'QUARANTINED_ESCROW')
+                    ORDER BY i.dispatch_counter
                     """
                 ).fetchall()
                 intents = tuple(
@@ -2676,7 +3279,7 @@ class DurableStore:
                         row["capability_id"],
                         row["intent_digest"],
                         row["idempotency_key_digest"],
-                        row["state"],
+                        row["recovery_state"],
                         row["fencing_epoch"],
                     )
                     for row in rows

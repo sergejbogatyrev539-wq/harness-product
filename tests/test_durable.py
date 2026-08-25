@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 import harness_product
+import harness_product.durable as durable_module
 
 from harness_product.durable import (
     DurableOutcome,
@@ -301,6 +302,23 @@ class BarrierAt:
             self.barrier.wait(timeout=5)
 
 
+def _claim_raw(transaction_id: str = "transaction-0001", *, observed_at: str = "2026-08-25T12:02:00Z") -> dict[str, object]:
+    return {
+        "transaction_id": transaction_id,
+        "observed_at": observed_at,
+        "executor_verification": _verification_source(),
+    }
+
+
+class ClaimBarrier:
+    def __init__(self, parties: int) -> None:
+        self.barrier = threading.Barrier(parties)
+
+    def __call__(self, point: str) -> None:
+        if point == "claim_before_transaction":
+            self.barrier.wait(timeout=5)
+
+
 class DurableStoreIssueTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -513,6 +531,7 @@ class DurableStoreIssueTests(unittest.TestCase):
                     "budgets",
                     "capabilities",
                     "dispatch_intents",
+                    "dispatch_attempt_claims",
                     "budget_reservations",
                     "journal_entries",
                     "outbox_events",
@@ -528,7 +547,7 @@ class DurableStoreIssueTests(unittest.TestCase):
             self.assertTrue(strict)
             self.assertTrue(all(strict.values()))
             version = connection.execute("SELECT schema_version FROM store_meta").fetchone()
-            self.assertEqual(version, (1,))
+            self.assertEqual(version, (2,))
 
         reopened = self.store()
         self.assert_result(reopened.health(), committed=False)
@@ -1443,6 +1462,211 @@ os._exit(87)
     def test_root_public_surface_still_excludes_effect_and_capability_symbols(self) -> None:
         for name in ("Broker", "Capability", "Executor", "DispatchReceipt"):
             self.assertFalse(hasattr(harness_product, name), name)
+
+
+class DurableClaimDispatchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temporary.name) / "claims.sqlite3"
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def store(self, *, executor: object | None = None, fault: object | None = None) -> DurableStore:
+        return DurableStore(
+            str(self.db_path),
+            ExactVerifier(),
+            no_effect_verifier=ExactNoEffectVerifier(),
+            executor_claim_verifier=executor,
+            _fault=fault,
+        )
+
+    def prepared(self, store: DurableStore) -> str:
+        self.assertTrue(store.bootstrap(_bootstrap_raw()).committed)
+        issued = store.issue(_issue_raw())
+        self.assertTrue(issued.committed)
+        with sqlite3.connect(self.db_path) as connection:
+            payload = json.loads(connection.execute("SELECT payload_json FROM capabilities").fetchone()[0])
+        consumed = store.consume(_consume_from_payload(issued.capability_id, payload))
+        self.assertEqual((consumed.outcome, consumed.reason), (DurableOutcome.COMMITTED, DurableReason.INTENT_COMMITTED))
+        return issued.capability_id
+
+    def assert_claim_stop(self, result: object, reason: DurableReason | None = None) -> None:
+        self.assertIs(type(result.outcome), DurableOutcome)
+        self.assertIn(result.outcome, {DurableOutcome.DENY, DurableOutcome.STOP})
+        if reason is not None:
+            self.assertEqual(result.reason, reason)
+        self.assertFalse(result.committed)
+        self.assertIsNone(result.dispatch_claim)
+
+    def test_claim_is_atomic_durable_evented_and_reopen_is_attempt_claimed_without_default_verifier(self) -> None:
+        absent = self.store()
+        self.prepared(absent)
+        self.assert_claim_stop(absent.claim_dispatch(_claim_raw()), DurableReason.EXECUTOR_VERIFIER_ABSENT)
+        verifier = ExactVerifier()
+        store = self.store(executor=verifier)
+        result = store.claim_dispatch(_claim_raw())
+        self.assertEqual((result.outcome, result.reason), (DurableOutcome.COMMITTED, DurableReason.DISPATCH_ATTEMPT_CLAIMED))
+        self.assertEqual(result.journal_sequence, 4)
+        self.assertIsNotNone(result.dispatch_claim)
+        with sqlite3.connect(self.db_path) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM dispatch_attempt_claims").fetchone(), (1,))
+            self.assertEqual(
+                connection.execute("SELECT event_type, subject_id FROM journal_entries WHERE sequence=4").fetchone(),
+                ("DISPATCH_ATTEMPT_CLAIMED", "transaction-0001"),
+            )
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM outbox_events WHERE sequence=4").fetchone(), (1,))
+        reopened = self.store(executor=ExactVerifier())
+        recovered = reopened.recover()
+        self.assertEqual(recovered.recovery_intents[0].state, "ATTEMPT_CLAIMED")
+        self.assert_claim_stop(reopened.claim_dispatch(_claim_raw()), DurableReason.REPLAY)
+
+    def test_claim_closed_terminal_expired_stale_and_verifier_rejections_do_not_claim(self) -> None:
+        verifier = ExactVerifier()
+        store = self.store(executor=verifier)
+        self.prepared(store)
+        for raw in ({}, {**_claim_raw(), "unknown": True}, {**_claim_raw(), "observed_at": "2026-08-25T12:05:00Z"}):
+            with self.subTest(raw=raw):
+                self.assert_claim_stop(store.claim_dispatch(raw))
+                with sqlite3.connect(self.db_path) as connection:
+                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM dispatch_attempt_claims").fetchone(), (0,))
+        rejected = self.store(executor=ExactVerifier(status=VerificationStatus.REJECTED))
+        self.assert_claim_stop(rejected.claim_dispatch(_claim_raw()), DurableReason.CAPABILITY_INVALID)
+        self.assertTrue(store.advance_fence({"expected_fencing_epoch": 11, "new_fencing_epoch": 12, "reason_digest": _digest("e")}).committed)
+        self.assert_claim_stop(store.claim_dispatch(_claim_raw()), DurableReason.STALE_FENCE)
+
+        self.db_path = Path(self.temporary.name) / "stale-revocation.sqlite3"
+        stale_revocation = self.store(executor=ExactVerifier())
+        self.prepared(stale_revocation)
+        second = stale_revocation.issue(
+            _issue_raw(nonce="nonce-revocation", idempotency_key_digest=_digest("f"))
+        )
+        self.assertTrue(second.committed)
+        self.assertTrue(
+            stale_revocation.revoke(
+                {
+                    "capability_id": second.capability_id,
+                    "expected_revocation_epoch": 7,
+                    "new_revocation_epoch": 8,
+                    "fencing_epoch": 11,
+                    "reason_digest": _digest("e"),
+                }
+            ).committed
+        )
+        self.assert_claim_stop(
+            stale_revocation.claim_dispatch(_claim_raw()),
+            DurableReason.STALE_REVOCATION,
+        )
+        self.db_path = Path(self.temporary.name) / "terminal.sqlite3"
+        terminal = self.store(executor=ExactVerifier())
+        self.prepared(terminal)
+        self.assertTrue(
+            terminal.settle(
+                {
+                    "transaction_id": "transaction-0001",
+                    "disposition": "SPENT",
+                    "observed_at": "2026-08-25T12:03:00Z",
+                    "evidence": {"evidence_digest": _digest("c")},
+                }
+            ).committed
+        )
+        self.assert_claim_stop(terminal.claim_dispatch(_claim_raw()), DurableReason.ILLEGAL_TRANSITION)
+
+    def test_claim_faults_roll_back_or_remain_durably_replayed_after_commit(self) -> None:
+        for point in ("claim_before_transaction", "claim_after_begin", "claim_after_verification", "claim_after_insert", "claim_after_event"):
+            with self.subTest(point=point):
+                self.db_path = Path(self.temporary.name) / f"{point}.sqlite3"
+                normal = self.store(executor=ExactVerifier())
+                self.prepared(normal)
+                faulted = self.store(executor=ExactVerifier(), fault=FaultAt(point))
+                self.assert_claim_stop(faulted.claim_dispatch(_claim_raw()))
+                with sqlite3.connect(self.db_path) as connection:
+                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM dispatch_attempt_claims").fetchone(), (0,))
+                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM journal_entries").fetchone(), (3,))
+        self.db_path = Path(self.temporary.name) / "after-commit.sqlite3"
+        normal = self.store(executor=ExactVerifier())
+        self.prepared(normal)
+        unknown = self.store(executor=ExactVerifier(), fault=FaultAt("claim_after_commit_before_ack")).claim_dispatch(_claim_raw())
+        self.assert_claim_stop(unknown, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+        reopened = self.store(executor=ExactVerifier())
+        self.assert_claim_stop(reopened.claim_dispatch(_claim_raw()), DurableReason.REPLAY)
+        self.assertEqual(reopened.recover().recovery_intents[0].state, "ATTEMPT_CLAIMED")
+
+    def test_concurrent_claim_and_claim_binding_mutations_fail_closed(self) -> None:
+        setup = self.store(executor=ExactVerifier())
+        self.prepared(setup)
+        barrier = ClaimBarrier(2)
+        stores = [self.store(executor=ExactVerifier(), fault=barrier) for _ in range(2)]
+        results: list[object] = []
+        workers = [threading.Thread(target=lambda current=current: results.append(current.claim_dispatch(_claim_raw()))) for current in stores]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(sum(result.committed for result in results), 1)
+        self.assertEqual(sum(result.reason is DurableReason.REPLAY for result in results), 1)
+        for table, statement in (
+            ("dispatch_attempt_claims", "UPDATE dispatch_attempt_claims SET claim_json='{}'"),
+            ("capabilities", "UPDATE capabilities SET audience_id='tampered'"),
+            ("dispatch_intents", "UPDATE dispatch_intents SET intent_digest='sha256:" + "0" * 64 + "'"),
+            ("journal_entries", "UPDATE journal_entries SET payload_json='{}' WHERE sequence=4"),
+            ("outbox_events", "UPDATE outbox_events SET payload_json='{}' WHERE sequence=4"),
+        ):
+            with self.subTest(table=table):
+                self.db_path = Path(self.temporary.name) / f"corrupt-{table}.sqlite3"
+                seeded = self.store(executor=ExactVerifier())
+                self.prepared(seeded)
+                self.assertTrue(seeded.claim_dispatch(_claim_raw()).committed)
+                with sqlite3.connect(self.db_path) as connection:
+                    connection.execute(statement)
+                corrupted = self.store(executor=ExactVerifier())
+                self.assertEqual(corrupted.health().reason, DurableReason.CORRUPT_STORE)
+
+    def test_exact_v1_store_migrates_atomically_and_corrupt_v1_never_partially_migrates(self) -> None:
+        for corrupted in (False, True):
+            with self.subTest(corrupted=corrupted):
+                self.db_path = Path(self.temporary.name) / f"legacy-{corrupted}.sqlite3"
+                original = self.store(executor=ExactVerifier())
+                self.prepared(original)
+                with sqlite3.connect(self.db_path) as connection:
+                    connection.execute("DROP TABLE dispatch_attempt_claims")
+                    connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v2")
+                    connection.execute(durable_module._SCHEMA_V1[0])
+                    connection.execute(
+                        """
+                        INSERT INTO store_meta
+                        SELECT id, 1, lineage_root, revocation_epoch, fencing_epoch,
+                               dispatch_counter, journal_head_sequence, journal_head_digest,
+                               outbox_head_sequence, outbox_head_digest
+                        FROM store_meta_v2
+                        """
+                    )
+                    connection.execute("DROP TABLE store_meta_v2")
+                    connection.execute("PRAGMA user_version=1")
+                    if corrupted:
+                        connection.execute("UPDATE dispatch_intents SET intent_json='{}'")
+                reopened = self.store(executor=ExactVerifier())
+                if corrupted:
+                    self.assertEqual(reopened.health().reason, DurableReason.CORRUPT_STORE)
+                    with sqlite3.connect(self.db_path) as connection:
+                        self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (1,))
+                        tables = {
+                            row[0]
+                            for row in connection.execute(
+                                "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                            )
+                        }
+                    self.assertNotIn("dispatch_attempt_claims", tables)
+                else:
+                    self.assertEqual(reopened.health().reason, DurableReason.READY)
+                    self.assertEqual(reopened.recover().recovery_intents[0].state, "PENDING")
+                    with sqlite3.connect(self.db_path) as connection:
+                        self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (2,))
+                        self.assertEqual(
+                            connection.execute("SELECT schema_version FROM store_meta").fetchone(),
+                            (2,),
+                        )
 
 
 if __name__ == "__main__":

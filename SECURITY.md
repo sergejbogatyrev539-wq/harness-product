@@ -32,7 +32,8 @@ The detailed threat model and residual-risk requirements are normative in
 ## Implemented M2 durable-intent boundary
 
 `harness_product.durable` is a direct stdlib SQLite store, not an executor or
-effect route. Schema v1 uses `STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
+effect route. Schema v2, including an exact audited v1 migration, uses `STRICT`
+tables, foreign keys, `BEGIN IMMEDIATE`,
 rollback-journal (`DELETE`) mode, and `synchronous=FULL`. At issue and consume
 it reruns/rechecks the exact M1 result, full canonical bindings, and full
 verifier record. Its one durable consume transaction records capability use,
@@ -42,6 +43,13 @@ dispatches or creates a retry. A reservation has one terminal disposition:
 `SPENT`, `RELEASED`, or `QUARANTINED_ESCROW`; `RELEASED` requires an independently
 verified no-effect record.
 
+An M3 claim transition can expose an executor envelope only once and only for a
+committed pending intent. It rechecks the full capability and verifier record,
+nonce-bound consumed state, expiry, current revocation/fencing epochs, and a
+second external verifier record, then atomically appends the claim and mandatory
+journal/outbox event. Crash recovery reports `ATTEMPT_CLAIMED` without returning
+an envelope or creating a retry. This remains durable mediation, not execution.
+
 This is not external cryptography, a trust root, runtime attestation, OS
 enforcement, non-bypassable mediation, or readiness. The local hash chain can
 detect inconsistent local chain state, but cannot detect a coherent rollback of
@@ -49,7 +57,7 @@ the whole database without an independent external anchor. `synchronous=FULL`
 also relies on the filesystem/device honoring flush and ordering guarantees; it
 does not prove power-loss durability.
 
-## M3 draft compiler and preflight boundary
+## M3 draft compiler, mediation, and staging boundary
 
 `harness_product.l0` currently compiles only the closed draft
 `L0-LX-A / DISCONNECTED_STAGEABLE_WORKER` profile and performs read-only host
@@ -62,6 +70,17 @@ profile. Host/runtime exceptions also become `STOP`.
 Preflight creates no namespaces, cgroups, sockets, worker, executor, or staging
 write. On the current host it stops before launch because the session lacks a
 dedicated cgroup-v2 subtree with delegated CPU and IO controllers. No fallback
-runtime is attempted. Exact worker/broker/executor execution, descriptor-rooted
-staging, external supply/placement verification, lifecycle cleanup evidence,
-and runtime conformance are not yet implemented or claimed.
+runtime is attempted.
+
+The same module has two separately callable, closed boundaries: exact
+`UNIX_SEQPACKET` ingress with peer-credential and canonical binding checks, and
+descriptor-rooted target resolution using all four required `openat2` resolve
+restrictions. Its only effect replaces one existing canary under a pre-opened
+0700 disposable staging root after an exact M2 claim and repeated external
+claim verification. It rejects traversal, links, cross-mount and descriptor/
+root/mount/epoch/object substitution; any post-write uncertainty is returned as
+`QUARANTINED` and the original binding cannot be retried.
+
+An actual isolated worker/broker/executor topology, external supply/placement
+verification, lifecycle cleanup evidence, and runtime conformance are not yet
+implemented or claimed.

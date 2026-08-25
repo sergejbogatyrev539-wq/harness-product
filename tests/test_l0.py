@@ -4,10 +4,12 @@ import os
 import random
 import socket
 import subprocess
+import tempfile
 import time
 import unittest
 from copy import deepcopy
-from dataclasses import is_dataclass, replace
+from dataclasses import FrozenInstanceError, is_dataclass, replace
+from hashlib import sha256
 from unittest.mock import patch
 
 import harness_product
@@ -421,8 +423,251 @@ class L0CompilerTests(unittest.TestCase):
             self.assert_stop(result)
 
     def test_root_package_remains_m1_only_and_has_no_executor_or_l0_compiler_exports(self) -> None:
-        for name in ("Broker", "Capability", "Executor", "DispatchReceipt", "compile_profile", "host_preflight"):
+        for name in (
+            "Broker",
+            "Capability",
+            "Executor",
+            "DispatchReceipt",
+            "compile_profile",
+            "host_preflight",
+            "resolve_target",
+            "receive_broker_message",
+        ):
             self.assertFalse(hasattr(harness_product, name), name)
+
+
+class L0PathBindingTests(unittest.TestCase):
+    def profile(self) -> l0.CompiledL0Profile:
+        result = l0.compile_profile(valid_raw())
+        self.assertEqual(result.outcome, l0.L0Outcome.COMPILED_DRAFT)
+        self.assertIsNotNone(result.profile)
+        return result.profile
+
+    @staticmethod
+    def request(path: str = "/staging/artifact.txt") -> dict[str, object]:
+        return {"canonical_path": path, "descriptor_id": "descriptor-1", "root_id": "root-1", "resolution_epoch": 1}
+
+    def assert_path_stop(self, result: object, reason: l0.L0Reason | None = None) -> None:
+        self.assertIs(type(result), l0.PathResult)
+        self.assertEqual(result.outcome, l0.L0Outcome.STOP)
+        if reason is not None:
+            self.assertEqual(result.reason, reason)
+        self.assertIsNone(result.binding)
+
+    @staticmethod
+    def open_root(base: str) -> tuple[str, int]:
+        root = os.path.join(base, "root")
+        os.mkdir(root, 0o700)
+        os.chmod(root, 0o700)
+        return root, os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+    def test_resolve_target_returns_immutable_full_descriptor_root_mount_and_object_binding(self) -> None:
+        profile = self.profile()
+        with tempfile.TemporaryDirectory(prefix="harness-l0-path-") as base:
+            root, descriptor = self.open_root(base)
+            try:
+                target_path = os.path.join(root, "artifact.txt")
+                with open(target_path, "wb") as target:
+                    target.write(b"payload")
+                result = l0.resolve_target(profile, descriptor, self.request())
+                self.assertEqual((result.outcome, result.reason), (l0.L0Outcome.RESOLVED, l0.L0Reason.PATH_RESOLVED))
+                self.assertIs(type(result.binding), l0.PathBinding)
+                binding = result.binding
+                self.assertIsNotNone(binding)
+                info = os.stat(target_path)
+                self.assertEqual((binding.descriptor_id, binding.root_id, binding.resolution_epoch), ("descriptor-1", "root-1", 1))
+                self.assertRegex(binding.root_identity, r"^sha256:[0-9a-f]{64}$")
+                self.assertRegex(binding.mount_id, r"^mnt:[0-9]+$")
+                self.assertRegex(binding.mount_identity, r"^sha256:[0-9a-f]{64}$")
+                self.assertEqual((binding.final_device, binding.final_inode, binding.final_type), (info.st_dev, info.st_ino, "REGULAR_FILE"))
+                self.assertEqual(binding.final_digest, "sha256:" + sha256(b"payload").hexdigest())
+                self.assertRegex(binding.composite_binding_digest, r"^sha256:[0-9a-f]{64}$")
+                self.assertTrue(type(binding).__dataclass_params__.frozen)
+                with self.assertRaises((AttributeError, FrozenInstanceError)):
+                    binding.root_id = "other-root"  # type: ignore[misc]
+            finally:
+                os.close(descriptor)
+
+    def test_path_traversal_separator_confusables_and_forbidden_surfaces_stop_before_open(self) -> None:
+        profile = self.profile()
+        paths = (
+            "/staging/../artifact.txt", "/staging/dir\\artifact.txt", "/staging/%2e%2e/artifact.txt",
+            "/staging/dir\u2044artifact.txt", "/staging/dir\u2215artifact.txt", "/staging/dir\uff0fartifact.txt",
+            "/staging/.git/config", "/staging/proc/self", "/staging//artifact.txt",
+        )
+        with tempfile.TemporaryDirectory(prefix="harness-l0-path-") as base:
+            root, descriptor = self.open_root(base)
+            try:
+                with open(os.path.join(root, "artifact.txt"), "wb") as target:
+                    target.write(b"payload")
+                for path in paths:
+                    with self.subTest(path=path):
+                        self.assert_path_stop(l0.resolve_target(profile, descriptor, self.request(path)), l0.L0Reason.PATH_DENIED)
+            finally:
+                os.close(descriptor)
+
+    def test_symlink_hardlink_missing_root_substitution_and_root_permissions_fail_closed(self) -> None:
+        profile = self.profile()
+        with tempfile.TemporaryDirectory(prefix="harness-l0-path-") as base:
+            root, descriptor = self.open_root(base)
+            try:
+                target_path = os.path.join(root, "artifact.txt")
+                with open(target_path, "wb") as target:
+                    target.write(b"payload")
+                os.symlink("artifact.txt", os.path.join(root, "linked.txt"))
+                os.link(target_path, os.path.join(root, "hardlinked.txt"))
+                for path, reason in (
+                    ("/staging/linked.txt", l0.L0Reason.PATH_DENIED),
+                    ("/staging/hardlinked.txt", l0.L0Reason.HARDLINK_DENIED),
+                    ("/staging/missing.txt", l0.L0Reason.PATH_DENIED),
+                ):
+                    with self.subTest(path=path):
+                        self.assert_path_stop(l0.resolve_target(profile, descriptor, self.request(path)), reason)
+                file_descriptor = os.open(target_path, os.O_RDONLY | os.O_CLOEXEC)
+                try:
+                    self.assert_path_stop(l0.resolve_target(profile, file_descriptor, self.request()), l0.L0Reason.ROOT_MISMATCH)
+                finally:
+                    os.close(file_descriptor)
+                os.chmod(root, 0o755)
+                self.assert_path_stop(l0.resolve_target(profile, descriptor, self.request()), l0.L0Reason.ROOT_MISMATCH)
+            finally:
+                os.close(descriptor)
+
+    def test_path_record_mutations_and_openat2_failure_are_rejected_without_binding(self) -> None:
+        profile = self.profile()
+        with tempfile.TemporaryDirectory(prefix="harness-l0-path-") as base:
+            root, descriptor = self.open_root(base)
+            try:
+                with open(os.path.join(root, "artifact.txt"), "wb") as target:
+                    target.write(b"payload")
+                resolved = l0.resolve_target(profile, descriptor, self.request())
+                self.assertIsNotNone(resolved.binding)
+                record = resolved.binding.data()
+                mutations: tuple[tuple[str, object], ...] = (
+                    ("descriptor_id", "other-descriptor"), ("root_id", "other-root"), ("root_identity", digest("e")),
+                    ("mount_id", "mnt:999999"), ("mount_identity", digest("f")),
+                    ("resolution_epoch", 2), ("final_device", int(record["final_device"]) + 1),
+                    ("final_inode", int(record["final_inode"]) + 1), ("final_type", "DIRECTORY"),
+                    ("final_digest", digest("0")),
+                )
+                for field, value in mutations:
+                    with self.subTest(field=field):
+                        mutated = dict(record)
+                        mutated[field] = value
+                        with self.assertRaises(l0._Stop):
+                            l0._parse_path_binding(mutated)
+                with patch.object(l0, "_openat2", side_effect=OSError("blocked")):
+                    self.assert_path_stop(l0.resolve_target(profile, descriptor, self.request()), l0.L0Reason.PATH_DENIED)
+                self.assert_path_stop(l0.resolve_target(profile, True, self.request()), l0.L0Reason.MALFORMED_INPUT)
+                self.assert_path_stop(l0.resolve_target(profile, descriptor, {"canonical_path": "/staging/artifact.txt"}))
+            finally:
+                os.close(descriptor)
+
+
+class L0BrokerReceiveTests(unittest.TestCase):
+    def profile(self) -> l0.CompiledL0Profile:
+        result = l0.compile_profile(valid_raw())
+        self.assertIsNotNone(result.profile)
+        return result.profile
+
+    @staticmethod
+    def local_peer() -> dict[str, int]:
+        return {"pid": os.getpid(), "uid": os.geteuid(), "gid": os.getegid(), "process_session": os.getsid(os.getpid())}
+
+    def expected(self, profile: l0.CompiledL0Profile) -> dict[str, object]:
+        worker = next(principal for principal in profile.principals if principal.role == "AGENT_WORKER")
+        return {
+            "operation_id": "write-report-v1", "worker_principal": worker.principal_id, "worker_session": worker.session_id,
+            "nonce": "nonce-1", "fencing_epoch": 1, "binding_digest": profile.broker_binding_digest, "peer": self.local_peer(),
+        }
+
+    def packet(self, profile: l0.CompiledL0Profile, expected: dict[str, object]) -> dict[str, object]:
+        proposal = {
+            "evaluation_time": "2026-08-25T12:00:00Z",
+            "proposal": {"operation_id": expected["operation_id"], "principal_id": expected["worker_principal"], "material_digest": digest("a"), "authority": {}},
+            "manifest": {}, "policy": {}, "physical_ceiling": {}, "trusted_facts": {},
+        }
+        return {
+            "message_version": "1", "operation_id": expected["operation_id"], "worker_principal": expected["worker_principal"],
+            "worker_session": expected["worker_session"], "nonce": expected["nonce"], "fencing_epoch": expected["fencing_epoch"],
+            "binding_digest": profile.broker_binding_digest, "proposal": proposal, "proposal_digest": l0._hash_text(l0._canonical(proposal)),
+        }
+
+    def receive(self, profile: l0.CompiledL0Profile, expected: dict[str, object], payload: bytes, *, socket_type: int = socket.SOCK_SEQPACKET, ancillary: list[tuple[int, int, bytes]] | None = None) -> l0.BrokerResult:
+        sender, receiver = socket.socketpair(socket.AF_UNIX, socket_type)
+        try:
+            if ancillary is None:
+                sender.send(payload)
+            else:
+                sender.sendmsg([payload], ancillary)
+            return l0.receive_broker_message(profile, receiver.fileno(), expected)
+        finally:
+            sender.close()
+            receiver.close()
+
+    def assert_broker_stop(self, result: object, reason: l0.L0Reason | None = None) -> None:
+        self.assertIs(type(result), l0.BrokerResult)
+        self.assertEqual(result.outcome, l0.L0Outcome.STOP)
+        if reason is not None:
+            self.assertEqual(result.reason, reason)
+        self.assertIsNone(result.peer)
+        self.assertIsNone(result.message)
+
+    def test_exact_bounded_canonical_packet_accepts_real_seqpacket_peer_credentials_and_session(self) -> None:
+        profile = self.profile()
+        expected = self.expected(profile)
+        raw = self.packet(profile, expected)
+        encoded = l0._canonical(raw).encode("utf-8")
+        self.assertLessEqual(len(encoded), 1024)
+        result = self.receive(profile, expected, encoded)
+        self.assertEqual((result.outcome, result.reason), (l0.L0Outcome.ACCEPTED, l0.L0Reason.BROKER_MESSAGE_ACCEPTED))
+        self.assertEqual(result.peer, l0.BrokerPeer(**self.local_peer()))
+        self.assertIs(type(result.message), l0.BrokerMessage)
+        self.assertEqual(result.message.proposal_json, l0._canonical(raw["proposal"]))
+        self.assertEqual(result.message.proposal_digest, raw["proposal_digest"])
+
+    def test_broker_rejects_stream_oversize_truncation_and_ancillary_file_descriptors(self) -> None:
+        profile = self.profile()
+        expected = self.expected(profile)
+        good = l0._canonical(self.packet(profile, expected)).encode("utf-8")
+        self.assert_broker_stop(self.receive(profile, expected, good, socket_type=socket.SOCK_STREAM), l0.L0Reason.BROKER_BINDING_MISMATCH)
+        self.assert_broker_stop(self.receive(profile, expected, b"x" * 1026), l0.L0Reason.MESSAGE_TOO_LARGE)
+        descriptor = os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, descriptor.to_bytes(4, "little", signed=True))]
+            self.assert_broker_stop(self.receive(profile, expected, good, ancillary=ancillary), l0.L0Reason.MESSAGE_TOO_LARGE)
+        finally:
+            os.close(descriptor)
+
+    def test_broker_rejects_peer_expected_and_all_exact_message_binding_substitutions(self) -> None:
+        profile = self.profile()
+        expected = self.expected(profile)
+        raw = self.packet(profile, expected)
+        wrong_peer = deepcopy(expected)
+        wrong_peer["peer"]["pid"] = int(wrong_peer["peer"]["pid"]) + 1
+        self.assert_broker_stop(self.receive(profile, wrong_peer, l0._canonical(raw).encode("utf-8")), l0.L0Reason.PEER_MISMATCH)
+        mutations: list[dict[str, object]] = []
+        for field, value in (
+            ("operation_id", "other-operation"), ("worker_principal", "other-principal"), ("worker_session", "other-session"),
+            ("nonce", "other-nonce"), ("fencing_epoch", 2), ("binding_digest", digest("b")), ("proposal_digest", digest("c")),
+        ):
+            changed = deepcopy(raw)
+            changed[field] = value
+            mutations.append(changed)
+        changed_proposal = deepcopy(raw)
+        changed_proposal["proposal"]["proposal"]["principal_id"] = "other-principal"
+        changed_proposal["proposal_digest"] = l0._hash_text(l0._canonical(changed_proposal["proposal"]))
+        mutations.append(changed_proposal)
+        for changed in mutations:
+            with self.subTest(changed=changed):
+                self.assert_broker_stop(
+                    self.receive(profile, expected, l0._canonical(changed).encode("utf-8")), l0.L0Reason.BROKER_BINDING_MISMATCH
+                )
+        unknown = deepcopy(raw)
+        unknown["ambient_authority"] = True
+        self.assert_broker_stop(
+            self.receive(profile, expected, l0._canonical(unknown).encode("utf-8")), l0.L0Reason.UNKNOWN_INPUT
+        )
 
 
 if __name__ == "__main__":

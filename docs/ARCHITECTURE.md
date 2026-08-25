@@ -28,7 +28,8 @@ shell adapter in M1. Trusted facts are model inputs; M1 does not attest their
 provenance. Decision digests are deterministic bindings, not signatures.
 
 M2 is one direct `harness_product.durable` stdlib SQLite module, deliberately
-outside the package-root API. Schema v1 uses `STRICT` tables and foreign keys;
+outside the package-root API. Schema v2 (with exact audited v1 migration) uses
+`STRICT` tables and foreign keys;
 each competing mutation uses `BEGIN IMMEDIATE`, rollback-journal (`DELETE`) mode,
 and `synchronous=FULL`. Capability issue reruns M1 and stores its full canonical
 inputs, exact bindings, canonical decision digest, and full verifier record.
@@ -42,6 +43,13 @@ Rollback `DELETE` mode is chosen for the serialized single-writer profile so
 recovery does not also depend on WAL checkpoint state; SQLite still creates a
 transient rollback-journal file for a transaction.
 
+M3 adds one atomic `claim_dispatch` transition to that store. It derives the
+claim exclusively from a committed intent and its stored capability, repeats
+the complete capability/verifier/expiry/revocation/fence checks, verifies a
+second canonical executor record, and persists the one-attempt claim plus its
+journal/outbox event before returning a frozen envelope. Recovery returns only
+`ATTEMPT_CLAIMED`; it never recreates the envelope or retries.
+
 M3 adds one direct `harness_product.l0` module without exporting it from the
 package root. Its first slice is a pure closed compiler for the exact draft
 `L0-LX-A / DISCONNECTED_STAGEABLE_WORKER` profile and a read-only host
@@ -52,13 +60,26 @@ root-owned `/usr/bin/bwrap` binary (bubblewrap 0.9.0, exact SHA-256 bound in
 code). Preflight verifies the binary and required platform capabilities with
 typed absolute argv and no shell. It creates no runtime object or effect.
 
+The next slice remains in the same deep module. `receive_broker_message`
+accepts one bounded canonical message from an exact `AF_UNIX/SOCK_SEQPACKET`
+descriptor only after `SO_PEERCRED`, process-session, worker/session/nonce/fence,
+and broker-binding checks. `resolve_target` opens one existing file relative to
+a trusted root descriptor with `openat2(BENEATH|NO_MAGICLINKS|NO_SYMLINKS|NO_XDEV)`
+and binds path, descriptor/root/mount/epoch, final device/inode/type/content, and
+one composite digest. `stage_committed_intent` is the sole effect surface: after
+revalidating an exact M2 claim and external claim-verifier record, it can replace
+that file inside a 0700 disposable staging root. It has no project-root path,
+durable DB handle, network, shell, commit, seal, JOIN, or retry surface. A fault
+after the first write becomes `QUARANTINED/STAGE_OUTCOME_UNKNOWN`.
+
 The current host result is a structured `STOP/CGROUP_DELEGATION_ABSENT`: the
 application cgroup is shared and lacks delegated CPU/IO controllers. The
 preflight consequently returns no partial compiled/measurement authority and
 does not fall back to Docker or a weaker profile.
 
-The following executor topology remains unfinished M3+ work, not an implemented
-or attested path.
+The boundaries above implement the powerless proposal/claim/staging edges, but
+the following physical principal topology remains unfinished and unattested M3
+work.
 
 ```text
 untrusted worker ── powerless proposal ──> Controller / PEP
@@ -94,14 +115,15 @@ before independent postcheck; failed checks discard it. External outcomes that
 cannot be proved are quarantined rather than retried. Recovery preserves durable
 lineage, fences stale processes, and requires fresh admission where specified.
 
-M1 remains pure and returns only powerless proposals. M2 persists a durable
-intent, not an effect: it supplies no executor, connector, gateway, effect
+M1 remains pure and returns only powerless proposals. The durable store persists
+intent and one-attempt claims, not effects: it supplies no executor, connector, gateway, effect
 adapter, external cryptography/trust root/attestation, OS enforcement, or
 non-bypassable path. The local hash chain cannot detect a coherent whole-database
 rollback without an independent external anchor. `synchronous=FULL` depends on
 filesystem/device flush and ordering behavior and is not proof of power-loss
-durability. The M3 compiler/preflight likewise proves only closed planning and
-host prerequisite measurement; it has not launched or attested a worker.
+durability. The M3 compiler/preflight and local staging tests prove closed
+planning, descriptor mediation, and the one disposable-root operation only;
+they have not launched or attested an isolated worker.
 Therefore the product remains `NOT_IMPLEMENTED`, `NOT_ATTESTED`, and
 `NOT_READY`; runtime enforcement and external evidence remain absent.
 

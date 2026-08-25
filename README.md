@@ -44,7 +44,7 @@ or perform an effect. The returned digest is a deterministic binding, not a
 signature or attestation.
 
 M2 adds one direct, non-root-exported `harness_product.durable` stdlib SQLite
-store. Its schema v1 uses `STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
+store. Its schema v2 (with an audited atomic migration from exact v1) uses `STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
 rollback-journal (`DELETE`) mode, and `synchronous=FULL`. Issue reruns the exact
 M1 decision and stores the complete canonical M1 inputs/bindings and complete
 verifier record; consume checks them again. A single commit consumes the
@@ -52,20 +52,26 @@ capability, reserves every budget component, records the exact durable dispatch
 intent, counters/journal, and a mandatory local outbox event. Reservations end
 exactly once as `SPENT`, `RELEASED`, or `QUARANTINED_ESCROW`; release requires an
 independently verified no-effect record. Recovery never dispatches or retries.
+The M3 extension can atomically claim one already committed intent after
+rechecking its complete stored capability/verifier bindings, expiry, revocation
+epoch, and fence through a second external-verifier boundary. The claim and its
+mandatory event/outbox record persist before an executor can receive an
+envelope; reopen exposes only `ATTEMPT_CLAIMED`, never an automatic retry.
 
 `DELETE` is intentional for this single-writer profile: `BEGIN IMMEDIATE`
 serializes mutations, while rollback journaling avoids a separate WAL checkpoint
 lifecycle. It still uses a transient rollback-journal file during a transaction.
 
-This is durable intent only: it has no executor, connector, effect adapter,
+The durable module still has no executor, connector, or effect adapter,
 external crypto/trust root/attestation, OS enforcement, non-bypassability, or
 readiness claim. A local hash chain cannot detect a coherent whole-database
 rollback without an independent external anchor. `synchronous=FULL` depends on
 the filesystem and device honoring flush/order guarantees and does not prove
 power-loss durability.
 
-M3 currently adds only the direct, non-root-exported
-`harness_product.l0` draft compiler and read-only host preflight for the one
+M3 currently adds the direct, non-root-exported `harness_product.l0` draft
+compiler, read-only host preflight, exact descriptor/IPC boundaries, and one
+minimal local staging operation for the one
 profile `L0-LX-A / DISCONNECTED_STAGEABLE_WORKER`. It pins the single backend
 to root-owned `/usr/bin/bwrap`, `bubblewrap 0.9.0`, SHA-256
 `52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712`.
@@ -74,11 +80,19 @@ Q-56 resource vector, disconnected worker controls, exact `UNIX_SEQPACKET`
 broker IPC, and measurement requirements. It emits a draft measurement plan,
 not activation or attestation. Preflight only reads host controls and invokes
 `bwrap --version/--help` with absolute typed argv, `shell=False`; it never
-creates a worker, namespace, cgroup, socket, or staging effect.
+creates a worker, namespace, cgroup, socket, or staging effect. Separately,
+`resolve_target` uses Linux `openat2` with `BENEATH`, `NO_MAGICLINKS`,
+`NO_SYMLINKS`, and `NO_XDEV`; broker ingress accepts only bounded
+`UNIX_SEQPACKET` messages with exact `SO_PEERCRED` and binding checks. The sole
+effect API can replace one already-existing file beneath a pre-opened 0700
+disposable staging root only after an exact M2 claim, external claim-verifier
+recheck, M1 selector/material match, and immutable descriptor/root/mount/epoch/
+object match. Unknown post-write outcome is quarantined and never retried.
 
 On this development session preflight stops with
 `CGROUP_DELEGATION_ABSENT`: the current cgroup has only memory/PID controllers
 and is shared, so CPU/IO limits and complete process-tree lifecycle cannot be
-enforced. No weaker fallback is selected. M3 runtime enforcement, external
+enforced. No weaker fallback is selected. A real isolated worker, runtime
+supervisor, external
 supply/placement verification, attestation, and evidence remain absent; status
 therefore stays `NOT_IMPLEMENTED`, `NOT_ATTESTED`, and `NOT_READY`.
