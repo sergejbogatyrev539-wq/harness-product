@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 import json
+import unicodedata
 from typing import FrozenSet
 
 
@@ -169,12 +170,21 @@ class Capability:
 
 
 def _is_text(value: object) -> bool:
-    return isinstance(value, str) and bool(value)
+    return type(value) is str and bool(value)
+
+
+def _is_valid_operation_id(value: object) -> bool:
+    return (
+        type(value) is str
+        and 1 <= len(value) <= 128
+        and "a" <= value[0] <= "z"
+        and all("a" <= character <= "z" or "0" <= character <= "9" or character in "._/-" for character in value[1:])
+    )
 
 
 def is_canonical_sha256(value: object) -> bool:
     """Accept only the canonical ``sha256:<64 lowercase hex>`` representation."""
-    if not isinstance(value, str) or not value.startswith("sha256:") or len(value) != 71:
+    if type(value) is not str or not value.startswith("sha256:") or len(value) != 71:
         return False
     hexadecimal = value[7:]
     return all(character in "0123456789abcdef" for character in hexadecimal)
@@ -194,7 +204,11 @@ def is_canonical_workspace_path(value: object) -> bool:
         not value.startswith("/workspace/")
         or "\\" in value
         or "%" in value
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or any(
+            unicodedata.category(character) in {"Cc", "Cf"}
+            or character in {"\u2044", "\u2215", "\uff0f", "\uff3c"}
+            for character in value
+        )
     ):
         return False
     return all(component not in {"", ".", ".."} for component in value.split("/")[2:])
@@ -220,7 +234,7 @@ def _is_valid_selector(value: object) -> bool:
 def is_valid_request(value: object) -> bool:
     return (
         type(value) is Request
-        and _is_text(value.operation_id)
+        and _is_valid_operation_id(value.operation_id)
         and is_valid_principal(value.principal, PrincipalRole.WORKER)
         and type(value.effect) is EffectKind
         and type(value.resource) is ResourceKind
@@ -246,7 +260,7 @@ def _is_scope_bound_set(value: object) -> bool:
 def is_valid_manifest(value: object) -> bool:
     return (
         type(value) is Manifest
-        and _is_text(value.operation_id)
+        and _is_valid_operation_id(value.operation_id)
         and _is_scope_bound_set(value.bounds)
     )
 

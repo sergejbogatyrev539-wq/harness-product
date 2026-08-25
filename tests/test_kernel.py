@@ -179,6 +179,76 @@ class KernelTests(unittest.TestCase):
             decision, capability = self.broker.authorize(request, self.manifest, self.policy)
             self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.STOP, Reason.MALFORMED_INPUT, None))
 
+    def test_unicode_path_controls_and_separator_confusables_stop_before_issuance(self) -> None:
+        for value in (
+            "/workspace/reports/a\u200eb.txt",
+            "/workspace/reports/a\u2044b.txt",
+            "/workspace/reports/a\u2215b.txt",
+            "/workspace/reports/a\uff0fb.txt",
+            "/workspace/reports/a\uff3cb.txt",
+        ):
+            request = Request(
+                self.request.operation_id,
+                self.worker,
+                self.request.effect,
+                self.request.resource,
+                Selector(SelectorKind.PATH_EXACT, value),
+                self.request.material_digest,
+            )
+            decision, capability = self.broker.authorize(request, self.manifest, self.policy)
+            self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.STOP, Reason.MALFORMED_INPUT, None))
+
+    def test_operation_id_requires_exact_bounded_ascii_form_before_issuance(self) -> None:
+        class ExplodingStr(str):
+            def __len__(self):
+                raise AssertionError("must not inspect string subclasses")
+
+            def startswith(self, *args, **kwargs):
+                raise AssertionError("must not inspect string subclasses")
+
+        for operation_id in (
+            "write\nreport",
+            "write report",
+            "a" * 129,
+            "a" * 10000,
+            "1write-report",
+            ExplodingStr("write-report"),
+        ):
+            request = Request(
+                operation_id,
+                self.worker,
+                self.request.effect,
+                self.request.resource,
+                self.request.selector,
+                self.request.material_digest,
+            )
+            decision, capability = self.broker.authorize(request, self.manifest, self.policy)
+            self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.STOP, Reason.MALFORMED_INPUT, None))
+            decision, capability = self.broker.authorize(
+                self.request,
+                Manifest(operation_id, self.manifest.bounds),
+                self.policy,
+            )
+            self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.STOP, Reason.MALFORMED_INPUT, None))
+
+    def test_valid_128_character_operation_id_can_be_authorized(self) -> None:
+        operation_id = "a" + "b" * 127
+        request = Request(
+            operation_id,
+            self.worker,
+            self.request.effect,
+            self.request.resource,
+            self.request.selector,
+            self.request.material_digest,
+        )
+        decision, capability = self.broker.authorize(
+            request,
+            Manifest(operation_id, self.manifest.bounds),
+            self.policy,
+        )
+        self.assertEqual(decision.outcome, Outcome.ALLOW)
+        self.assertIsNotNone(capability)
+
     def test_missing_scope_bound_stops_before_issuance(self) -> None:
         decision, capability = self.broker.authorize(self.request, self.manifest, Policy(frozenset()))
         self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.STOP, Reason.MALFORMED_INPUT, None))

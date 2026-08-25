@@ -9,8 +9,10 @@ import json
 from pathlib import Path, PurePosixPath
 import os
 import re
+import stat
 import subprocess
 import sys
+import unicodedata
 
 
 sys.dont_write_bytecode = True
@@ -44,6 +46,15 @@ def verify_status(root: Path = ROOT) -> None:
 
 
 def verify_spec_manifest(spec: Path = SPEC, manifest: Path = MANIFEST) -> None:
+    try:
+        if (
+            not stat.S_ISDIR(spec.stat(follow_symlinks=False).st_mode)
+            or not stat.S_ISREG(manifest.stat(follow_symlinks=False).st_mode)
+        ):
+            stop("spec and manifest must be real directories/files")
+    except OSError as error:
+        stop(f"invalid spec inventory: {error}")
+
     entries: dict[str, str] = {}
     for number, raw in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
         match = LINE.fullmatch(raw)
@@ -51,15 +62,35 @@ def verify_spec_manifest(spec: Path = SPEC, manifest: Path = MANIFEST) -> None:
             stop(f"invalid spec manifest line {number}")
         digest, relative = match.groups()
         path = PurePosixPath(relative)
-        if path.is_absolute() or ".." in path.parts or relative in entries:
+        unsafe_character = any(
+            unicodedata.category(character) in {"Cc", "Cf"}
+            or character in {"\\", "\u2044", "\u2215", "\uff0f", "\uff3c"}
+            for character in relative
+        )
+        if (
+            path.is_absolute()
+            or path.as_posix() != relative
+            or relative in {"", "."}
+            or ".." in path.parts
+            or unsafe_character
+            or relative in entries
+        ):
             stop(f"unsafe or duplicate spec path: {relative}")
         entries[relative] = digest
 
-    actual = {
-        path.relative_to(spec).as_posix()
-        for path in spec.rglob("*")
-        if path.is_file() and path != manifest
-    }
+    actual: set[str] = set()
+    for path in spec.rglob("*"):
+        if path == manifest:
+            continue
+        try:
+            mode = path.stat(follow_symlinks=False).st_mode
+        except OSError as error:
+            stop(f"invalid spec inventory object {path}: {error}")
+        if stat.S_ISDIR(mode):
+            continue
+        if not stat.S_ISREG(mode):
+            stop(f"spec inventory object is not a regular file: {path}")
+        actual.add(path.relative_to(spec).as_posix())
     if set(entries) != actual:
         stop(f"spec inventory mismatch missing={sorted(set(entries) - actual)} extra={sorted(actual - set(entries))}")
     for relative, expected in entries.items():

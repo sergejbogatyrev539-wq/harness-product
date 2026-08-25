@@ -59,6 +59,35 @@ class RepositoryContractTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "spec inventory mismatch"):
                 repository_check.verify_spec_manifest(spec, spec / "MANIFEST.sha256")
 
+    def test_spec_manifest_rejects_control_character_names(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            spec = Path(directory) / "spec"
+            shutil.copytree(SPEC, spec)
+            manifest = spec / "MANIFEST.sha256"
+            records = manifest.read_text(encoding="utf-8").splitlines()
+            digest, relative = records[0].split("  ", 1)
+            unsafe_relative = relative + "\t"
+            (spec / relative).rename(spec / unsafe_relative)
+            records[0] = f"{digest}  {unsafe_relative}"
+            manifest.write_text("\n".join(records) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "unsafe or duplicate spec path"):
+                repository_check.verify_spec_manifest(spec, manifest)
+
+    def test_spec_manifest_rejects_symlinked_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = root / "spec"
+            shutil.copytree(SPEC, spec)
+            manifest = spec / "MANIFEST.sha256"
+            _, relative = manifest.read_text(encoding="utf-8").splitlines()[0].split("  ", 1)
+            listed = spec / relative
+            external = root / "external-copy"
+            external.write_bytes(listed.read_bytes())
+            listed.unlink()
+            listed.symlink_to(external)
+            with self.assertRaisesRegex(SystemExit, "not a regular file"):
+                repository_check.verify_spec_manifest(spec, manifest)
+
     def test_jsonschema_version_contract_is_closed(self) -> None:
         for version in ("4.10.3", "4.18.1", "5.0.0", "unknown"):
             with patch.object(repository_check.metadata, "version", return_value=version):
