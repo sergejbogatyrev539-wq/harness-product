@@ -1,0 +1,6 @@
+{
+  "case_id": "invalid-read-file-outside-workspace",
+  "base": "../valid/read-file.json",
+  "mutation": {"pointer": "/effect_bounds/0/resources/0/selector/value", "value": "/etc/passwd"},
+  "expected_error_fragment": "does not match"
+}

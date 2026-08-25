@@ -1,0 +1,6 @@
+{
+  "case_id": "invalid-update-memory-unknown-allow",
+  "base": "../valid/update-memory.json",
+  "mutation": {"pointer": "/behavior/unknown_behavior", "value": "ALLOW"},
+  "expected_error_fragment": "DENY"
+}

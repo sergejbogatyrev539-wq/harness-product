@@ -1,0 +1,419 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:harness:schema:isolation-profile:1",
+  "title": "Risk-scoped isolation profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_version",
+    "profile_digest",
+    "profile_activation",
+    "risk_class",
+    "status",
+    "owner",
+    "principal_envelopes",
+    "compiled_envelopes",
+    "filesystem",
+    "network",
+    "process",
+    "broker_ipc_binding",
+    "resources",
+    "credentials",
+    "supply_chain",
+    "seal_and_cleanup",
+    "attestation",
+    "residual_risks",
+    "risk_disposition_evidence"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "profile_id": {"type": "string", "pattern": "^isolation:[a-z0-9][a-z0-9._/-]{0,125}$"},
+    "profile_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "profile_digest": {"$ref": "#/$defs/digest"},
+    "profile_activation": {"$ref": "#/$defs/activation"},
+    "risk_class": {"enum": ["LOCAL_STAGEABLE", "MEDIATED_EXTERNAL", "STRONG_SEPARATION_REQUIRED"]},
+    "status": {"enum": ["DRAFT", "ACTIVE", "DEPRECATED", "REVOKED"]},
+    "owner": {"$ref": "#/$defs/id"},
+    "principal_envelopes": {"type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": {"$ref": "#/$defs/principalEnvelope"}},
+    "compiled_envelopes": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/compiledEnvelope"}},
+    "filesystem": {"$ref": "#/$defs/filesystem"},
+    "network": {"$ref": "#/$defs/network"},
+    "process": {"$ref": "#/$defs/process"},
+    "broker_ipc_binding": {"$ref": "#/$defs/brokerIpcBinding"},
+    "resources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/resourceLimit"}},
+    "credentials": {"$ref": "#/$defs/credentials"},
+    "supply_chain": {"$ref": "#/$defs/supplyChain"},
+    "seal_and_cleanup": {"$ref": "#/$defs/sealAndCleanup"},
+    "attestation": {"$ref": "#/$defs/attestation"},
+    "residual_risks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/residualRisk"}},
+    "risk_disposition_evidence": {"type": "array", "items": {"$ref": "#/$defs/riskDispositionEvidence"}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "ACTIVE"}}, "required": ["status"]},
+      "then": {
+          "properties": {
+          "principal_envelopes": {
+            "allOf": [
+              {"contains": {"type": "object", "properties": {"role": {"const": "AGENT_WORKER"}}, "required": ["role"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"role": {"const": "BROKER"}}, "required": ["role"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"role": {"const": "EXECUTOR"}}, "required": ["role"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"role": {"const": "MODEL_GATEWAY"}}, "required": ["role"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"role": {"const": "OBSERVER"}}, "required": ["role"]}, "minContains": 1, "maxContains": 1}
+            ]
+          },
+          "resources": {
+            "type": "array",
+            "minItems": 14,
+            "maxItems": 14,
+            "allOf": [
+              {"contains": {"type": "object", "properties": {"resource": {"const": "CPU_TIME"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "CPU_RATE"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "WALL_TIME"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "MEMORY"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "SWAP"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "PIDS"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "BLOCK_IO_READ"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "BLOCK_IO_WRITE"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "FILES"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "INODES"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "OPEN_FDS"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "OUTPUT_BYTES"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "GPU_TIME"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"contains": {"type": "object", "properties": {"resource": {"const": "GPU_MEMORY"}}, "required": ["resource"]}, "minContains": 1, "maxContains": 1},
+              {"if": {"contains": {"type": "object", "properties": {"resource": {"const": "GPU_TIME"}, "limit": {"const": 0}}, "required": ["resource", "limit"]}}, "then": {"contains": {"type": "object", "properties": {"resource": {"const": "GPU_MEMORY"}, "limit": {"const": 0}}, "required": ["resource", "limit"]}}},
+              {"if": {"contains": {"type": "object", "properties": {"resource": {"const": "GPU_MEMORY"}, "limit": {"const": 0}}, "required": ["resource", "limit"]}}, "then": {"contains": {"type": "object", "properties": {"resource": {"const": "GPU_TIME"}, "limit": {"const": 0}}, "required": ["resource", "limit"]}}}
+            ]
+          },
+          "risk_disposition_evidence": {"type": "array", "minItems": 1}
+        },
+        "required": ["risk_disposition_evidence"]
+        }
+      }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "principalEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal", "role", "os_subject", "ambient_authority", "network_mode", "credential_mode", "effect_ceiling"],
+      "properties": {
+        "principal": {"$ref": "#/$defs/id"},
+        "role": {"enum": ["AGENT_WORKER", "BROKER", "EXECUTOR", "MODEL_GATEWAY", "OBSERVER"]},
+        "os_subject": {"$ref": "#/$defs/osSubject"},
+        "ambient_authority": {"type": "boolean"},
+        "network_mode": {"enum": ["DISCONNECTED", "BROKER_MEDIATED", "EXACT_ENDPOINTS", "NONE"]},
+        "credential_mode": {"enum": ["NONE", "REFERENCE_ONLY", "EXECUTOR_SCOPED"]},
+        "effect_ceiling": {"type": "array", "uniqueItems": true, "items": {"enum": ["COMPUTE", "OBSERVE", "MUTATE", "COMMUNICATE", "DELEGATE", "REFLECT"]}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"role": {"const": "AGENT_WORKER"}}, "required": ["role"]},
+          "then": {
+            "properties": {
+              "ambient_authority": {"const": false},
+              "network_mode": {"const": "DISCONNECTED"},
+              "credential_mode": {"const": "NONE"},
+              "effect_ceiling": {"type": "array", "items": {"enum": ["COMPUTE", "OBSERVE"]}}
+            }
+          }
+        }
+      ]
+    },
+    "compiledEnvelope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["principal", "audience", "allowed_effects", "allowed_resource_kinds", "allowed_operations", "effect_resource_operations"],
+      "properties": {
+        "principal": {"$ref": "#/$defs/id"}, "audience": {"$ref": "#/$defs/id"},
+        "allowed_effects": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["COMPUTE", "OBSERVE", "MUTATE", "COMMUNICATE", "DELEGATE", "REFLECT"]}},
+        "allowed_resource_kinds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["FILE", "DIRECTORY", "PROCESS", "ENDPOINT", "PRINCIPAL", "MEMORY", "PROMPT", "POLICY", "REGISTRY", "COMPUTE_RESOURCE"]}},
+        "allowed_operations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["READ", "LIST", "WRITE", "CREATE", "DELETE", "EXECUTE", "SEND", "SPAWN", "UPDATE", "BIND", "ALLOCATE"]}},
+        "allowed_scopes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/path"}},
+        "filesystem_targets": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/filesystemTarget"}},
+        "endpoint_bindings": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/endpointBinding"}},
+        "effect_resource_operations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/effectResourceOperation"}}
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "allowed_resource_kinds": {
+              "contains": {"const": "ENDPOINT"},
+              "items": {"const": "ENDPOINT"},
+              "not": {"contains": {"enum": ["FILE", "DIRECTORY"]}}
+            }
+          },
+          "required": ["endpoint_bindings"],
+          "not": {"anyOf": [{"required": ["allowed_scopes"]}, {"required": ["filesystem_targets"]}]}
+        },
+        {
+          "properties": {"allowed_resource_kinds": {"not": {"contains": {"const": "ENDPOINT"}}}},
+          "required": ["allowed_scopes"],
+          "allOf": [
+            {
+              "if": {"properties": {"allowed_resource_kinds": {"contains": {"enum": ["FILE", "DIRECTORY"]}}}, "required": ["allowed_resource_kinds"]},
+              "then": {"required": ["filesystem_targets"]}
+            },
+            {"not": {"required": ["endpoint_bindings"]}}
+          ]
+        }
+      ]
+    },
+    "endpointBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["endpoint_id", "canonical_endpoint", "connector_id", "connector_digest", "method", "idempotency_key_digest", "endpoint_binding_digest"],
+      "properties": {
+        "endpoint_id": {"$ref": "#/$defs/id"},
+        "canonical_endpoint": {"type": "string", "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/.*)?$"},
+        "connector_id": {"$ref": "#/$defs/id"},
+        "connector_digest": {"$ref": "#/$defs/digest"},
+        "method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+        "idempotency_key_digest": {"$ref": "#/$defs/digest"},
+        "endpoint_binding_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "filesystemTarget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["canonical_path", "descriptor_id", "root_id", "root_identity", "mount_id", "mount_identity", "resolution_epoch", "final_object_id", "final_object_digest", "composite_binding_digest", "verified_by", "key_id", "trust_root", "algorithm", "signature", "signature_verified", "not_revoked"],
+      "properties": {
+        "canonical_path": {"$ref": "#/$defs/path"}, "descriptor_id": {"$ref": "#/$defs/id"}, "root_id": {"$ref": "#/$defs/id"}, "root_identity": {"$ref": "#/$defs/id"}, "mount_id": {"$ref": "#/$defs/id"}, "mount_identity": {"$ref": "#/$defs/id"}, "resolution_epoch": {"type": "integer", "minimum": 0}, "final_object_id": {"$ref": "#/$defs/id"}, "final_object_digest": {"$ref": "#/$defs/digest"}, "composite_binding_digest": {"$ref": "#/$defs/digest"}, "verified_by": {"$ref": "#/$defs/id"}, "key_id": {"$ref": "#/$defs/id"}, "trust_root": {"$ref": "#/$defs/id"}, "algorithm": {"enum": ["ED25519", "ECDSA_P256_SHA256"]}, "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43,512}$"}, "signature_verified": {"const": true}, "not_revoked": {"const": true}
+      }
+    },
+    "filesystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rootfs_read_only", "host_checkout_mounted", "git_visible", "inputs", "outputs", "path_resolution", "private_mounts", "tmpfs_quota_bytes", "inode_limit"],
+      "properties": {
+        "rootfs_read_only": {"const": true},
+        "host_checkout_mounted": {"const": false},
+        "git_visible": {"const": false},
+        "inputs": {"enum": ["READ_ONLY", "NONE"]},
+        "outputs": {"enum": ["WRITE_ONLY_STAGING", "READ_WRITE_STAGING", "NONE"]},
+        "path_resolution": {"enum": ["OPENAT2_BENEATH_NO_MAGICLINKS", "DESCRIPTOR_EQUIVALENT"]},
+        "private_mounts": {"const": true},
+        "tmpfs_quota_bytes": {"type": "integer", "minimum": 1},
+        "inode_limit": {"type": "integer", "minimum": 1}
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker_default", "loopback", "ipv4", "ipv6", "dns", "unix_sockets", "metadata_service", "inherited_fds_closed"],
+      "properties": {
+        "worker_default": {"const": "DISCONNECTED"},
+        "loopback": {"const": "DISABLED"},
+        "ipv4": {"const": "DISABLED"},
+        "ipv6": {"const": "DISABLED"},
+        "dns": {"const": "DISABLED"},
+        "unix_sockets": {"const": "NONE"},
+        "metadata_service": {"const": "BLOCKED"},
+        "inherited_fds_closed": {"const": true}
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespaces", "rootless_user_mapping", "no_new_privileges", "linux_capabilities", "seccomp", "lsm", "proc_mode", "ptrace", "devices", "ebpf", "kill_process_tree"],
+      "properties": {
+        "namespaces": {"type": "array", "minItems": 7, "uniqueItems": true, "items": {"enum": ["USER", "MOUNT", "PID", "IPC", "UTS", "NETWORK", "CGROUP"]}},
+        "rootless_user_mapping": {"const": true},
+        "no_new_privileges": {"const": true},
+        "linux_capabilities": {"type": "array", "maxItems": 0, "items": {"type": "string"}},
+        "seccomp": {"enum": ["ALLOWLIST", "RISK_REVIEWED_PROFILE"]},
+        "lsm": {"enum": ["LANDLOCK", "SELINUX", "APPARMOR", "COMPOSED"]},
+        "proc_mode": {"enum": ["PRIVATE_RESTRICTED", "ABSENT"]},
+        "ptrace": {"const": "DENIED"},
+        "devices": {"const": "EXACT_ALLOWLIST"},
+        "ebpf": {"const": "DENIED"},
+        "kill_process_tree": {"const": true}
+      }
+    },
+    "brokerIpcBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker_principal", "broker_principal", "worker_endpoint", "broker_endpoint", "transport", "peer_credentials_verified", "worker_network_namespace", "broker_network_namespace", "binding_digest"],
+      "properties": {
+        "worker_principal": {"$ref": "#/$defs/id"},
+        "broker_principal": {"$ref": "#/$defs/id"},
+        "worker_endpoint": {"$ref": "#/$defs/id"},
+        "broker_endpoint": {"$ref": "#/$defs/id"},
+        "transport": {"const": "UNIX_SEQPACKET"},
+        "peer_credentials_verified": {"const": true},
+        "worker_network_namespace": {"$ref": "#/$defs/id"},
+        "broker_network_namespace": {"$ref": "#/$defs/id"},
+        "binding_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "resourceLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource", "unit", "limit", "enforcement"],
+      "properties": {
+        "resource": {"enum": ["CPU_TIME", "CPU_RATE", "WALL_TIME", "MEMORY", "SWAP", "PIDS", "BLOCK_IO_READ", "BLOCK_IO_WRITE", "FILES", "INODES", "OPEN_FDS", "OUTPUT_BYTES", "GPU_TIME", "GPU_MEMORY"]},
+        "unit": {"enum": ["MILLISECONDS", "MILLICORES", "MIB", "COUNT", "BYTES", "IOPS"]},
+        "limit": {"type": "integer", "minimum": 0},
+        "enforcement": {"enum": ["CGROUP_V2", "SUPERVISOR", "FILESYSTEM_QUOTA", "RLIMIT", "DEVICE_SCHEDULER"]}
+      },
+      "oneOf": [
+        {"properties": {"resource": {"const": "CPU_TIME"}, "unit": {"const": "MILLISECONDS"}, "enforcement": {"const": "CGROUP_V2"}}},
+        {"properties": {"resource": {"const": "CPU_RATE"}, "unit": {"const": "MILLICORES"}, "enforcement": {"const": "CGROUP_V2"}}},
+        {"properties": {"resource": {"const": "WALL_TIME"}, "unit": {"const": "MILLISECONDS"}, "enforcement": {"const": "SUPERVISOR"}}},
+        {"properties": {"resource": {"const": "MEMORY"}, "unit": {"const": "MIB"}, "enforcement": {"const": "CGROUP_V2"}}},
+        {"properties": {"resource": {"const": "SWAP"}, "unit": {"const": "MIB"}, "enforcement": {"const": "CGROUP_V2"}}},
+        {"properties": {"resource": {"const": "PIDS"}, "unit": {"const": "COUNT"}, "enforcement": {"const": "CGROUP_V2"}}},
+        {"properties": {"resource": {"const": "BLOCK_IO_READ"}, "unit": {"const": "IOPS"}, "enforcement": {"const": "DEVICE_SCHEDULER"}}},
+        {"properties": {"resource": {"const": "BLOCK_IO_WRITE"}, "unit": {"const": "IOPS"}, "enforcement": {"const": "DEVICE_SCHEDULER"}}},
+        {"properties": {"resource": {"const": "FILES"}, "unit": {"const": "COUNT"}, "enforcement": {"const": "FILESYSTEM_QUOTA"}}},
+        {"properties": {"resource": {"const": "INODES"}, "unit": {"const": "COUNT"}, "enforcement": {"const": "FILESYSTEM_QUOTA"}}},
+        {"properties": {"resource": {"const": "OPEN_FDS"}, "unit": {"const": "COUNT"}, "enforcement": {"const": "RLIMIT"}}},
+        {"properties": {"resource": {"const": "OUTPUT_BYTES"}, "unit": {"const": "BYTES"}, "enforcement": {"const": "FILESYSTEM_QUOTA"}}},
+        {"properties": {"resource": {"const": "GPU_TIME"}, "unit": {"const": "MILLISECONDS"}, "enforcement": {"const": "DEVICE_SCHEDULER"}}},
+        {"properties": {"resource": {"const": "GPU_MEMORY"}, "unit": {"const": "MIB"}, "enforcement": {"const": "DEVICE_SCHEDULER"}}}
+      ]
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_ambient_credentials", "secret_resolution", "secret_bytes_visible_to_agent"],
+      "properties": {
+        "agent_ambient_credentials": {"const": false},
+        "secret_resolution": {"enum": ["NONE", "BROKER_JIT_REFERENCE"]},
+        "secret_bytes_visible_to_agent": {"const": false}
+      }
+    },
+    "supplyChain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image_digest", "runtime_digest", "signed_artifacts", "registry_snapshot_digest", "composite_measurement_digest", "trusted_roots_digest", "revocation_epoch", "registry_generation", "rollback_floor", "exact_byte_binding"],
+      "properties": {
+        "image_digest": {"$ref": "#/$defs/digest"},
+        "runtime_digest": {"$ref": "#/$defs/digest"},
+        "signed_artifacts": {"const": true},
+        "registry_snapshot_digest": {"$ref": "#/$defs/digest"},
+        "composite_measurement_digest": {"$ref": "#/$defs/digest"},
+        "trusted_roots_digest": {"$ref": "#/$defs/digest"},
+        "revocation_epoch": {"type": "integer", "minimum": 0},
+        "registry_generation": {"type": "integer", "minimum": 0},
+        "rollback_floor": {"type": "integer", "minimum": 0},
+        "exact_byte_binding": {"const": true}
+      }
+    },
+    "sealAndCleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["freeze_before_snapshot", "writers_revoked_before_seal", "immutable_snapshot", "cleanup_verified", "wildcard_cleanup_is_control"],
+      "properties": {
+        "freeze_before_snapshot": {"const": true},
+        "writers_revoked_before_seal": {"const": true},
+        "immutable_snapshot": {"const": true},
+        "cleanup_verified": {"const": true},
+        "wildcard_cleanup_is_control": {"const": false}
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["placement_required", "session_receipt_required", "independent_verification_required"],
+      "properties": {
+        "placement_required": {"const": true},
+        "session_receipt_required": {"const": true},
+        "independent_verification_required": {"const": true}
+      }
+    },
+    "residualRisk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "claim", "disposition"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^RR-[0-9]{3}$"},
+        "category": {"enum": ["SHARED_KERNEL", "COVERT_CHANNEL", "SIDECAR_TRUST", "HARDWARE", "OPERATIONAL"]},
+        "claim": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "disposition": {"enum": ["ACCEPTANCE_REQUIRED", "STRONGER_PROFILE_REQUIRED", "MONITOR", "OUT_OF_SCOPE"]}
+      }
+    },
+    "riskDispositionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "risk_id", "disposition", "evidence_type", "disposition_payload", "profile_id", "profile_digest", "scope_digest", "authorized_risk_owner", "rationale", "compensating_controls", "issued_at", "expires_at", "review_at", "signed_payload", "external_verification"],
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/id"},
+        "risk_id": {"type": "string", "pattern": "^RR-[0-9]{3}$"},
+        "disposition": {"enum": ["ACCEPTANCE_REQUIRED", "STRONGER_PROFILE_REQUIRED", "MONITOR", "OUT_OF_SCOPE"]},
+        "evidence_type": {"enum": ["ACCEPTANCE_RECORD", "STRONGER_PROFILE_RECORD", "MONITORING_RECORD", "OUT_OF_SCOPE_PROOF"]},
+        "disposition_payload": {"$ref": "#/$defs/riskDispositionPayload"},
+        "profile_id": {"type": "string", "pattern": "^isolation:[a-z0-9][a-z0-9._/-]{0,125}$"},
+        "profile_digest": {"$ref": "#/$defs/digest"},
+        "scope_digest": {"$ref": "#/$defs/digest"},
+        "authorized_risk_owner": {"$ref": "#/$defs/id"},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "compensating_controls": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "issued_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "review_at": {"type": "string", "format": "date-time"},
+        "signed_payload": {
+          "type": "object", "additionalProperties": false,
+          "required": ["payload_digest", "key_id", "algorithm", "signature"],
+          "properties": {
+            "payload_digest": {"$ref": "#/$defs/digest"},
+            "key_id": {"$ref": "#/$defs/id"},
+            "algorithm": {"enum": ["ED25519", "ECDSA_P256_SHA256"]},
+            "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43,512}$"}
+          }
+        },
+        "external_verification": {
+          "type": "object", "additionalProperties": false,
+          "required": ["trusted_reference", "verified_by", "signature_verified", "not_revoked", "verified_at"],
+          "properties": {
+            "trusted_reference": {"$ref": "#/$defs/id"},
+            "verified_by": {"$ref": "#/$defs/id"},
+            "signature_verified": {"const": true},
+            "not_revoked": {"const": true},
+            "verified_at": {"type": "string", "format": "date-time"}
+          }
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"disposition": {"const": "ACCEPTANCE_REQUIRED"}}, "required": ["disposition"]}, "then": {"properties": {"evidence_type": {"const": "ACCEPTANCE_RECORD"}, "disposition_payload": {"$ref": "#/$defs/acceptancePayload"}}}},
+        {"if": {"properties": {"disposition": {"const": "STRONGER_PROFILE_REQUIRED"}}, "required": ["disposition"]}, "then": {"properties": {"evidence_type": {"const": "STRONGER_PROFILE_RECORD"}, "disposition_payload": {"$ref": "#/$defs/strongerProfilePayload"}}}},
+        {"if": {"properties": {"disposition": {"const": "MONITOR"}}, "required": ["disposition"]}, "then": {"properties": {"evidence_type": {"const": "MONITORING_RECORD"}, "disposition_payload": {"$ref": "#/$defs/monitorPayload"}}}},
+        {"if": {"properties": {"disposition": {"const": "OUT_OF_SCOPE"}}, "required": ["disposition"]}, "then": {"properties": {"evidence_type": {"const": "OUT_OF_SCOPE_PROOF"}, "disposition_payload": {"$ref": "#/$defs/outOfScopePayload"}}}}
+      ]
+    },
+    "activation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["content_digest", "generation", "rollback_floor", "registry_reference", "issued_at", "expires_at", "signature", "external_verification"],
+      "properties": {
+        "content_digest": {"$ref": "#/$defs/digest"}, "generation": {"type": "integer", "minimum": 0}, "rollback_floor": {"type": "integer", "minimum": 0},
+        "registry_reference": {"$ref": "#/$defs/id"}, "issued_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
+        "signature": {"$ref": "#/$defs/digest"}, "external_verification": {"const": true}
+      }
+    },
+    "osSubject": {
+      "type": "object", "additionalProperties": false,
+      "required": ["process_id", "uid", "gid", "mount_namespace", "pid_namespace", "network_namespace", "security_label", "credential_namespace", "session_id", "ipc_endpoint", "inherited_fd_digest"],
+      "properties": {
+        "process_id": {"$ref": "#/$defs/id"}, "uid": {"type": "integer", "minimum": 1}, "gid": {"type": "integer", "minimum": 1},
+        "mount_namespace": {"$ref": "#/$defs/id"}, "pid_namespace": {"$ref": "#/$defs/id"}, "network_namespace": {"$ref": "#/$defs/id"}, "security_label": {"$ref": "#/$defs/id"},
+        "credential_namespace": {"$ref": "#/$defs/id"}, "session_id": {"$ref": "#/$defs/id"}, "ipc_endpoint": {"$ref": "#/$defs/id"}, "inherited_fd_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "path": {"type": "string", "pattern": "^/workspace(?:/[A-Za-z0-9._+@=-]+)*$"},
+    "effectResourceOperation": {
+      "type": "object", "additionalProperties": false, "required": ["effect", "resource_kind", "operation"],
+      "properties": {"effect": {"enum": ["COMPUTE", "OBSERVE", "MUTATE", "COMMUNICATE", "DELEGATE", "REFLECT"]}, "resource_kind": {"enum": ["FILE", "DIRECTORY", "PROCESS", "ENDPOINT", "PRINCIPAL", "MEMORY", "PROMPT", "POLICY", "REGISTRY", "COMPUTE_RESOURCE"]}, "operation": {"enum": ["READ", "LIST", "WRITE", "CREATE", "DELETE", "EXECUTE", "SEND", "SPAWN", "UPDATE", "BIND", "ALLOCATE"]}},
+      "oneOf": [
+        {"properties": {"effect": {"const": "COMPUTE"}, "resource_kind": {"const": "PROCESS"}, "operation": {"const": "EXECUTE"}}}, {"properties": {"effect": {"const": "COMPUTE"}, "resource_kind": {"const": "COMPUTE_RESOURCE"}, "operation": {"const": "ALLOCATE"}}},
+        {"properties": {"effect": {"const": "OBSERVE"}, "resource_kind": {"enum": ["FILE", "DIRECTORY", "MEMORY", "PROMPT", "POLICY", "REGISTRY"]}, "operation": {"enum": ["READ", "LIST"]}}}, {"properties": {"effect": {"const": "MUTATE"}, "resource_kind": {"enum": ["FILE", "DIRECTORY"]}, "operation": {"enum": ["WRITE", "CREATE", "DELETE"]}}},
+        {"properties": {"effect": {"const": "MUTATE"}, "resource_kind": {"enum": ["ENDPOINT", "MEMORY", "PROMPT", "POLICY", "REGISTRY"]}, "operation": {"const": "UPDATE"}}}, {"properties": {"effect": {"const": "COMMUNICATE"}, "resource_kind": {"enum": ["ENDPOINT", "PRINCIPAL"]}, "operation": {"const": "SEND"}}},
+        {"properties": {"effect": {"const": "DELEGATE"}, "resource_kind": {"const": "PRINCIPAL"}, "operation": {"enum": ["SPAWN", "BIND"]}}}, {"properties": {"effect": {"const": "REFLECT"}, "resource_kind": {"enum": ["MEMORY", "PROMPT", "POLICY", "REGISTRY"]}, "operation": {"enum": ["READ", "UPDATE"]}}}
+      ]
+    },
+    "riskDispositionPayload": {"oneOf": [{"$ref": "#/$defs/acceptancePayload"}, {"$ref": "#/$defs/strongerProfilePayload"}, {"$ref": "#/$defs/monitorPayload"}, {"$ref": "#/$defs/outOfScopePayload"}]},
+    "acceptancePayload": {"type": "object", "additionalProperties": false, "required": ["acceptance_record_id"], "properties": {"acceptance_record_id": {"$ref": "#/$defs/id"}}},
+    "strongerProfilePayload": {"type": "object", "additionalProperties": false, "required": ["required_profile_digest"], "properties": {"required_profile_digest": {"$ref": "#/$defs/digest"}}},
+    "monitorPayload": {"type": "object", "additionalProperties": false, "required": ["telemetry_digest", "escalation_threshold"], "properties": {"telemetry_digest": {"$ref": "#/$defs/digest"}, "escalation_threshold": {"$ref": "#/$defs/id"}}},
+    "outOfScopePayload": {"type": "object", "additionalProperties": false, "required": ["scope_exclusion_digest"], "properties": {"scope_exclusion_digest": {"$ref": "#/$defs/digest"}}}
+  }
+}

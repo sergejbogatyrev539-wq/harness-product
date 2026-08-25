@@ -1,0 +1,402 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:harness:schema:effect-receipt:1",
+  "title": "Executor and observer effect receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_id",
+    "transaction_id",
+    "call_id",
+    "principal",
+    "object_id",
+    "object_digest",
+    "object_identity",
+    "bindings",
+    "authorized",
+    "attempted",
+    "blocked",
+    "actual",
+    "committed",
+    "observed",
+    "verified",
+    "outcome",
+    "dispatch",
+    "quiesce_evidence",
+    "seal_evidence",
+    "postcheck_evidence",
+    "seal",
+    "postcheck",
+    "executor_attestation",
+    "authoritative_verifier",
+    "privacy",
+    "issued_at",
+    "chain"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "receipt_id": {"$ref": "#/$defs/id"},
+    "transaction_id": {"$ref": "#/$defs/id"},
+    "call_id": {"$ref": "#/$defs/id"},
+    "principal": {"$ref": "#/$defs/id"},
+    "object_id": {"$ref": "#/$defs/id"},
+    "object_digest": {"$ref": "#/$defs/digest"},
+    "object_identity": {"$ref": "#/$defs/objectIdentity"},
+    "bindings": {"$ref": "#/$defs/bindings"},
+    "authorized": {"$ref": "#/$defs/taggedStage"},
+    "attempted": {"$ref": "#/$defs/taggedStage"},
+    "blocked": {"$ref": "#/$defs/taggedStage"},
+    "actual": {"$ref": "#/$defs/taggedStage"},
+    "committed": {"$ref": "#/$defs/taggedStage"},
+    "observed": {"$ref": "#/$defs/taggedStage"},
+    "verified": {"$ref": "#/$defs/taggedStage"},
+    "outcome": {"enum": ["KNOWN_SUCCESS", "KNOWN_FAILURE", "UNKNOWN_OUTCOME", "BLOCKED", "DISCARDED", "QUARANTINED", "COMPENSATED_VERIFIED", "RESIDUAL_EFFECT", "COMPENSATION_FAILED"]},
+    "failure_disposition": {"$ref": "#/$defs/failureDisposition"},
+    "dispatch": {"$ref": "#/$defs/dispatch"},
+    "quiesce_evidence": {"$ref": "#/$defs/quiesceEvidence"},
+    "seal_evidence": {"$ref": "#/$defs/sealEvidence"},
+    "postcheck_evidence": {"$ref": "#/$defs/postcheckEvidence"},
+    "seal": {"$ref": "#/$defs/seal"},
+    "postcheck": {"$ref": "#/$defs/postcheck"},
+    "reconciliation": {"$ref": "#/$defs/reconciliation"},
+    "executor_attestation": {"$ref": "#/$defs/attestation"},
+    "authoritative_verifier": {"$ref": "#/$defs/authoritativeVerifier"},
+    "privacy": {"$ref": "#/$defs/privacy"},
+    "issued_at": {"type": "string", "format": "date-time"},
+    "chain": {"$ref": "#/$defs/chain"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"bindings": {"required": ["approval_mode"], "properties": {"approval_mode": {"const": "REQUIRED"}}}}, "required": ["bindings"]},
+      "then": {"properties": {"bindings": {"properties": {"approval_receipt_digest": {"$ref": "#/$defs/digest"}}}}}
+    },
+    {
+      "if": {"properties": {"bindings": {"required": ["approval_mode"], "properties": {"approval_mode": {"const": "NOT_REQUIRED"}}}}, "required": ["bindings"]},
+      "then": {"properties": {"bindings": {"properties": {"approval_receipt_digest": {"type": "null"}}}}}
+    },
+    {
+      "if": {"properties": {"outcome": {"const": "KNOWN_SUCCESS"}}, "required": ["outcome"]},
+      "then": {"properties": {"actual": {"properties": {"status": {"const": "KNOWN"}}}, "observed": {"properties": {"status": {"const": "KNOWN"}}}, "verified": {"properties": {"status": {"const": "KNOWN"}}}}}
+    },
+    {
+      "if": {"properties": {"outcome": {"const": "UNKNOWN_OUTCOME"}}, "required": ["outcome"]},
+      "then": {"properties": {"postcheck": {"properties": {"state": {"const": "RECONCILING"}, "automatic_retry_allowed": {"const": false}}}}}
+    },
+    {
+      "if": {"properties": {"outcome": {"const": "UNKNOWN_OUTCOME"}}, "required": ["outcome"]},
+      "then": {"required": ["reconciliation"], "properties": {"reconciliation": {"$ref": "#/$defs/reconciliation"}}}
+    },
+    {
+      "if": {"properties": {"outcome": {"const": "KNOWN_FAILURE"}}, "required": ["outcome"]},
+      "then": {"required": ["failure_disposition"]},
+      "else": {"not": {"required": ["failure_disposition"]}}
+    },
+    {
+      "if": {"properties": {"committed": {"properties": {"status": {"const": "KNOWN"}}, "required": ["status"]}}, "required": ["committed"]},
+      "then": {
+        "properties": {
+          "seal": {
+            "properties": {
+              "required": {"const": true},
+              "writers_quiesced": {"const": true},
+              "snapshot_digest": {"$ref": "#/$defs/digest"}
+            }
+          },
+          "postcheck": {
+            "properties": {
+              "state": {"const": "PASSED"},
+              "plan_digest": {"$ref": "#/$defs/digest"},
+              "attestation_digest": {"$ref": "#/$defs/digest"}
+            }
+          },
+          "chain": {
+            "properties": {
+              "witness_digest": {"$ref": "#/$defs/digest"},
+              "anti_rollback_proven": {"const": true}
+            }
+          }
+        }
+      }
+    }
+    ,
+    {
+      "if": {"properties": {"object_identity": {"required": ["endpoint_id"]}}, "required": ["object_identity"]},
+      "then": {"properties": {"authorized": {"$ref": "#/$defs/endpointTaggedStage"}, "attempted": {"$ref": "#/$defs/endpointTaggedStage"}, "blocked": {"$ref": "#/$defs/endpointTaggedStage"}, "actual": {"$ref": "#/$defs/endpointTaggedStage"}, "committed": {"$ref": "#/$defs/endpointTaggedStage"}, "observed": {"$ref": "#/$defs/endpointTaggedStage"}, "verified": {"$ref": "#/$defs/endpointTaggedStage"}, "dispatch": {"properties": {"object_identity": {"$ref": "#/$defs/endpointIdentity"}}}, "quiesce_evidence": {"properties": {"object_identity": {"$ref": "#/$defs/endpointIdentity"}}}, "seal_evidence": {"properties": {"object_identity": {"$ref": "#/$defs/endpointIdentity"}}}, "postcheck_evidence": {"properties": {"object_identity": {"$ref": "#/$defs/endpointIdentity"}}}}},
+      "else": {"properties": {"authorized": {"$ref": "#/$defs/filesystemTaggedStage"}, "attempted": {"$ref": "#/$defs/filesystemTaggedStage"}, "blocked": {"$ref": "#/$defs/filesystemTaggedStage"}, "actual": {"$ref": "#/$defs/filesystemTaggedStage"}, "committed": {"$ref": "#/$defs/filesystemTaggedStage"}, "observed": {"$ref": "#/$defs/filesystemTaggedStage"}, "verified": {"$ref": "#/$defs/filesystemTaggedStage"}, "dispatch": {"properties": {"object_identity": {"$ref": "#/$defs/filesystemObjectIdentity"}}}, "quiesce_evidence": {"properties": {"object_identity": {"$ref": "#/$defs/filesystemObjectIdentity"}}}, "seal_evidence": {"properties": {"object_identity": {"$ref": "#/$defs/filesystemObjectIdentity"}}}, "postcheck_evidence": {"properties": {"object_identity": {"$ref": "#/$defs/filesystemObjectIdentity"}}}}}
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "effect": {"enum": ["COMPUTE", "OBSERVE", "MUTATE", "COMMUNICATE", "DELEGATE", "REFLECT"]},
+    "objectIdentity": {
+      "oneOf": [{"$ref": "#/$defs/filesystemObjectIdentity"}, {"$ref": "#/$defs/endpointIdentity"}]
+    },
+    "filesystemObjectIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["descriptor_id", "root_id", "mount_id", "resolution_epoch", "final_object_id", "final_object_digest"],
+      "properties": {
+        "descriptor_id": {"$ref": "#/$defs/id"}, "root_id": {"$ref": "#/$defs/id"}, "mount_id": {"$ref": "#/$defs/id"},
+        "resolution_epoch": {"type": "integer", "minimum": 0}, "final_object_id": {"$ref": "#/$defs/id"}, "final_object_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "endpointIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["endpoint_id", "canonical_endpoint", "connector_id", "connector_digest", "method", "idempotency_key_digest", "endpoint_binding_digest"],
+      "properties": {
+        "endpoint_id": {"$ref": "#/$defs/id"}, "canonical_endpoint": {"type": "string", "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._~!$&'()*+,;=:@/-]*$"},
+        "connector_id": {"$ref": "#/$defs/id"}, "connector_digest": {"$ref": "#/$defs/digest"}, "method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+        "idempotency_key_digest": {"$ref": "#/$defs/digest"}, "endpoint_binding_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_digest", "manifest_digest", "policy_digest", "contract_digest", "iteration_slot_digest", "decision_digest", "capability_digest", "approval_mode", "approval_receipt_digest", "registry_digest", "placement_attestation_digest", "session_attestation_digest", "broker_ipc_attestation_digest", "broker_ipc_binding_digest", "resource_vector_digest", "supply_chain_measurement_digest", "session_id"],
+      "properties": {
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "manifest_digest": {"$ref": "#/$defs/digest"},
+        "policy_digest": {"$ref": "#/$defs/digest"},
+        "contract_digest": {"$ref": "#/$defs/digest"},
+        "iteration_slot_digest": {"$ref": "#/$defs/digest"},
+        "decision_digest": {"$ref": "#/$defs/digest"},
+        "capability_digest": {"$ref": "#/$defs/digest"},
+        "approval_mode": {"enum": ["NOT_REQUIRED", "REQUIRED"]},
+        "approval_receipt_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "registry_digest": {"$ref": "#/$defs/digest"},
+        "placement_attestation_digest": {"$ref": "#/$defs/digest"},
+        "session_attestation_digest": {"$ref": "#/$defs/digest"},
+        "broker_ipc_attestation_digest": {"$ref": "#/$defs/digest"},
+        "broker_ipc_binding_digest": {"$ref": "#/$defs/digest"},
+        "resource_vector_digest": {"$ref": "#/$defs/digest"},
+        "supply_chain_measurement_digest": {"$ref": "#/$defs/digest"}
+        ,"session_id": {"$ref": "#/$defs/id"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "values"],
+      "properties": {
+        "kind": {"enum": ["PATH", "ENDPOINT", "PRINCIPAL", "MEMORY", "PROMPT", "POLICY", "PROCESS", "LOCAL_RESOURCE"]},
+        "values": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}}
+      },
+      "allOf": [{"if": {"properties": {"kind": {"const": "PATH"}}, "required": ["kind"]}, "then": {"properties": {"values": {"items": {"$ref": "#/$defs/path"}}}}}]
+    },
+    "scopedEffect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["effect", "resource_kind", "operations", "scope"],
+      "properties": {
+        "effect": {"$ref": "#/$defs/effect"},
+        "resource_kind": {"enum": ["FILE", "DIRECTORY", "PROCESS", "ENDPOINT", "PRINCIPAL", "MEMORY", "PROMPT", "POLICY", "REGISTRY", "SECRET", "COMPUTE_RESOURCE"]},
+        "operations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["READ", "LIST", "WRITE", "CREATE", "DELETE", "EXECUTE", "SEND", "SPAWN", "UPDATE", "BIND", "ALLOCATE"]}},
+        "scope": {"$ref": "#/$defs/scope"}
+      },
+      "allOf": [{"$ref": "#/$defs/closedEffectResourceOperation"}]
+    },
+    "taggedStage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "entries"],
+      "properties": {
+        "status": {"enum": ["KNOWN", "UNKNOWN", "NOT_APPLICABLE", "ABSENT"]},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 256},
+        "entries": {"type": "array", "items": {"$ref": "#/$defs/scopedEffect"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "KNOWN"}}, "required": ["status"]}, "then": {"not": {"required": ["reason"]}, "properties": {"entries": {"minItems": 1}}}},
+        {"if": {"properties": {"status": {"enum": ["UNKNOWN", "ABSENT"]}}, "required": ["status"]}, "then": {"required": ["reason"], "properties": {"entries": {"maxItems": 0}}}},
+        {"if": {"properties": {"status": {"const": "NOT_APPLICABLE"}}, "required": ["status"]}, "then": {"not": {"required": ["reason"]}, "properties": {"entries": {"maxItems": 0}}}}
+      ]
+    },
+    "endpointTaggedStage": {"allOf": [{"$ref": "#/$defs/taggedStage"}, {"properties": {"entries": {"not": {"contains": {"properties": {"resource_kind": {"not": {"const": "ENDPOINT"}}}, "required": ["resource_kind"]}}}}}]},
+    "filesystemTaggedStage": {"allOf": [{"$ref": "#/$defs/taggedStage"}, {"properties": {"entries": {"not": {"contains": {"properties": {"resource_kind": {"const": "ENDPOINT"}}, "required": ["resource_kind"]}}}}}]},
+    "dispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent_digest", "capability_consumed", "budget_reserved", "journal_sequence", "fencing_epoch", "object_identity"],
+      "properties": {
+        "intent_digest": {"$ref": "#/$defs/digest"},
+        "capability_consumed": {"const": true},
+        "budget_reserved": {"const": true},
+        "journal_sequence": {"type": "integer", "minimum": 1},
+        "fencing_epoch": {"type": "integer", "minimum": 0}, "object_identity": {"$ref": "#/$defs/objectIdentity"}
+      }
+    },
+    "seal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "writers_quiesced", "snapshot_digest"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "writers_quiesced": {"type": "boolean"},
+        "snapshot_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}
+      }
+    },
+    "postcheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "plan_digest", "attestation_digest", "automatic_retry_allowed"],
+      "properties": {
+        "state": {"enum": ["NOT_APPLICABLE", "PENDING", "PASSED", "FAILED", "RECONCILING"]},
+        "plan_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "attestation_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "automatic_retry_allowed": {"type": "boolean"}
+      }
+    },
+    "stageEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["record_type", "transaction_id", "capability_digest", "session_id", "object_identity", "epoch", "observer_id", "record_digest", "signature_verified"],
+      "properties": {
+        "record_type": {"enum": ["QUIESCE", "SEAL", "POSTCHECK"]}, "transaction_id": {"$ref": "#/$defs/id"}, "capability_digest": {"$ref": "#/$defs/digest"},
+        "session_id": {"$ref": "#/$defs/id"}, "object_identity": {"$ref": "#/$defs/objectIdentity"}, "epoch": {"type": "integer", "minimum": 0},
+        "observer_id": {"$ref": "#/$defs/id"}, "record_digest": {"$ref": "#/$defs/digest"}, "signature_verified": {"const": true}
+      }
+    },
+    "quiesceEvidence": {"allOf": [{"$ref": "#/$defs/stageEvidence"}, {"properties": {"record_type": {"const": "QUIESCE"}}, "required": ["record_type"]}]},
+    "sealEvidence": {"allOf": [{"$ref": "#/$defs/stageEvidence"}, {"properties": {"record_type": {"const": "SEAL"}}, "required": ["record_type"]}]},
+    "postcheckEvidence": {"allOf": [{"$ref": "#/$defs/stageEvidence"}, {"properties": {"record_type": {"const": "POSTCHECK"}}, "required": ["record_type"]}]},
+    "reconciliation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reconciliation_id", "state", "evidence_digests", "escrow_digest", "automatic_retry_allowed"],
+      "properties": {"reconciliation_id": {"$ref": "#/$defs/id"}, "state": {"enum": ["RECONCILING", "RECONCILED_SUCCESS", "RECONCILED_FAILURE", "COMPENSATION_PENDING", "QUARANTINED"]}, "evidence_digests": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/digest"}}, "escrow_digest": {"$ref": "#/$defs/digest"}, "automatic_retry_allowed": {"const": false}, "terminal_receipt": {"$ref": "#/$defs/terminalReconciliationReceipt"}},
+      "allOf": [
+        {"if": {"properties": {"state": {"const": "RECONCILED_SUCCESS"}}, "required": ["state"]}, "then": {"required": ["terminal_receipt"], "properties": {"terminal_receipt": {"allOf": [{"$ref": "#/$defs/terminalReconciliationReceipt"}, {"properties": {"outcome": {"const": "SUCCESS"}}, "required": ["outcome"]}]}}}},
+        {"if": {"properties": {"state": {"const": "RECONCILED_FAILURE"}}, "required": ["state"]}, "then": {"required": ["terminal_receipt"], "properties": {"terminal_receipt": {"allOf": [{"$ref": "#/$defs/terminalReconciliationReceipt"}, {"properties": {"outcome": {"const": "FAILURE_NO_EFFECT"}}, "required": ["outcome"]}]}}}},
+        {"if": {"properties": {"state": {"const": "COMPENSATION_PENDING"}}, "required": ["state"]}, "then": {"required": ["terminal_receipt"], "properties": {"terminal_receipt": {"allOf": [{"$ref": "#/$defs/terminalReconciliationReceipt"}, {"properties": {"outcome": {"const": "FAILURE_WITH_RESIDUAL_EFFECT"}}, "required": ["outcome"]}, {"properties": {"failure_disposition": {"properties": {"next_state": {"const": "COMPENSATION_PENDING"}}, "required": ["next_state"]}}, "required": ["failure_disposition"]}]}}}},
+        {"if": {"properties": {"state": {"enum": ["RECONCILING", "QUARANTINED"]}}, "required": ["state"]}, "then": {"not": {"required": ["terminal_receipt"]}}}
+      ]
+    },
+    "failureDisposition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["effect_dispositions", "budget_dispositions", "automatic_retry_allowed", "next_state"],
+      "properties": {
+        "effect_dispositions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/effectDisposition"}},
+        "budget_dispositions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/budgetDisposition"}},
+        "automatic_retry_allowed": {"const": false},
+        "next_state": {"enum": ["STOPPED", "COMPENSATION_PENDING"]},
+        "compensation_authorization": {"$ref": "#/$defs/compensationAuthorization"}
+      },
+      "allOf": [
+        {"if": {"properties": {"next_state": {"const": "COMPENSATION_PENDING"}}, "required": ["next_state"]}, "then": {"required": ["compensation_authorization"]}, "else": {"not": {"required": ["compensation_authorization"]}}},
+        {"if": {"properties": {"effect_dispositions": {"contains": {"properties": {"disposition": {"enum": ["PARTIAL_EFFECT", "RESIDUAL_EFFECT"]}}, "required": ["disposition"]}}}, "required": ["effect_dispositions"]}, "then": {"properties": {"budget_dispositions": {"not": {"contains": {"properties": {"disposition": {"const": "RELEASED"}}, "required": ["disposition"]}}}}}}
+      ]
+    },
+    "effectDisposition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component_id", "effect", "disposition"],
+      "properties": {"component_id": {"$ref": "#/$defs/id"}, "effect": {"$ref": "#/$defs/scopedEffect"}, "disposition": {"enum": ["NO_EFFECT", "PARTIAL_EFFECT", "RESIDUAL_EFFECT"]}}
+    },
+    "budgetDisposition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "unit", "scope_digest", "lineage_root", "amount", "disposition"],
+      "properties": {"name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}, "unit": {"enum": ["CALLS", "BYTES", "FILES", "MESSAGES", "AGENTS", "TOKENS", "MILLISECONDS", "CPU_MILLISECONDS", "MIB", "OPERATIONS"]}, "scope_digest": {"$ref": "#/$defs/digest"}, "lineage_root": {"$ref": "#/$defs/id"}, "amount": {"type": "integer", "minimum": 1}, "disposition": {"enum": ["SPENT", "RELEASED", "QUARANTINED_ESCROW"]}}
+    },
+    "compensationAuthorization": {
+      "type": "object", "additionalProperties": false,
+      "required": ["transaction_id", "decision_digest", "capability_digest", "authorized_envelope_digest", "state"],
+      "properties": {"transaction_id": {"$ref": "#/$defs/id"}, "decision_digest": {"$ref": "#/$defs/digest"}, "capability_digest": {"$ref": "#/$defs/digest"}, "authorized_envelope_digest": {"$ref": "#/$defs/digest"}, "state": {"const": "ADMITTED"}}
+    },
+    "terminalReconciliationReceipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["evidence_type", "outcome", "transaction_id", "decision_digest", "capability_digest", "envelope_digest", "contract_digest", "lineage_digest", "dispatch_intent_digest", "idempotency_key_digest", "object_identity", "fencing_epoch", "connector_id", "connector_evidence_digest", "chain_digest", "verified_at", "expires_at", "signature_verified", "not_revoked", "verified_by", "verifier_key_id", "verifier_trust_root", "verifier_algorithm", "verifier_signature", "evidence_digest"],
+      "properties": {
+        "evidence_type": {"const": "EXTERNAL_RECONCILIATION"},
+        "outcome": {"enum": ["SUCCESS", "FAILURE_NO_EFFECT", "FAILURE_WITH_RESIDUAL_EFFECT"]},
+        "transaction_id": {"$ref": "#/$defs/id"},
+        "decision_digest": {"$ref": "#/$defs/digest"},
+        "capability_digest": {"$ref": "#/$defs/digest"},
+        "envelope_digest": {"$ref": "#/$defs/digest"},
+        "contract_digest": {"$ref": "#/$defs/digest"},
+        "lineage_digest": {"$ref": "#/$defs/digest"},
+        "dispatch_intent_digest": {"$ref": "#/$defs/digest"},
+        "idempotency_key_digest": {"$ref": "#/$defs/digest"},
+        "object_identity": {"$ref": "#/$defs/objectIdentity"},
+        "fencing_epoch": {"type": "integer", "minimum": 0},
+        "connector_id": {"$ref": "#/$defs/id"},
+        "connector_evidence_digest": {"$ref": "#/$defs/digest"},
+        "chain_digest": {"$ref": "#/$defs/digest"},
+        "verified_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "signature_verified": {"const": true},
+        "not_revoked": {"const": true},
+        "verified_by": {"$ref": "#/$defs/id"},
+        "verifier_key_id": {"$ref": "#/$defs/id"},
+        "verifier_trust_root": {"$ref": "#/$defs/id"},
+        "verifier_algorithm": {"enum": ["ED25519", "ECDSA_P256_SHA256"]},
+        "verifier_signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43,512}$"},
+        "evidence_digest": {"$ref": "#/$defs/digest"},
+        "failure_disposition": {"$ref": "#/$defs/failureDisposition"}
+      },
+      "allOf": [{"properties": {"object_identity": {"$ref": "#/$defs/endpointIdentity"}}, "required": ["object_identity"]}, {"if": {"properties": {"outcome": {"const": "FAILURE_WITH_RESIDUAL_EFFECT"}}, "required": ["outcome"]}, "then": {"required": ["failure_disposition"]}, "else": {"not": {"required": ["failure_disposition"]}}}]
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "component_digest", "payload_digest", "key_id", "algorithm", "signature", "verified_by"],
+      "properties": {
+        "issuer": {"$ref": "#/$defs/id"},
+        "component_digest": {"$ref": "#/$defs/digest"},
+        "payload_digest": {"$ref": "#/$defs/digest"},
+        "key_id": {"$ref": "#/$defs/id"},
+        "algorithm": {"enum": ["ED25519", "ECDSA_P256_SHA256"]},
+        "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43,512}$"},
+        "verified_by": {"$ref": "#/$defs/id"}
+      }
+    },
+    "authoritativeVerifier": {
+      "type": "object", "additionalProperties": false,
+      "required": ["issuer", "key_id", "trust_root", "signature_verified", "payload_digest", "subject", "session_id", "placement_digest", "measurement_digest", "freshness_verified", "revocation_checked"],
+      "properties": {
+        "issuer": {"$ref": "#/$defs/id"}, "key_id": {"$ref": "#/$defs/id"}, "trust_root": {"$ref": "#/$defs/id"},
+        "signature_verified": {"const": true}, "payload_digest": {"$ref": "#/$defs/digest"}, "subject": {"$ref": "#/$defs/id"},
+        "session_id": {"$ref": "#/$defs/id"}, "placement_digest": {"$ref": "#/$defs/digest"}, "measurement_digest": {"$ref": "#/$defs/digest"},
+        "freshness_verified": {"const": true}, "revocation_checked": {"const": true}
+      }
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["arg_digest", "output_digest", "confidentiality", "integrity", "provenance", "taints", "purpose", "retention", "access_policy", "redaction_profile", "raw_sensitive_values_in_metrics"],
+      "properties": {
+        "arg_digest": {"$ref": "#/$defs/digest"}, "output_digest": {"$ref": "#/$defs/digest"},
+        "confidentiality": {"enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]},
+        "integrity": {"enum": ["UNTRUSTED", "USER_ASSERTED", "SERVICE_ATTESTED", "VERIFIED"]},
+        "provenance": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "maxLength": 256}},
+        "taints": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}},
+        "purpose": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}, "retention": {"enum": ["EPHEMERAL", "SESSION", "CONTRACT", "FIXED_TERM", "LEGAL_HOLD"]},
+        "access_policy": {"$ref": "#/$defs/id"}, "redaction_profile": {"$ref": "#/$defs/id"}, "raw_sensitive_values_in_metrics": {"const": false}
+      }
+    },
+    "chain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "epoch", "sequence", "genesis", "predecessor_digest", "previous_receipt_digest", "receipt_digest", "witness_digest", "anti_rollback_proven"],
+      "properties": {
+        "source_id": {"$ref": "#/$defs/id"}, "epoch": {"type": "integer", "minimum": 0}, "sequence": {"type": "integer", "minimum": 0}, "genesis": {"type": "boolean"},
+        "predecessor_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "previous_receipt_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "receipt_digest": {"$ref": "#/$defs/digest"},
+        "witness_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "anti_rollback_proven": {"type": "boolean"}
+      },
+      "allOf": [
+        {"if": {"properties": {"genesis": {"const": true}}, "required": ["genesis"]}, "then": {"properties": {"predecessor_digest": {"type": "null"}, "previous_receipt_digest": {"type": "null"}}}},
+        {"if": {"properties": {"genesis": {"const": false}}, "required": ["genesis"]}, "then": {"properties": {"predecessor_digest": {"$ref": "#/$defs/digest"}, "previous_receipt_digest": {"$ref": "#/$defs/digest"}}}}
+      ]
+    },
+    "path": {"type": "string", "pattern": "^/workspace(?:/[A-Za-z0-9._+@=-]+)*$"},
+    "closedEffectResourceOperation": {
+      "oneOf": [
+        {"properties": {"effect": {"const": "COMPUTE"}, "resource_kind": {"const": "PROCESS"}, "operations": {"items": {"const": "EXECUTE"}}}, "required": ["effect", "resource_kind", "operations"]},
+        {"properties": {"effect": {"const": "COMPUTE"}, "resource_kind": {"const": "COMPUTE_RESOURCE"}, "operations": {"items": {"const": "ALLOCATE"}}}, "required": ["effect", "resource_kind", "operations"]},
+        {"properties": {"effect": {"const": "OBSERVE"}, "resource_kind": {"enum": ["FILE", "DIRECTORY", "MEMORY", "PROMPT", "POLICY", "REGISTRY"]}, "operations": {"items": {"enum": ["READ", "LIST"]}}}, "required": ["effect", "resource_kind", "operations"]},
+        {"properties": {"effect": {"const": "MUTATE"}, "resource_kind": {"enum": ["FILE", "DIRECTORY"]}, "operations": {"items": {"enum": ["WRITE", "CREATE", "DELETE"]}}}, "required": ["effect", "resource_kind", "operations"]},
+        {"properties": {"effect": {"const": "MUTATE"}, "resource_kind": {"enum": ["ENDPOINT", "MEMORY", "PROMPT", "POLICY", "REGISTRY"]}, "operations": {"items": {"const": "UPDATE"}}}, "required": ["effect", "resource_kind", "operations"]},
+        {"properties": {"effect": {"const": "COMMUNICATE"}, "resource_kind": {"enum": ["ENDPOINT", "PRINCIPAL"]}, "operations": {"items": {"const": "SEND"}}}, "required": ["effect", "resource_kind", "operations"]},
+        {"properties": {"effect": {"const": "DELEGATE"}, "resource_kind": {"const": "PRINCIPAL"}, "operations": {"items": {"enum": ["SPAWN", "BIND"]}}}, "required": ["effect", "resource_kind", "operations"]},
+        {"properties": {"effect": {"const": "REFLECT"}, "resource_kind": {"enum": ["MEMORY", "PROMPT", "POLICY", "REGISTRY"]}, "operations": {"items": {"enum": ["READ", "UPDATE"]}}}, "required": ["effect", "resource_kind", "operations"]}
+      ]
+    }
+  }
+}

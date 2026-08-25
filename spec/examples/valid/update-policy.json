@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "manifest:control/update-policy",
+  "manifest_version": "1.0.0",
+  "status": "ACTIVE",
+  "tool": {
+    "tool_id": "tool:control-plane",
+    "owner": "team:security",
+    "implementation_digest": "sha256:8181818181818181818181818181818181818181818181818181818181818181",
+    "provenance_uri": "urn:artifact:control-plane:1.0.0",
+    "entrypoint": ["/opt/broker/control-plane", "policy", "update"],
+    "dependencies": [],
+    "sbom_digest": "sha256:8282828282828282828282828282828282828282828282828282828282828282",
+    "signer": {"key_id": "key:manifest", "algorithm": "ED25519", "payload_digest": "sha256:8383838383838383838383838383838383838383838383838383838383838383", "signature": "HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH"}
+  },
+  "operation_id": "update-policy",
+  "input_contract": {"schema_digest": "sha256:8484848484848484848484848484848484848484848484848484848484848484", "canonicalization": "RFC8785_JSON", "max_bytes": 32768, "max_depth": 10, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "output_contract": {"schema_digest": "sha256:8585858585858585858585858585858585858585858585858585858585858585", "canonicalization": "RFC8785_JSON", "max_bytes": 4096, "max_depth": 5, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "effect_bounds": [
+    {"clause_id": "clause:policy-mutate", "effect": "MUTATE", "resources": [{"resource_kind": "POLICY", "operations": ["UPDATE"], "selector": {"kind": "POLICY_OBJECT", "value": "policy:project/harness"}, "direction": "INTERNAL", "data_label": {"confidentiality": "RESTRICTED", "integrity": "SERVICE_ATTESTED", "provenance": ["urn:change:policy"], "taints": ["CONTROL_PLANE"], "purposes": ["CONTROL_CHANGE"], "retention": "LEGAL_HOLD"}, "temporal": {"max_duration_ms": 5000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "OPERATIONS", "limit": 1}, "max_concurrency": 1}], "derived_effects": ["clause:policy-reflect"], "uncertainty": "BOUNDED"},
+    {"clause_id": "clause:policy-reflect", "effect": "REFLECT", "resources": [{"resource_kind": "POLICY", "operations": ["UPDATE"], "selector": {"kind": "POLICY_OBJECT", "value": "policy:project/harness"}, "direction": "INTERNAL", "data_label": {"confidentiality": "RESTRICTED", "integrity": "SERVICE_ATTESTED", "provenance": ["urn:change:policy"], "taints": ["CONTROL_PLANE"], "purposes": ["CONTROL_CHANGE"], "retention": "LEGAL_HOLD"}, "temporal": {"max_duration_ms": 5000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "OPERATIONS", "limit": 1}, "max_concurrency": 1}], "derived_effects": [], "uncertainty": "BOUNDED"}
+  ],
+  "authority_facets": ["EXECUTE_EFFECT", "AUTHORIZE_EFFECT", "PERSIST_SCHEDULE"],
+  "flow_rules": [],
+  "runtime_requirements": {"isolation_profile_id": "isolation:control-mediation", "isolation_profile_digest": "sha256:8686868686868686868686868686868686868686868686868686868686868686", "controls": ["MEDIATED_EXECUTION", "FD_CLOSURE", "RESOURCE_HARD_LIMITS", "NO_AMBIENT_CREDENTIALS", "REFLECTION_MEDIATION", "INDEPENDENT_POSTCHECK"], "ambient_dependencies": [], "credentials": "NONE"},
+  "resource_envelope": [{"name": "POLICY_UPDATES", "unit": "OPERATIONS", "limit": 1, "scope_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "lineage_root": "lineage:root"}, {"name": "POLICY_BYTES", "unit": "BYTES", "limit": 32768, "scope_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "lineage_root": "lineage:root"}],
+  "behavior": {"dynamic_dispatch": "DENIED", "unknown_behavior": "DENY", "determinism": "DETERMINISTIC", "idempotency": "DEDUP_KEY_REQUIRED", "reversibility": "REVERSIBLE", "compensation": "SEPARATE_AUTHORIZED_TRANSACTION", "persistence": "PERSISTENT", "expected_residual_effects": ["MUTATE", "REFLECT"]},
+  "assurance": {"preconditions": ["policy.diff.reviewed", "dual.approval.valid", "new.digest.bound"], "postconditions": ["policy.version.incremented", "old.receipts.invalidated", "rollback.floor.advanced"], "invariants": ["INV-004", "INV-009", "INV-010", "INV-015"], "obligations": ["event.emit", "receipt.invalidate.material-change", "registry.snapshot.pin"], "evidence_plan_id": "evidence:update-policy", "postcheck_required": true, "independent_observer_required": true, "conformance_evidence_digests": []},
+  "lifecycle": {"issued_at": "2026-08-24T00:00:00Z", "expires_at": "2026-09-24T00:00:00Z", "registry_generation": 7, "revocation_id": "revocation:control", "rollback_floor": 7},
+  "change_control": {"material_fields": ["TOOL_DIGEST", "ENTRYPOINT", "INPUT_SCHEMA", "OUTPUT_SCHEMA", "EFFECT_BOUND", "FLOW_RULE", "ISOLATION_PROFILE", "BUDGET", "BEHAVIOR", "OWNER", "SIGNER"], "compatibility": "EXACT_VERSION_ONLY", "migration": "NEW_MANIFEST_AND_RECEIPT", "dynamic_registry_updates": false}
+}

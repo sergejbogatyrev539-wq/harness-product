@@ -1,0 +1,417 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:harness:schema:human-approval-receipt:1",
+  "title": "Exact-bound human approval service receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_id",
+    "receipt_type",
+    "decision",
+    "requester",
+    "approvers",
+    "executor",
+    "canonical_payload_digest",
+    "approval_nonce",
+    "quorum",
+    "separation_of_duties",
+    "bindings",
+    "intent",
+    "targets",
+    "effects",
+    "budgets",
+    "approved_envelope",
+    "approved_envelope_digest",
+    "material_terms",
+    "uncertainty",
+    "alternatives",
+    "automation_stop_reason",
+    "human_authentication_evidence",
+    "comprehension_evidence",
+    "service_signature",
+    "lifecycle",
+    "issued_at",
+    "expires_at",
+    "single_use",
+    "nonreplayable",
+    "material_change_invalidates",
+    "state",
+    "break_glass"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "receipt_id": {"$ref": "#/$defs/id"},
+    "receipt_type": {"enum": ["ORDINARY", "LOOP_CONTRACT", "BREAK_GLASS"]},
+    "decision": {"enum": ["APPROVE", "REJECT", "MODIFY", "REQUEST_MORE_EVIDENCE", "CANCEL", "TIMED_OUT"]},
+    "requester": {"$ref": "#/$defs/id"},
+    "approvers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+    "executor": {"$ref": "#/$defs/id"},
+    "canonical_payload_digest": {"$ref": "#/$defs/digest"},
+    "approval_nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{22,128}$"},
+    "quorum": {
+      "type": "object", "additionalProperties": false,
+      "required": ["required", "present", "met"],
+      "properties": {
+        "required": {"type": "integer", "minimum": 1},
+        "present": {"type": "integer", "minimum": 1},
+        "met": {"const": true}
+      }
+    },
+    "separation_of_duties": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requester_not_approver", "executor_not_approver", "verified"],
+      "properties": {
+        "requester_not_approver": {"const": true},
+        "executor_not_approver": {"const": true},
+        "verified": {"const": true}
+      }
+    },
+    "bindings": {"$ref": "#/$defs/bindings"},
+    "intent": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "targets": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/target"}},
+    "effects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/scopedEffect"}},
+    "budgets": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/budget"}},
+    "approved_envelope": {"$ref": "#/$defs/approvedEnvelope"},
+    "approved_envelope_digest": {"$ref": "#/$defs/digest"},
+    "material_terms": {"$ref": "#/$defs/materialTerms"},
+    "uncertainty": {"enum": ["BOUNDED", "UNKNOWN"]},
+    "alternatives": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 512}},
+    "automation_stop_reason": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"},
+    "human_authentication_evidence": {"type": "array", "minItems": 1, "uniqueItems": true},
+    "comprehension_evidence": {"$ref": "#/$defs/comprehensionEvidence"},
+    "service_signature": {"$ref": "#/$defs/signature"},
+    "lifecycle": {"$ref": "#/$defs/lifecycle"},
+    "issued_at": {"type": "string", "format": "date-time"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "single_use": {"const": true},
+    "nonreplayable": {"const": true},
+    "material_change_invalidates": {"const": true},
+    "state": {"enum": ["ISSUED", "CONSUMED", "EXPIRED", "REVOKED", "TIMED_OUT"]},
+    "break_glass": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/breakGlass"}]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "APPROVE"}}, "required": ["decision"]},
+      "then": {
+        "properties": {
+          "uncertainty": {"const": "BOUNDED"},
+          "comprehension_evidence": {
+            "allOf": [
+              {"properties": {"effect_summary_acknowledged": {"const": true}}},
+              {"properties": {"target_summary_acknowledged": {"const": true}}},
+              {"properties": {"budget_summary_acknowledged": {"const": true}}},
+              {"properties": {"irreversibility_acknowledged": {"const": true}}}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"decision": {"enum": ["REJECT", "MODIFY", "REQUEST_MORE_EVIDENCE", "CANCEL", "TIMED_OUT"]}}, "required": ["decision"]},
+      "then": {"properties": {"state": {"enum": ["EXPIRED", "REVOKED", "TIMED_OUT"]}, "lifecycle": {"properties": {"phase": {"enum": ["REJECTED", "MODIFIED", "REQUEST_MORE_EVIDENCE", "CANCELLED", "TIMED_OUT"]}}}}}
+    },
+    {
+      "if": {"properties": {"decision": {"const": "TIMED_OUT"}}, "required": ["decision"]},
+      "then": {"properties": {"state": {"const": "TIMED_OUT"}, "lifecycle": {"properties": {"phase": {"const": "TIMED_OUT"}}}}}
+    },
+    {
+      "if": {"properties": {"receipt_type": {"const": "BREAK_GLASS"}}, "required": ["receipt_type"]},
+      "then": {
+        "properties": {
+          "approvers": {"minItems": 2, "uniqueItems": true},
+          "human_authentication_evidence": {
+            "type": "array",
+            "minItems": 2,
+            "uniqueItems": true,
+            "items": {"$ref": "#/$defs/breakGlassAuthEvidence"},
+            "allOf": [
+              {"contains": {"type": "object", "properties": {"role": {"enum": ["INCIDENT_COMMANDER", "SECURITY_AUTHORIZER"]}}, "required": ["role"]}, "minContains": 1},
+              {"contains": {"type": "object", "properties": {"role": {"enum": ["RESOURCE_AUTHORIZER", "SERVICE_AUTHORIZER"]}}, "required": ["role"]}, "minContains": 1}
+            ]
+          },
+          "break_glass": {"$ref": "#/$defs/breakGlass"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"receipt_type": {"enum": ["ORDINARY", "LOOP_CONTRACT"]}}, "required": ["receipt_type"]},
+      "then": {"properties": {"human_authentication_evidence": {"items": {"$ref": "#/$defs/authEvidence"}}, "break_glass": {"type": "null"}}}
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "effect": {"enum": ["COMPUTE", "OBSERVE", "MUTATE", "COMMUNICATE", "DELEGATE", "REFLECT"]},
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_digest", "manifest_digest", "policy_digest", "contract_digest", "isolation_profile_digest", "authorized_envelope_digest", "reservation_vector_digest", "prompt_digest", "context_digest", "model_digest"],
+      "properties": {
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "manifest_digest": {"$ref": "#/$defs/digest"},
+        "policy_digest": {"$ref": "#/$defs/digest"},
+        "contract_digest": {"$ref": "#/$defs/digest"},
+        "isolation_profile_digest": {"$ref": "#/$defs/digest"},
+        "authorized_envelope_digest": {"$ref": "#/$defs/digest"},
+        "reservation_vector_digest": {"$ref": "#/$defs/digest"},
+        "prompt_digest": {"$ref": "#/$defs/digest"},
+        "context_digest": {"$ref": "#/$defs/digest"},
+        "model_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"enum": ["PATH", "ENDPOINT", "PRINCIPAL", "MEMORY", "PROMPT", "POLICY", "PROCESS", "LOCAL_RESOURCE"]},
+        "value": {"type": "string", "minLength": 1, "maxLength": 512}
+      },
+      "allOf": [{"if": {"properties": {"kind": {"const": "PATH"}}, "required": ["kind"]}, "then": {"properties": {"value": {"$ref": "#/$defs/path"}}}}]
+    },
+    "scopedEffect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["effect", "target", "operations"],
+      "properties": {
+        "effect": {"$ref": "#/$defs/effect"},
+        "target": {"$ref": "#/$defs/target"},
+        "operations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["READ", "LIST", "WRITE", "CREATE", "DELETE", "EXECUTE", "SEND", "SPAWN", "UPDATE", "BIND", "ALLOCATE"]}}
+      },
+      "allOf": [{"$ref": "#/$defs/closedApprovalEffect"}]
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "unit", "limit", "scope_digest", "lineage_root"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"},
+        "unit": {"enum": ["CALLS", "BYTES", "FILES", "MESSAGES", "AGENTS", "TOKENS", "MILLISECONDS", "CPU_MILLISECONDS", "MIB", "OPERATIONS"]},
+        "limit": {"type": "integer", "minimum": 0},
+        "scope_digest": {"$ref": "#/$defs/digest"},
+        "lineage_root": {"$ref": "#/$defs/id"}
+      }
+    },
+    "materialTerms": {
+      "type": "object", "additionalProperties": false,
+      "required": ["data_classification", "provenance", "irreversibility", "residual_risk", "compensation", "retention", "data_flows", "recipients", "labels", "aggregate_maxima", "actors", "presentation", "teach_back", "batch", "freshness", "obligations"],
+      "properties": {
+        "data_classification": {"enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]},
+        "provenance": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "maxLength": 256}},
+        "irreversibility": {"enum": ["REVERSIBLE", "PARTIALLY_REVERSIBLE", "IRREVERSIBLE"]},
+        "residual_risk": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "compensation": {"enum": ["NONE", "AVAILABLE", "REQUIRED"]},
+        "retention": {"enum": ["EPHEMERAL", "SESSION", "CONTRACT", "FIXED_TERM", "LEGAL_HOLD"]},
+        "data_flows": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/dataFlow"}},
+        "recipients": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/recipient"}},
+        "labels": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/label"}},
+        "aggregate_maxima": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/aggregateMaximum"}},
+        "actors": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/actor"}},
+        "presentation": {"$ref": "#/$defs/presentation"},
+        "teach_back": {"$ref": "#/$defs/teachBack"},
+        "batch": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/batch"}]},
+        "freshness": {"$ref": "#/$defs/freshness"},
+        "obligations": {"$ref": "#/$defs/obligations"}
+      }
+    },
+    "authEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "subject", "approver_id", "role", "session_id", "independence_group", "authenticated_at", "evidence_digest"],
+      "properties": {
+        "method": {"enum": ["WEBAUTHN", "HARDWARE_KEY", "ENTERPRISE_SSO_MFA"]},
+        "subject": {"$ref": "#/$defs/id"},
+        "approver_id": {"$ref": "#/$defs/id"},
+        "role": {"enum": ["INCIDENT_COMMANDER", "SECURITY_AUTHORIZER", "RESOURCE_AUTHORIZER", "SERVICE_AUTHORIZER", "APPROVER"]},
+        "session_id": {"$ref": "#/$defs/id"},
+        "independence_group": {"$ref": "#/$defs/id"},
+        "authenticated_at": {"type": "string", "format": "date-time"},
+        "evidence_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "comprehensionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical_view_digest", "effect_summary_acknowledged", "target_summary_acknowledged", "budget_summary_acknowledged", "irreversibility_acknowledged", "captured_at", "presentation", "teach_back"],
+      "properties": {
+        "canonical_view_digest": {"$ref": "#/$defs/digest"},
+        "effect_summary_acknowledged": {"type": "boolean"},
+        "target_summary_acknowledged": {"type": "boolean"},
+        "budget_summary_acknowledged": {"type": "boolean"},
+        "irreversibility_acknowledged": {"type": "boolean"},
+        "captured_at": {"type": "string", "format": "date-time"},
+        "presentation": {"$ref": "#/$defs/presentation"},
+        "teach_back": {"$ref": "#/$defs/teachBack"}
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service_identity", "key_id", "algorithm", "payload_digest", "canonical_payload_digest", "material_terms_digest", "payload_scope", "signature"],
+      "properties": {
+        "service_identity": {"$ref": "#/$defs/id"},
+        "key_id": {"$ref": "#/$defs/id"},
+        "algorithm": {"enum": ["ED25519", "ECDSA_P256_SHA256"]},
+        "payload_digest": {"$ref": "#/$defs/digest"},
+        "canonical_payload_digest": {"$ref": "#/$defs/digest"},
+        "material_terms_digest": {"$ref": "#/$defs/digest"},
+        "payload_scope": {"const": "COMPLETE_CANONICAL_PAYLOAD"},
+        "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43,512}$"}
+      }
+    },
+    "breakGlass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["emergency_profile_digest", "incident_digest", "target_set_digest", "inside_platform_ceiling", "ttl_seconds", "real_time_alert_required", "postmortem_required", "recovery_plan_digest"],
+      "properties": {
+        "emergency_profile_digest": {"$ref": "#/$defs/digest"},
+        "incident_digest": {"$ref": "#/$defs/digest"},
+        "target_set_digest": {"$ref": "#/$defs/digest"},
+        "inside_platform_ceiling": {"const": true},
+        "ttl_seconds": {"type": "integer", "minimum": 1},
+        "real_time_alert_required": {"const": true},
+        "postmortem_required": {"const": true},
+        "recovery_plan_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "lifecycle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["phase", "not_before", "activation_not_after", "grant_expires_at", "revocation_epoch", "revocation_binding_digest", "activation_consumption"],
+      "properties": {
+        "phase": {"enum": ["DRAFT", "NORMALIZED", "PRESENTED", "REJECTED", "REQUEST_MORE_EVIDENCE", "CANCELLED", "TIMED_OUT", "MODIFIED", "APPROVED_PENDING_ISSUE", "ISSUED", "ACTIVATION_CONSUMED", "ACTIVE_GRANT", "COMPLETED", "EXPIRED", "REVOKED"]},
+        "not_before": {"type": "string", "format": "date-time"},
+        "activation_not_after": {"type": "string", "format": "date-time"},
+        "grant_expires_at": {"type": "string", "format": "date-time"},
+        "revocation_epoch": {"type": "integer", "minimum": 0},
+        "revocation_binding_digest": {"$ref": "#/$defs/digest"},
+        "activation_consumption": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/activationConsumption"}]}
+      }
+    },
+    "activationConsumption": {
+      "type": "object", "additionalProperties": false,
+      "required": ["consumed_at", "transaction_id", "journal_sequence", "activation_nonce_digest"],
+      "properties": {
+        "consumed_at": {"type": "string", "format": "date-time"},
+        "transaction_id": {"$ref": "#/$defs/id"},
+        "journal_sequence": {"type": "integer", "minimum": 1},
+        "activation_nonce_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "breakGlassAuthEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "subject", "approver_id", "role", "session_id", "independence_group", "authenticated_at", "evidence_digest", "incident_digest", "profile_digest", "target_set_digest"],
+      "properties": {
+        "method": {"enum": ["WEBAUTHN", "HARDWARE_KEY", "ENTERPRISE_SSO_MFA"]},
+        "subject": {"$ref": "#/$defs/id"},
+        "approver_id": {"$ref": "#/$defs/id"},
+        "role": {"enum": ["INCIDENT_COMMANDER", "SECURITY_AUTHORIZER", "RESOURCE_AUTHORIZER", "SERVICE_AUTHORIZER"]},
+        "session_id": {"$ref": "#/$defs/id"},
+        "independence_group": {"$ref": "#/$defs/id"},
+        "authenticated_at": {"type": "string", "format": "date-time"},
+        "evidence_digest": {"$ref": "#/$defs/digest"},
+        "incident_digest": {"$ref": "#/$defs/digest"},
+        "profile_digest": {"$ref": "#/$defs/digest"},
+        "target_set_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "dataFlow": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source", "recipient", "channel", "label", "purpose"],
+      "properties": {
+        "source": {"$ref": "#/$defs/id"}, "recipient": {"$ref": "#/$defs/id"}, "channel": {"$ref": "#/$defs/id"}, "label": {"$ref": "#/$defs/id"}, "purpose": {"$ref": "#/$defs/id"}
+      }
+    },
+    "approvedEnvelope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["effects", "targets", "budgets", "flows"],
+      "properties": {
+        "effects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/scopedEffect"}},
+        "targets": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/target"}},
+        "budgets": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/budget"}},
+        "flows": {"type": "array", "items": {"$ref": "#/$defs/dataFlow"}}
+      }
+    },
+    "recipient": {
+      "type": "object", "additionalProperties": false,
+      "required": ["recipient_id", "kind", "canonical_value"],
+      "properties": {
+        "recipient_id": {"$ref": "#/$defs/id"}, "kind": {"enum": ["PRINCIPAL", "ENDPOINT", "CHANNEL", "LOCAL_RESOURCE"]}, "canonical_value": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "label": {
+      "type": "object", "additionalProperties": false,
+      "required": ["label_id", "data_classification", "purpose", "retention"],
+      "properties": {
+        "label_id": {"$ref": "#/$defs/id"}, "data_classification": {"enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]}, "purpose": {"$ref": "#/$defs/id"}, "retention": {"enum": ["EPHEMERAL", "SESSION", "CONTRACT", "FIXED_TERM", "LEGAL_HOLD"]}
+      }
+    },
+    "aggregateMaximum": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "unit", "maximum", "scope"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}, "unit": {"enum": ["CALLS", "ITERATIONS", "BYTES", "FILES", "MESSAGES", "TOKENS", "MILLISECONDS", "CPU_MILLISECONDS", "MIB", "OPERATIONS", "CURRENCY_UNITS"]}, "maximum": {"type": "number", "exclusiveMinimum": 0}, "scope": {"enum": ["ITEM", "BATCH", "CONTRACT", "SESSION"]}
+      }
+    },
+    "actor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["principal", "role", "session_id", "auth_assurance"],
+      "properties": {
+        "principal": {"$ref": "#/$defs/id"}, "role": {"enum": ["REQUESTER", "APPROVER", "RISK_OWNER", "ISSUER", "EXECUTOR", "OBSERVER", "INCIDENT_COMMANDER", "AUDITOR"]}, "session_id": {"$ref": "#/$defs/id"}, "auth_assurance": {"enum": ["WEBAUTHN", "HARDWARE_KEY", "ENTERPRISE_SSO_MFA", "SERVICE_ATTESTED"]}
+      }
+    },
+    "presentation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["renderer_id", "renderer_version", "locale", "anti_confusable_digest", "accessibility_digest"],
+      "properties": {
+        "renderer_id": {"$ref": "#/$defs/id"}, "renderer_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"}, "locale": {"type": "string", "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{2,8})*$"}, "anti_confusable_digest": {"$ref": "#/$defs/digest"}, "accessibility_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "teachBack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["target_summary", "aggregate_maximum", "flow_recipients", "reversibility", "captured_at"],
+      "properties": {
+        "target_summary": {"type": "string", "minLength": 1, "maxLength": 512}, "aggregate_maximum": {"type": "string", "minLength": 1, "maxLength": 512}, "flow_recipients": {"type": "string", "minLength": 1, "maxLength": 1024}, "reversibility": {"type": "string", "minLength": 1, "maxLength": 512}, "captured_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "batch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["batch_id", "homogeneity", "item_count", "effect_vector_digest", "target_set_digest", "aggregate_maxima"],
+      "properties": {
+        "batch_id": {"$ref": "#/$defs/id"}, "homogeneity": {"const": "HOMOGENEOUS"}, "item_count": {"type": "integer", "minimum": 1}, "effect_vector_digest": {"$ref": "#/$defs/digest"}, "target_set_digest": {"$ref": "#/$defs/digest"}, "aggregate_maxima": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/aggregateMaximum"}}
+      }
+    },
+    "freshness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["not_before", "activation_not_after", "grant_expires_at", "revocation_epoch", "revocation_binding_digest", "clock_binding_digest"],
+      "properties": {
+        "not_before": {"type": "string", "format": "date-time"}, "activation_not_after": {"type": "string", "format": "date-time"}, "grant_expires_at": {"type": "string", "format": "date-time"}, "revocation_epoch": {"type": "integer", "minimum": 0}, "revocation_binding_digest": {"$ref": "#/$defs/digest"}, "clock_binding_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "obligation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["obligation_id", "owner", "plan_digest"],
+      "properties": {"obligation_id": {"$ref": "#/$defs/id"}, "owner": {"$ref": "#/$defs/id"}, "plan_digest": {"$ref": "#/$defs/digest"}, "due_at": {"type": "string", "format": "date-time"}}
+    },
+    "obligations": {
+      "type": "object", "additionalProperties": false,
+      "required": ["notification", "monitoring", "postcheck", "reconciliation", "retention"],
+      "properties": {
+        "notification": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/obligation"}}, "monitoring": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/obligation"}}, "postcheck": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/obligation"}}, "reconciliation": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/obligation"}}, "retention": {"enum": ["EPHEMERAL", "SESSION", "CONTRACT", "FIXED_TERM", "LEGAL_HOLD"]}
+      }
+    },
+    "path": {"type": "string", "pattern": "^/workspace(?:/[A-Za-z0-9._+@=-]+)*$"},
+    "closedApprovalEffect": {
+      "oneOf": [
+        {"properties": {"effect": {"const": "COMPUTE"}, "target": {"properties": {"kind": {"const": "PROCESS"}}, "required": ["kind"]}, "operations": {"items": {"const": "EXECUTE"}}}, "required": ["effect", "target", "operations"]},
+        {"properties": {"effect": {"const": "COMPUTE"}, "target": {"properties": {"kind": {"const": "LOCAL_RESOURCE"}}, "required": ["kind"]}, "operations": {"items": {"const": "ALLOCATE"}}}, "required": ["effect", "target", "operations"]},
+        {"properties": {"effect": {"const": "OBSERVE"}, "target": {"properties": {"kind": {"enum": ["PATH", "MEMORY", "PROMPT", "POLICY", "LOCAL_RESOURCE"]}}, "required": ["kind"]}, "operations": {"items": {"enum": ["READ", "LIST"]}}}, "required": ["effect", "target", "operations"]},
+        {"properties": {"effect": {"const": "MUTATE"}, "target": {"properties": {"kind": {"const": "PATH"}}, "required": ["kind"]}, "operations": {"items": {"enum": ["WRITE", "CREATE", "DELETE"]}}}, "required": ["effect", "target", "operations"]},
+        {"properties": {"effect": {"const": "MUTATE"}, "target": {"properties": {"kind": {"enum": ["ENDPOINT", "MEMORY", "PROMPT", "POLICY", "LOCAL_RESOURCE"]}}, "required": ["kind"]}, "operations": {"items": {"const": "UPDATE"}}}, "required": ["effect", "target", "operations"]},
+        {"properties": {"effect": {"const": "COMMUNICATE"}, "target": {"properties": {"kind": {"enum": ["ENDPOINT", "PRINCIPAL"]}}, "required": ["kind"]}, "operations": {"items": {"const": "SEND"}}}, "required": ["effect", "target", "operations"]},
+        {"properties": {"effect": {"const": "DELEGATE"}, "target": {"properties": {"kind": {"const": "PRINCIPAL"}}, "required": ["kind"]}, "operations": {"items": {"enum": ["SPAWN", "BIND"]}}}, "required": ["effect", "target", "operations"]},
+        {"properties": {"effect": {"const": "REFLECT"}, "target": {"properties": {"kind": {"enum": ["MEMORY", "PROMPT", "POLICY", "LOCAL_RESOURCE"]}}, "required": ["kind"]}, "operations": {"items": {"enum": ["READ", "UPDATE"]}}}, "required": ["effect", "target", "operations"]}
+      ]
+    }
+  }
+}

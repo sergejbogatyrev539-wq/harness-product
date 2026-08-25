@@ -1,0 +1,6 @@
+{
+  "case_id": "invalid-write-file-outside-workspace",
+  "base": "../valid/write-file.json",
+  "mutation": {"pointer": "/effect_bounds/0/resources/0/selector/value", "value": "/var/run/agent.sock"},
+  "expected_error_fragment": "does not match"
+}

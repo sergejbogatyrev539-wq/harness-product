@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:harness:schema:evidence-plan-and-attestation:1",
+  "title": "Evidence plan and scoped attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "claim", "plan", "attestation"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "claim": {"$ref": "#/$defs/claim"},
+    "plan": {"$ref": "#/$defs/plan"},
+    "attestation": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/attestation"}]}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claim_id", "requirement_ids", "invariant_ids", "lifecycle_status", "evidence_maturity", "scope", "environment"],
+      "properties": {
+        "claim_id": {"$ref": "#/$defs/id"},
+        "requirement_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^(L[0-5]-REQ|CTX|VQ|REC|SCG|ORC)-[0-9]{3}$"}},
+        "invariant_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^INV-[0-9]{3}$"}},
+        "lifecycle_status": {"enum": ["DRAFT", "SPECIFIED", "IMPLEMENTED", "ENFORCED", "VERIFIED"]},
+        "evidence_maturity": {"type": "array", "uniqueItems": true, "items": {"enum": ["TESTED", "ATTESTED", "MONITORED"]}},
+        "scope": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "environment": {"enum": ["SPECIFICATION_MODEL", "DEVELOPMENT", "TEST", "PRODUCTION"]}
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id", "type", "owner", "enforcement_point", "input_digest", "oracle", "failure_result", "required_artifacts"],
+      "properties": {
+        "check_id": {"$ref": "#/$defs/id"},
+        "type": {"enum": ["SCHEMA", "DETERMINISTIC_INVARIANT", "POSTCHECK", "FAULT_INJECTION", "CONFORMANCE", "ATTESTATION", "MONITORING"]},
+        "owner": {"$ref": "#/$defs/id"},
+        "enforcement_point": {"enum": ["CI", "BROKER_PEP", "EXECUTOR", "OBSERVER", "RECOVERY", "HUMAN_REVIEW"]},
+        "input_digest": {"$ref": "#/$defs/digest"},
+        "oracle": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "failure_result": {"enum": ["DENY", "STOP", "QUARANTINE", "NOT_VERIFIED"]},
+        "required_artifacts": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["EVENT", "RECEIPT", "SNAPSHOT", "LOG", "TRACE", "TEST_REPORT", "ATTESTATION", "ALERT"]}}
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan_id", "plan_digest", "checks", "freshness_seconds", "independence", "missing_or_corrupt_result", "sampling"],
+      "properties": {
+        "plan_id": {"$ref": "#/$defs/id"},
+        "plan_digest": {"$ref": "#/$defs/digest"},
+        "checks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/check"}},
+        "freshness_seconds": {"type": "integer", "minimum": 1},
+        "independence": {"enum": ["SAME_COMPONENT", "SEPARATE_PRINCIPAL", "EXTERNAL_WITNESS"]},
+        "missing_or_corrupt_result": {"enum": ["DENY", "STOP", "QUARANTINE", "NOT_VERIFIED"]},
+        "sampling": {"enum": ["UNSAMPLED", "BOUNDED_DIAGNOSTIC_ONLY"]}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "digest", "uri", "created_at"],
+      "properties": {
+        "kind": {"enum": ["EVENT", "RECEIPT", "SNAPSHOT", "LOG", "TRACE", "TEST_REPORT", "ATTESTATION", "ALERT"]},
+        "digest": {"$ref": "#/$defs/digest"},
+        "uri": {"type": "string", "pattern": "^(urn:|https://)", "maxLength": 512},
+        "created_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key_id", "algorithm", "payload_digest", "signature"],
+      "properties": {
+        "key_id": {"$ref": "#/$defs/id"},
+        "algorithm": {"enum": ["ED25519", "ECDSA_P256_SHA256"]},
+        "payload_digest": {"$ref": "#/$defs/digest"},
+        "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43,512}$"}
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attestation_id", "attester", "plan_digest", "subject_digest", "result", "artifacts", "issued_at", "expires_at", "signature", "limitations"],
+      "properties": {
+        "attestation_id": {"$ref": "#/$defs/id"},
+        "attester": {"$ref": "#/$defs/id"},
+        "plan_digest": {"$ref": "#/$defs/digest"},
+        "subject_digest": {"$ref": "#/$defs/digest"},
+        "result": {"enum": ["PASS", "FAIL", "INCONCLUSIVE"]},
+        "artifacts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/artifact"}},
+        "issued_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "signature": {"$ref": "#/$defs/signature"},
+        "limitations": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 1024}}
+      }
+    }
+  }
+}

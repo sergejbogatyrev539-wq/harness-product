@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:harness:schema:runtime-policy:1",
+  "title": "Runtime authority and transition policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_id",
+    "policy_version",
+    "policy_digest",
+    "policy_activation",
+    "status",
+    "environment",
+    "owner",
+    "enforcement_point",
+    "physical_ceiling",
+    "hierarchy",
+    "authority_map",
+    "deny_rules",
+    "human_rules",
+    "budgets",
+    "information_flow",
+    "registry_snapshot",
+    "transaction_semantics"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "policy_id": {"type": "string", "pattern": "^policy:[a-z0-9][a-z0-9._/-]{0,124}$"},
+    "policy_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "policy_digest": {"$ref": "#/$defs/digest"},
+    "policy_activation": {"$ref": "#/$defs/activation"},
+    "status": {"enum": ["DRAFT", "ACTIVE", "DEPRECATED", "REVOKED"]},
+    "environment": {"enum": ["DEVELOPMENT", "TEST", "PRODUCTION"]},
+    "owner": {"$ref": "#/$defs/id"},
+    "enforcement_point": {"enum": ["BROKER_PEP", "EXECUTOR_PEP"]},
+    "physical_ceiling": {"$ref": "#/$defs/physicalCeiling"},
+    "hierarchy": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        {"$ref": "#/$defs/physicalLayer"},
+        {"$ref": "#/$defs/platformLayer"},
+        {"$ref": "#/$defs/projectLayer"},
+        {"$ref": "#/$defs/contractLayer"},
+        {"$ref": "#/$defs/sessionLayer"},
+        {"$ref": "#/$defs/callLayer"}
+      ],
+      "items": false
+    },
+    "authority_map": {"type": "array", "items": {"$ref": "#/$defs/authorityEntry"}},
+    "deny_rules": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/denyRule"}},
+    "human_rules": {"type": "array", "items": {"$ref": "#/$defs/humanRule"}},
+    "budgets": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/budget"}},
+    "information_flow": {"$ref": "#/$defs/informationFlow"},
+    "registry_snapshot": {"$ref": "#/$defs/registrySnapshot"},
+    "transaction_semantics": {"$ref": "#/$defs/transactionSemantics"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "effect": {"enum": ["COMPUTE", "OBSERVE", "MUTATE", "COMMUNICATE", "DELEGATE", "REFLECT"]},
+    "physicalCeiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["isolation_profile_id", "isolation_profile_digest", "agent_effects", "mediated_sink_effects", "agent_ambient_authority"],
+      "properties": {
+        "isolation_profile_id": {"$ref": "#/$defs/id"},
+        "isolation_profile_digest": {"$ref": "#/$defs/digest"},
+        "agent_effects": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/effect"}},
+        "mediated_sink_effects": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/effect"}},
+        "agent_ambient_authority": {"const": false}
+      }
+    },
+    "layerBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layer", "digest", "mode"],
+      "properties": {
+        "layer": {"type": "string"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "mode": {"const": "NARROW_ONLY"}
+      }
+    },
+    "physicalLayer": {"allOf": [{"$ref": "#/$defs/layerBase"}, {"properties": {"layer": {"const": "PHYSICAL"}}}]},
+    "platformLayer": {"allOf": [{"$ref": "#/$defs/layerBase"}, {"properties": {"layer": {"const": "PLATFORM"}}}]},
+    "projectLayer": {"allOf": [{"$ref": "#/$defs/layerBase"}, {"properties": {"layer": {"const": "PROJECT"}}}]},
+    "contractLayer": {"allOf": [{"$ref": "#/$defs/layerBase"}, {"properties": {"layer": {"const": "CONTRACT"}}}]},
+    "sessionLayer": {"allOf": [{"$ref": "#/$defs/layerBase"}, {"properties": {"layer": {"const": "SESSION"}}}]},
+    "callLayer": {"allOf": [{"$ref": "#/$defs/layerBase"}, {"properties": {"layer": {"const": "CALL"}}}]},
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "values"],
+      "properties": {
+        "kind": {"enum": ["PATH", "ENDPOINT", "PRINCIPAL", "MEMORY", "PROMPT", "POLICY", "PROCESS", "LOCAL_RESOURCE"]},
+        "values": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
+        "descriptor_binding_digest": {"$ref": "#/$defs/digest"},
+        "physical_target_digest": {"$ref": "#/$defs/digest"},
+        "endpoint_binding": {"$ref": "#/$defs/endpointBinding"}
+      }
+      ,"allOf": [
+        {"if": {"properties": {"kind": {"const": "PATH"}}, "required": ["kind"]}, "then": {"required": ["descriptor_binding_digest", "physical_target_digest"], "properties": {"values": {"items": {"$ref": "#/$defs/path"}}}}, "else": {"not": {"anyOf": [{"required": ["descriptor_binding_digest"]}, {"required": ["physical_target_digest"]}]}}},
+        {"if": {"properties": {"kind": {"const": "ENDPOINT"}}, "required": ["kind"]}, "then": {"required": ["endpoint_binding"]}, "else": {"not": {"required": ["endpoint_binding"]}}}
+      ]
+    },
+    "authorityEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "correlation_id", "effect", "resource_kind", "operations", "scope", "facets", "authority_constraints_digest", "flows", "budget_names", "obligations", "approval_class"],
+      "properties": {
+        "operation_id": {"type": "string", "pattern": "^[a-z][a-z0-9._/-]{0,127}$"},
+        "correlation_id": {"$ref": "#/$defs/id"},
+        "effect": {"$ref": "#/$defs/effect"},
+        "resource_kind": {"enum": ["FILE", "DIRECTORY", "PROCESS", "ENDPOINT", "PRINCIPAL", "MEMORY", "PROMPT", "POLICY", "REGISTRY", "SECRET", "COMPUTE_RESOURCE"]},
+        "operations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["READ", "LIST", "WRITE", "CREATE", "DELETE", "EXECUTE", "SEND", "SPAWN", "UPDATE", "BIND", "ALLOCATE"]}},
+        "scope": {"$ref": "#/$defs/selector"},
+        "facets": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["EXECUTE_EFFECT", "AUTHORIZE_EFFECT", "DECLASSIFY_DATA", "ENDORSE_DATA", "PERSIST_SCHEDULE", "ALLOCATE_RESOURCE"]}},
+        "authority_constraints_digest": {"$ref": "#/$defs/digest"},
+        "flows": {"type": "array", "items": {"$ref": "#/$defs/flow"}},
+        "budget_names": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}},
+        "obligations": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "approval_class": {"enum": ["NONE", "PREAUTHORIZED_EXACT", "HUMAN_SINGLE", "HUMAN_DUAL", "DENY"]}
+      },
+      "allOf": [{"$ref": "#/$defs/closedEffectResourceOperation"}]
+    },
+    "endpointBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["endpoint_id", "canonical_endpoint", "connector_id", "connector_digest", "method", "idempotency_key_digest", "endpoint_binding_digest"],
+      "properties": {
+        "endpoint_id": {"$ref": "#/$defs/id"}, "canonical_endpoint": {"type": "string", "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._~!$&'()*+,;=:@/-]*$"},
+        "connector_id": {"$ref": "#/$defs/id"}, "connector_digest": {"$ref": "#/$defs/digest"}, "method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+        "idempotency_key_digest": {"$ref": "#/$defs/digest"}, "endpoint_binding_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "sink", "maximum_confidentiality", "purpose"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1, "maxLength": 256},
+        "sink": {"type": "string", "minLength": 1, "maxLength": 256},
+        "maximum_confidentiality": {"enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]},
+        "purpose": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}
+      }
+    },
+    "denyRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "condition", "outcome", "reason_code"],
+      "properties": {
+        "rule_id": {"type": "string", "pattern": "^DENY-[0-9]{3}$"},
+        "condition": {"enum": ["EXPLICIT_DENY", "UNKNOWN", "UNCLASSIFIED", "UNBOUNDED", "MISSING", "STALE", "MISMATCH", "REPLAY", "BUDGET_EXCEEDED", "D2_VIOLATION", "TELEMETRY_MISSING", "REGISTRY_ROLLBACK"]},
+        "outcome": {"enum": ["DENY", "STOP"]},
+        "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}
+      }
+    },
+    "humanRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "approval_class", "bounded_required", "legible_required", "may_expand_physical_ceiling", "receipt_required"],
+      "properties": {
+        "rule_id": {"type": "string", "pattern": "^HUM-[0-9]{3}$"},
+        "approval_class": {"enum": ["HUMAN_SINGLE", "HUMAN_DUAL"]},
+        "bounded_required": {"const": true},
+        "legible_required": {"const": true},
+        "may_expand_physical_ceiling": {"const": false},
+        "receipt_required": {"const": true}
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "unit", "limit", "scope", "reset", "scope_digest", "lineage_root"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"},
+        "unit": {"enum": ["CALLS", "BYTES", "FILES", "MESSAGES", "AGENTS", "TOKENS", "MILLISECONDS", "CPU_MILLISECONDS", "MIB", "OPERATIONS"]},
+        "limit": {"type": "integer", "minimum": 0},
+        "scope": {"enum": ["CALL", "ITERATION", "SESSION", "CONTRACT", "LINEAGE", "DELEGATION_TREE"]},
+        "reset": {"enum": ["NEVER", "NEW_SIGNED_CONTRACT"]},
+        "scope_digest": {"$ref": "#/$defs/digest"},
+        "lineage_root": {"$ref": "#/$defs/id"}
+      }
+    },
+    "informationFlow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["propagate_data_dependencies", "propagate_control_dependencies", "hash_declassifies", "schema_validation_endorses", "declassification_capability_required", "endorsement_capability_required", "external_model_is_sink"],
+      "properties": {
+        "propagate_data_dependencies": {"const": true},
+        "propagate_control_dependencies": {"const": true},
+        "hash_declassifies": {"const": false},
+        "schema_validation_endorses": {"const": false},
+        "declassification_capability_required": {"const": true},
+        "endorsement_capability_required": {"const": true},
+        "external_model_is_sink": {"const": true}
+      }
+    },
+    "registrySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "generation", "rollback_floor", "dynamic_updates", "revocation_epoch"],
+      "properties": {
+        "digest": {"$ref": "#/$defs/digest"},
+        "generation": {"type": "integer", "minimum": 0},
+        "rollback_floor": {"type": "integer", "minimum": 0},
+        "dynamic_updates": {"const": false},
+        "revocation_epoch": {"type": "integer", "minimum": 0}
+      }
+    },
+    "transactionSemantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["default_state", "deny_overrides", "unknown_result", "durable_atomic_fields", "unknown_external_outcome", "automatic_retry_unknown_external", "compensation", "single_writer_fencing", "d2_bound"],
+      "properties": {
+        "default_state": {"const": "STOPPED"},
+        "deny_overrides": {"const": true},
+        "unknown_result": {"const": "STOP"},
+        "durable_atomic_fields": {
+          "type": "array",
+          "minItems": 5,
+          "uniqueItems": true,
+          "items": {"enum": ["CAPABILITY_CONSUMPTION", "BUDGET_RESERVATION", "DISPATCH_INTENT", "MONOTONIC_COUNTER", "FENCING_EPOCH"]}
+        },
+        "unknown_external_outcome": {"const": "QUARANTINED_RECONCILING"},
+        "automatic_retry_unknown_external": {"const": false},
+        "compensation": {"const": "NEW_AUTHORIZED_TRANSACTION"},
+        "single_writer_fencing": {"const": true},
+        "d2_bound": {"const": "NO_CONTROLLER_VISIBLE_N_PLUS_2_BEFORE_JOIN_N_PLUS_1"}
+      }
+    },
+    "activation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["content_digest", "generation", "rollback_floor", "registry_reference", "issued_at", "expires_at", "signature", "external_verification"],
+      "properties": {
+        "content_digest": {"$ref": "#/$defs/digest"}, "generation": {"type": "integer", "minimum": 0}, "rollback_floor": {"type": "integer", "minimum": 0},
+        "registry_reference": {"$ref": "#/$defs/id"}, "issued_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"},
+        "signature": {"$ref": "#/$defs/digest"}, "external_verification": {"const": true}
+      }
+    },
+    "path": {"type": "string", "pattern": "^/workspace(?:/[A-Za-z0-9._+@=-]+)*$"},
+    "closedEffectResourceOperation": {
+      "oneOf": [
+        {"properties": {"effect": {"const": "COMPUTE"}, "resource_kind": {"const": "PROCESS"}, "operations": {"items": {"const": "EXECUTE"}}}, "required": ["effect", "resource_kind", "operations"]}, {"properties": {"effect": {"const": "COMPUTE"}, "resource_kind": {"const": "COMPUTE_RESOURCE"}, "operations": {"items": {"const": "ALLOCATE"}}}, "required": ["effect", "resource_kind", "operations"]},
+        {"properties": {"effect": {"const": "OBSERVE"}, "resource_kind": {"enum": ["FILE", "DIRECTORY", "MEMORY", "PROMPT", "POLICY", "REGISTRY"]}, "operations": {"items": {"enum": ["READ", "LIST"]}}}, "required": ["effect", "resource_kind", "operations"]}, {"properties": {"effect": {"const": "MUTATE"}, "resource_kind": {"enum": ["FILE", "DIRECTORY"]}, "operations": {"items": {"enum": ["WRITE", "CREATE", "DELETE"]}}}, "required": ["effect", "resource_kind", "operations"]},
+        {"properties": {"effect": {"const": "MUTATE"}, "resource_kind": {"enum": ["ENDPOINT", "MEMORY", "PROMPT", "POLICY", "REGISTRY"]}, "operations": {"items": {"const": "UPDATE"}}}, "required": ["effect", "resource_kind", "operations"]}, {"properties": {"effect": {"const": "COMMUNICATE"}, "resource_kind": {"enum": ["ENDPOINT", "PRINCIPAL"]}, "operations": {"items": {"const": "SEND"}}}, "required": ["effect", "resource_kind", "operations"]},
+        {"properties": {"effect": {"const": "DELEGATE"}, "resource_kind": {"const": "PRINCIPAL"}, "operations": {"items": {"enum": ["SPAWN", "BIND"]}}}, "required": ["effect", "resource_kind", "operations"]}, {"properties": {"effect": {"const": "REFLECT"}, "resource_kind": {"enum": ["MEMORY", "PROMPT", "POLICY", "REGISTRY"]}, "operations": {"items": {"enum": ["READ", "UPDATE"]}}}, "required": ["effect", "resource_kind", "operations"]}
+      ]
+    }
+  }
+}

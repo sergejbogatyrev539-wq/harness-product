@@ -1,0 +1,6 @@
+{
+  "case_id": "invalid-update-policy-dynamic-registry",
+  "base": "../valid/update-policy.json",
+  "mutation": {"pointer": "/change_control/dynamic_registry_updates", "value": true},
+  "expected_error_fragment": "False"
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0.0",
+  "schema": "../schemas/effect-manifest.schema.json",
+  "valid": [
+    {"id": "read-file", "path": "../examples/valid/read-file.json"},
+    {"id": "write-file", "path": "../examples/valid/write-file.json"},
+    {"id": "shell", "path": "../examples/valid/shell.json"},
+    {"id": "external-message", "path": "../examples/valid/external-message.json"},
+    {"id": "spawn-subagent", "path": "../examples/valid/spawn-subagent.json"},
+    {"id": "update-memory", "path": "../examples/valid/update-memory.json"},
+    {"id": "update-prompt", "path": "../examples/valid/update-prompt.json"},
+    {"id": "update-policy", "path": "../examples/valid/update-policy.json"}
+  ],
+  "invalid": [
+    {"id": "read-file-outside-workspace", "fixture": "../examples/invalid/read-file-outside-workspace.json"},
+    {"id": "write-file-outside-workspace", "fixture": "../examples/invalid/write-file-outside-workspace.json"},
+    {"id": "shell-undeclared-dynamic", "fixture": "../examples/invalid/shell-undeclared-dynamic.json"},
+    {"id": "external-message-insecure-endpoint", "fixture": "../examples/invalid/external-message-insecure-endpoint.json"},
+    {"id": "spawn-subagent-unknown-effect", "fixture": "../examples/invalid/spawn-subagent-unknown-effect.json"},
+    {"id": "update-memory-unknown-allow", "fixture": "../examples/invalid/update-memory-unknown-allow.json"},
+    {"id": "update-prompt-ambient-dependency", "fixture": "../examples/invalid/update-prompt-ambient-dependency.json"},
+    {"id": "update-policy-dynamic-registry", "fixture": "../examples/invalid/update-policy-dynamic-registry.json"}
+  ]
+}

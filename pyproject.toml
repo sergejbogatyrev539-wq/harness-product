@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "universal-harness"
+version = "0.1.0a0"
+description = "Fail-closed, profile-driven harness enforcement kernel"
+requires-python = ">=3.11"
+dependencies = ["jsonschema>=4.18,<5"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

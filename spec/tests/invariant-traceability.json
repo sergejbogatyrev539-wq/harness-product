@@ -1,0 +1,1960 @@
+{
+  "schema_version": "1.1.0",
+  "status": {
+    "specification": "SPECIFIED",
+    "runtime": "NOT_IMPLEMENTED",
+    "evidence": "SPECIFICATION_MODEL_TESTED",
+    "runtime_attestation": "NOT_ATTESTED",
+    "overall": "NOT_READY",
+    "scope": "FORMAL_SPECIFICATION_AND_PURE_REFERENCE_MODEL_ONLY"
+  },
+  "status_artifacts": [
+    "03_SYSTEM_THREAT_TRUST_MODEL.md",
+    "04_FORMAL_CORE_AND_INVARIANTS.md",
+    "10_LEVEL0_PHYSICAL_ISOLATION.md",
+    "11_LEVEL1_EFFECT_SYSTEM.md",
+    "12_LEVEL2_EFFECT_MANIFEST.md",
+    "13_LEVEL3_RUNTIME_POLICY.md",
+    "14_LEVEL4_OBSERVABILITY_RESPONSE.md",
+    "15_LEVEL5_HUMAN_CONTROL.md",
+    "18_IMPLEMENTATION_ROADMAP_AND_ASSURANCE_CASE.md"
+  ],
+  "status_projection_artifacts": [
+    "tests/policy-test-vectors.json"
+  ],
+  "attack_registry": {
+    "catalog_namespace": "CAT-ATK",
+    "matrix_namespace": "ATK",
+    "mapping_rule": "CAT-ATK identifies canonical threat classes; ATK identifies executable matrix rows. Numeric equality is not semantic equality. Every matrix row maps to exactly one canonical class; one class may require several matrix rows.",
+    "entries": [
+      {
+        "catalog_id": "CAT-ATK-001",
+        "matrix_ids": [
+          "ATK-001"
+        ],
+        "owner": "L0_FILESYSTEM_RUNTIME"
+      },
+      {
+        "catalog_id": "CAT-ATK-002",
+        "matrix_ids": [
+          "ATK-002"
+        ],
+        "owner": "L0_NETWORK_IPC"
+      },
+      {
+        "catalog_id": "CAT-ATK-003",
+        "matrix_ids": [
+          "ATK-003",
+          "ATK-034"
+        ],
+        "owner": "SUPPLY_CHAIN_RUNTIME_REGISTRY"
+      },
+      {
+        "catalog_id": "CAT-ATK-004",
+        "matrix_ids": [
+          "ATK-004"
+        ],
+        "owner": "SUPERVISOR_SNAPSHOT_COMMIT"
+      },
+      {
+        "catalog_id": "CAT-ATK-005",
+        "matrix_ids": [
+          "ATK-005",
+          "ATK-024"
+        ],
+        "owner": "TOOL_INPUT_PEP"
+      },
+      {
+        "catalog_id": "CAT-ATK-006",
+        "matrix_ids": [
+          "ATK-006"
+        ],
+        "owner": "TOOL_INPUT_PEP"
+      },
+      {
+        "catalog_id": "CAT-ATK-007",
+        "matrix_ids": [
+          "ATK-007"
+        ],
+        "owner": "RESOURCE_BUDGET_LEDGER"
+      },
+      {
+        "catalog_id": "CAT-ATK-008",
+        "matrix_ids": [
+          "ATK-008"
+        ],
+        "owner": "JOURNAL_RECOVERY"
+      },
+      {
+        "catalog_id": "CAT-ATK-009",
+        "matrix_ids": [
+          "ATK-009"
+        ],
+        "owner": "JOURNAL_RECOVERY"
+      },
+      {
+        "catalog_id": "CAT-ATK-010",
+        "matrix_ids": [
+          "ATK-010"
+        ],
+        "owner": "RESOURCE_BUDGET_LEDGER"
+      },
+      {
+        "catalog_id": "CAT-ATK-011",
+        "matrix_ids": [
+          "ATK-011",
+          "ATK-026"
+        ],
+        "owner": "L0_FILESYSTEM_RUNTIME"
+      },
+      {
+        "catalog_id": "CAT-ATK-012",
+        "matrix_ids": [
+          "ATK-012"
+        ],
+        "owner": "L0_FILESYSTEM_RUNTIME"
+      },
+      {
+        "catalog_id": "CAT-ATK-013",
+        "matrix_ids": [
+          "ATK-013"
+        ],
+        "owner": "CONTEXT_INFORMATION_FLOW"
+      },
+      {
+        "catalog_id": "CAT-ATK-014",
+        "matrix_ids": [
+          "ATK-014"
+        ],
+        "owner": "SUPPLY_CHAIN_RUNTIME_REGISTRY"
+      },
+      {
+        "catalog_id": "CAT-ATK-015",
+        "matrix_ids": [
+          "ATK-015"
+        ],
+        "owner": "CONTEXT_INFORMATION_FLOW"
+      },
+      {
+        "catalog_id": "CAT-ATK-016",
+        "matrix_ids": [
+          "ATK-016"
+        ],
+        "owner": "SUPPLY_CHAIN_RUNTIME_REGISTRY"
+      },
+      {
+        "catalog_id": "CAT-ATK-017",
+        "matrix_ids": [
+          "ATK-017"
+        ],
+        "owner": "HUMAN_CONTROL_GOVERNANCE"
+      },
+      {
+        "catalog_id": "CAT-ATK-018",
+        "matrix_ids": [
+          "ATK-018"
+        ],
+        "owner": "HUMAN_CONTROL_GOVERNANCE"
+      },
+      {
+        "catalog_id": "CAT-ATK-019",
+        "matrix_ids": [
+          "ATK-019"
+        ],
+        "owner": "L0_FILESYSTEM_RUNTIME"
+      },
+      {
+        "catalog_id": "CAT-ATK-020",
+        "matrix_ids": [
+          "ATK-020"
+        ],
+        "owner": "L0_NETWORK_IPC"
+      },
+      {
+        "catalog_id": "CAT-ATK-021",
+        "matrix_ids": [
+          "ATK-021"
+        ],
+        "owner": "L0_NETWORK_IPC"
+      },
+      {
+        "catalog_id": "CAT-ATK-022",
+        "matrix_ids": [
+          "ATK-022"
+        ],
+        "owner": "RESOURCE_BUDGET_LEDGER"
+      },
+      {
+        "catalog_id": "CAT-ATK-023",
+        "matrix_ids": [
+          "ATK-027"
+        ],
+        "owner": "TOOL_INPUT_PEP"
+      },
+      {
+        "catalog_id": "CAT-ATK-024",
+        "matrix_ids": [
+          "ATK-028"
+        ],
+        "owner": "SUPPLY_CHAIN_RUNTIME_REGISTRY"
+      },
+      {
+        "catalog_id": "CAT-ATK-025",
+        "matrix_ids": [
+          "ATK-029"
+        ],
+        "owner": "DELEGATION_ORCHESTRATION"
+      },
+      {
+        "catalog_id": "CAT-ATK-026",
+        "matrix_ids": [
+          "ATK-030"
+        ],
+        "owner": "CONTEXT_INFORMATION_FLOW"
+      },
+      {
+        "catalog_id": "CAT-ATK-027",
+        "matrix_ids": [
+          "ATK-023"
+        ],
+        "owner": "SUPERVISOR_SNAPSHOT_COMMIT"
+      },
+      {
+        "catalog_id": "CAT-ATK-028",
+        "matrix_ids": [
+          "ATK-025",
+          "ATK-033"
+        ],
+        "owner": "JOURNAL_RECOVERY"
+      },
+      {
+        "catalog_id": "CAT-ATK-029",
+        "matrix_ids": [
+          "ATK-031"
+        ],
+        "owner": "TELEMETRY_SRE"
+      },
+      {
+        "catalog_id": "CAT-ATK-030",
+        "matrix_ids": [
+          "ATK-032",
+          "ATK-035"
+        ],
+        "owner": "HUMAN_CONTROL_GOVERNANCE"
+      }
+    ]
+  },
+  "attack_map": {
+    "CAT-ATK-001": [
+      "ATK-001"
+    ],
+    "CAT-ATK-002": [
+      "ATK-002"
+    ],
+    "CAT-ATK-003": [
+      "ATK-003",
+      "ATK-034"
+    ],
+    "CAT-ATK-004": [
+      "ATK-004"
+    ],
+    "CAT-ATK-005": [
+      "ATK-005",
+      "ATK-024"
+    ],
+    "CAT-ATK-006": [
+      "ATK-006"
+    ],
+    "CAT-ATK-007": [
+      "ATK-007"
+    ],
+    "CAT-ATK-008": [
+      "ATK-008"
+    ],
+    "CAT-ATK-009": [
+      "ATK-009"
+    ],
+    "CAT-ATK-010": [
+      "ATK-010"
+    ],
+    "CAT-ATK-011": [
+      "ATK-011",
+      "ATK-026"
+    ],
+    "CAT-ATK-012": [
+      "ATK-012"
+    ],
+    "CAT-ATK-013": [
+      "ATK-013"
+    ],
+    "CAT-ATK-014": [
+      "ATK-014"
+    ],
+    "CAT-ATK-015": [
+      "ATK-015"
+    ],
+    "CAT-ATK-016": [
+      "ATK-016"
+    ],
+    "CAT-ATK-017": [
+      "ATK-017"
+    ],
+    "CAT-ATK-018": [
+      "ATK-018"
+    ],
+    "CAT-ATK-019": [
+      "ATK-019"
+    ],
+    "CAT-ATK-020": [
+      "ATK-020"
+    ],
+    "CAT-ATK-021": [
+      "ATK-021"
+    ],
+    "CAT-ATK-022": [
+      "ATK-022"
+    ],
+    "CAT-ATK-023": [
+      "ATK-027"
+    ],
+    "CAT-ATK-024": [
+      "ATK-028"
+    ],
+    "CAT-ATK-025": [
+      "ATK-029"
+    ],
+    "CAT-ATK-026": [
+      "ATK-030"
+    ],
+    "CAT-ATK-027": [
+      "ATK-023"
+    ],
+    "CAT-ATK-028": [
+      "ATK-025",
+      "ATK-033"
+    ],
+    "CAT-ATK-029": [
+      "ATK-031"
+    ],
+    "CAT-ATK-030": [
+      "ATK-032",
+      "ATK-035"
+    ]
+  },
+  "registries": {
+    "requirements": [
+      "L0-REQ-001",
+      "L0-REQ-002",
+      "L0-REQ-003",
+      "L0-REQ-004",
+      "L0-REQ-005",
+      "L0-REQ-006",
+      "L0-REQ-007",
+      "L0-REQ-008",
+      "L0-REQ-009",
+      "L0-REQ-010",
+      "L0-REQ-011",
+      "L0-REQ-012",
+      "L0-REQ-013",
+      "L0-REQ-014",
+      "L0-REQ-015",
+      "L0-REQ-016",
+      "L0-REQ-017",
+      "L0-REQ-018",
+      "L0-REQ-019",
+      "L0-REQ-020",
+      "L0-REQ-021",
+      "L0-REQ-022",
+      "L1-REQ-001",
+      "L1-REQ-002",
+      "L1-REQ-003",
+      "L1-REQ-004",
+      "L1-REQ-005",
+      "L1-REQ-006",
+      "L1-REQ-007",
+      "L1-REQ-008",
+      "L1-REQ-009",
+      "L1-REQ-010",
+      "L1-REQ-011",
+      "L1-REQ-012",
+      "L1-REQ-013",
+      "L1-REQ-014",
+      "L1-REQ-015",
+      "L1-REQ-016",
+      "L1-REQ-017",
+      "L1-REQ-018",
+      "L1-REQ-019",
+      "L1-REQ-020",
+      "L1-REQ-021",
+      "L1-REQ-022",
+      "L2-REQ-001",
+      "L2-REQ-002",
+      "L2-REQ-003",
+      "L2-REQ-004",
+      "L2-REQ-005",
+      "L2-REQ-006",
+      "L2-REQ-007",
+      "L2-REQ-008",
+      "L2-REQ-009",
+      "L2-REQ-010",
+      "L2-REQ-011",
+      "L2-REQ-012",
+      "L2-REQ-013",
+      "L2-REQ-014",
+      "L2-REQ-014a",
+      "L2-REQ-014b",
+      "L2-REQ-014c",
+      "L2-REQ-015",
+      "L2-REQ-016",
+      "L3-REQ-001",
+      "L3-REQ-002",
+      "L3-REQ-003",
+      "L3-REQ-004",
+      "L3-REQ-005",
+      "L3-REQ-006",
+      "L3-REQ-007",
+      "L3-REQ-008",
+      "L3-REQ-009",
+      "L3-REQ-010",
+      "L3-REQ-011",
+      "L3-REQ-012",
+      "L3-REQ-013",
+      "L3-REQ-014",
+      "L3-REQ-015",
+      "L3-REQ-016",
+      "L3-REQ-017",
+      "L3-REQ-018",
+      "L3-REQ-019",
+      "L3-REQ-020",
+      "L3-REQ-021",
+      "L3-REQ-022",
+      "L3-REQ-023",
+      "L3-REQ-024",
+      "L3-REQ-025",
+      "L3-REQ-026",
+      "L4-REQ-001",
+      "L4-REQ-002",
+      "L4-REQ-003",
+      "L5-REQ-001",
+      "L5-REQ-002",
+      "L5-REQ-003",
+      "L5-REQ-004",
+      "L5-REQ-005",
+      "L5-REQ-006",
+      "L5-REQ-007",
+      "L5-REQ-008",
+      "L5-REQ-009",
+      "L5-REQ-010",
+      "L5-REQ-011"
+    ],
+    "schema_fields": [
+      "admission-candidate.authority_alternatives",
+      "admission-candidate.d2_frontier",
+      "admission-candidate.placement_attestation",
+      "admission-candidate.supply_chain",
+      "capability.bindings",
+      "capability.delegation",
+      "capability.execution_binding",
+      "decision-result.authorized_envelope",
+      "effect-receipt.committed",
+      "effect-receipt.privacy",
+      "event-envelope.chain",
+      "event-envelope.privacy",
+      "human-approval-receipt.approval_nonce",
+      "isolation-profile.principal_envelopes",
+      "runtime-policy.budgets",
+      "runtime-policy.transaction_semantics"
+    ],
+    "enforcement_points": [
+      "BROKER_PEP",
+      "DURABLE_JOURNAL",
+      "EXECUTOR_PEP",
+      "HOST_SUPERVISOR",
+      "OBSERVER",
+      "RECOVERY",
+      "HUMAN_APPROVAL_SERVICE"
+    ],
+    "tests": [
+      "T-ADMIT-NULL-DECISION",
+      "T-APPROVAL-LIFECYCLE-VALID",
+      "T-ATTESTATION-BINDING",
+      "T-AUTHORITY-CORRELATED-NO-CROSS-PAIR",
+      "T-AUTHORITY-TYPED-DECISION-RESULT",
+      "T-BUDGET-CONSERVATION-COMMIT",
+      "T-BUDGET-DUPLICATE-DEMAND-AGGREGATED",
+      "T-CAPABILITY-REPLAY-AFTER-STOP",
+      "T-D2-ARTIFACT-PERSISTED_STATE",
+      "T-D2-CLASS-CONTROLLER_VISIBLE",
+      "T-DELEGATE-BUDGET_EXPANSION",
+      "T-DELEGATE-EFFECT_AMPLIFICATION",
+      "T-EVENT-CANONICAL-VALID",
+      "T-EVENT-KNOWN-EMPTY-REJECT",
+      "T-EVENT-TRUSTED-EMITTER",
+      "T-EXTERNAL-UNKNOWN-NO-AUTORETRY",
+      "T-CRASH-ORPHAN-RECOVERY",
+      "T-COMPENSATION-FRESH-ADMISSION",
+      "T-ISOLATION-ACTIVE-VALID",
+      "T-PATH-DESCRIPTOR-REJECT-6",
+      "T-RECEIPT-COMMITTED-SUBSET",
+      "T-RECEIPT-GUARD-SEAL",
+      "T-RECEIPT-PRIVACY-LIFECYCLE",
+      "T-REPORT-CORE-001",
+      "T-REPORT-CORE-002",
+      "T-SUPPLY-COMPOSITE",
+      "T-Q39-SUPPLY-EXTERNAL-BUNDLE-SUBSTITUTION",
+      "T-Q40-D2-EMPTY",
+      "T-Q40-D2-STALE",
+      "T-Q40-D2-HIDDEN_N_PLUS_2",
+      "T-Q40-D2-REQUIRED-ARTIFACT-MISSING",
+      "T-Q41-EVENT-EMITTER-ROLE-FORGE",
+      "T-Q42-EVENT-DIGEST-SUBSTITUTION",
+      "T-Q43-DESCRIPTOR-ROOT-SUBSTITUTION",
+      "T-Q44-CONTRACT-SUBSTITUTION",
+      "T-Q45-STAGEABLE-CRASH-QUARANTINES",
+      "T-Q46-DIRECT-WORKER-MUTATE-DENY",
+      "T-Q47-MUTATION-SELF-AUDIENCE-DENY",
+      "T-Q48-POLICY-SCOPE-KIND-CROSS-MATRIX",
+      "T-Q49-COMMIT-TYPED-EVIDENCE-FORGE",
+      "T-Q49-JOIN-TYPED-EVIDENCE-FORGE",
+      "T-Q50-BUDGET-SCOPE-IDENTITY-SUBSTITUTION",
+      "T-Q50-BUDGET-LINEAGE-IDENTITY-SUBSTITUTION",
+      "T-Q50-BUDGET-FOUR-PART-KEY-PRESERVED",
+      "T-Q51-ISSUE-EXTERNAL-FULL-RECORD",
+      "T-Q51-DISPATCH-EXTERNAL-FULL-RECORD"
+    ],
+    "evidence": [
+      "EV-ADMISSION-MODEL",
+      "EV-CAPABILITY-LIFECYCLE",
+      "EV-HOST-LIFECYCLE",
+      "EV-NEGATIVE-MUTATIONS",
+      "EV-SCHEMA-CONFORMANCE",
+      "EV-TRACEABILITY-EXECUTION",
+      "EV-R4-Q39-001",
+      "EV-R4-Q40-001",
+      "EV-R4-Q41-001",
+      "EV-R4-Q42-001",
+      "EV-R4-Q43-001",
+      "EV-R4-Q44-001",
+      "EV-R4-Q45-001",
+      "EV-R4-Q46-001",
+      "EV-R4-Q47-001",
+      "EV-R4-Q48-001",
+      "EV-R4-Q49-001",
+      "EV-R4-Q50-001",
+      "EV-R4-Q51-001"
+    ]
+  },
+  "normative_requirement_catalog": {
+    "sources": [
+      "10_LEVEL0_PHYSICAL_ISOLATION.md",
+      "11_LEVEL1_EFFECT_SYSTEM.md",
+      "12_LEVEL2_EFFECT_MANIFEST.md",
+      "13_LEVEL3_RUNTIME_POLICY.md",
+      "14_LEVEL4_OBSERVABILITY_RESPONSE.md",
+      "15_LEVEL5_HUMAN_CONTROL.md"
+    ],
+    "row_count": 103,
+    "digest": "sha256:d6f1e08844de759e7d25c19631878d77b549b2a78be9f21db6fc59cb28c08370",
+    "event_alert_by_level": {
+      "L0": "host STOP/incident",
+      "L1": "classifier DENY/STOP",
+      "L2": "manifest DENY/STOP",
+      "L3": "runtime STOP/QUARANTINE",
+      "L4": "observer reject/alert",
+      "L5": "approval deny/quarantine"
+    }
+  },
+  "claim_hashes": {
+    "INV-001": "sha256:80bba839dee44f831e3b70d481fd5683c573c7e413c8ce7c1457fd47a390c732",
+    "INV-002": "sha256:93af5c532a8f5334c8b33cd2634944f2f88bdcc9d0150775b3e3f127d5e33f24",
+    "INV-003": "sha256:d0037bd4ed668f1e77edda11d4f95fbebdc7fdd29cc470e623af8264eec55581",
+    "INV-004": "sha256:66c1f68605b04c5fb11964255f64a47e863e79a65738cd2b672ab93934bf626e",
+    "INV-005": "sha256:649a1706fd21134807c4fdeb60af809652492cd4689e8b2b3f4a99bfd0fad4d8",
+    "INV-006": "sha256:47afc86fd99bc9188c4e183cec38b8d366b810e5fa1726021c1e11ec22aecd63",
+    "INV-007": "sha256:ad7001951bb0e5574987c3e7ac86b7b973fc5f2a4f2befcf087e08061bc6b1f4",
+    "INV-008": "sha256:bbb6ea644a5ab7b192583df8be337221b26d46879a6eb20d8735c524060a9159",
+    "INV-009": "sha256:0fe2e748f5d49159d12f3777dde9485fed8e2080fc42fc75b27c830a2737656c",
+    "INV-010": "sha256:eca85f366a62bb1ed6ba5cd13e96170002e9f3d7d2c7eb8869bfd324c036e5fa",
+    "INV-011": "sha256:ee357af5ddb5d38f3140eed4ed3fc2dd0767abf2ae6069a1105bbba983a62ff9",
+    "INV-012": "sha256:cb6cbb1f23b8c3981996150fd8e69211eda206b6d99cd620c97d350315c578e5",
+    "INV-013": "sha256:e5a231ae91c6ffa094bce4bb7370628d96cae58a8fd145ceb54c5d36b46be4bd",
+    "INV-014": "sha256:7ac5acdf37d58bb01333d29e2501c63da59f9273e0438877b23a179f2d9cb9e5",
+    "INV-015": "sha256:04d6dca3952d92219aa0508ef1334734b8b029e4955d8ed0de5468734586ceea"
+  },
+  "assertion_count_source": "EXECUTED_ASSERTION_INSTANCES",
+  "invariants": [
+    {
+      "id": "INV-001",
+      "claim": "STOPPED — единственное fail-closed default. Любое missing/invalid state не даёт execution.",
+      "requirements": [
+        "L3-REQ-001",
+        "L4-REQ-001",
+        "L3-REQ-002",
+        "L3-REQ-003",
+        "L3-REQ-008",
+        "L3-REQ-011",
+        "L3-REQ-012",
+        "L3-REQ-013",
+        "L3-REQ-014",
+        "L3-REQ-015",
+        "L3-REQ-017",
+        "L3-REQ-018"
+      ],
+      "schema_fields": [
+        "runtime-policy.transaction_semantics"
+      ],
+      "enforcement_points": [
+        "BROKER_PEP"
+      ],
+      "tests": [
+        "T-ADMIT-NULL-DECISION"
+      ],
+      "evidence": [
+        "EV-ADMISSION-MODEL"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-001"
+    },
+    {
+      "id": "INV-002",
+      "claim": "Agent/model не является ambient authority holder или внешним executor; credentials и live sink authority не наследуются.",
+      "requirements": [
+        "L0-REQ-001",
+        "L0-REQ-016",
+        "L2-REQ-003",
+        "L2-REQ-014a",
+        "L0-REQ-002",
+        "L0-REQ-003",
+        "L0-REQ-004",
+        "L0-REQ-005",
+        "L0-REQ-007",
+        "L0-REQ-008",
+        "L0-REQ-009",
+        "L0-REQ-010",
+        "L0-REQ-011",
+        "L0-REQ-012",
+        "L0-REQ-013",
+        "L0-REQ-014",
+        "L0-REQ-015",
+        "L0-REQ-017",
+        "L0-REQ-018",
+        "L0-REQ-019",
+        "L0-REQ-021",
+        "L0-REQ-022"
+      ],
+      "schema_fields": [
+        "isolation-profile.principal_envelopes"
+      ],
+      "enforcement_points": [
+        "HOST_SUPERVISOR"
+      ],
+      "tests": [
+        "T-ISOLATION-ACTIVE-VALID",
+        "T-Q39-SUPPLY-EXTERNAL-BUNDLE-SUBSTITUTION"
+      ],
+      "evidence": [
+        "EV-SCHEMA-CONFORMANCE",
+        "EV-R4-Q39-001"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-002"
+    },
+    {
+      "id": "INV-003",
+      "claim": "Каждый side effect проходит через non-bypassable mediation и authoritative event.",
+      "requirements": [
+        "L2-REQ-008",
+        "L3-REQ-004"
+      ],
+      "schema_fields": [
+        "event-envelope.chain"
+      ],
+      "enforcement_points": [
+        "EXECUTOR_PEP",
+        "OBSERVER"
+      ],
+      "tests": [
+        "T-EVENT-CANONICAL-VALID"
+      ],
+      "evidence": [
+        "EV-SCHEMA-CONFORMANCE"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-003"
+    },
+    {
+      "id": "INV-004",
+      "claim": "Capability exact-bound, single-use, nonreplayable, nontransferable, short-lived и привязан к principal, audience, purpose, operation/request, contract, manifest, policy, nonce, epoch и lineage.",
+      "requirements": [
+        "L3-REQ-006",
+        "L3-REQ-022",
+        "L3-REQ-026",
+        "L5-REQ-003",
+        "L5-REQ-004",
+        "L5-REQ-010"
+      ],
+      "schema_fields": [
+        "capability.bindings",
+        "capability.execution_binding",
+        "human-approval-receipt.approval_nonce"
+      ],
+      "enforcement_points": [
+        "BROKER_PEP",
+        "DURABLE_JOURNAL"
+      ],
+      "tests": [
+        "T-CAPABILITY-REPLAY-AFTER-STOP",
+        "T-APPROVAL-LIFECYCLE-VALID",
+        "T-REPORT-CORE-002",
+        "T-Q47-MUTATION-SELF-AUDIENCE-DENY",
+        "T-Q51-ISSUE-EXTERNAL-FULL-RECORD",
+        "T-Q51-DISPATCH-EXTERNAL-FULL-RECORD"
+      ],
+      "evidence": [
+        "EV-CAPABILITY-LIFECYCLE",
+        "EV-R4-Q47-001",
+        "EV-R4-Q51-001"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-004"
+    },
+    {
+      "id": "INV-005",
+      "claim": "committed ⊆ authorized ⊆ manifested ⊓ physical. Attempted может выйти за ceiling только как заблокированная и зарегистрированная попытка.",
+      "requirements": [
+        "L0-REQ-020",
+        "L1-REQ-022",
+        "L2-REQ-006",
+        "L3-REQ-005",
+        "L5-REQ-002",
+        "L5-REQ-005",
+        "L1-REQ-002",
+        "L1-REQ-003",
+        "L1-REQ-004",
+        "L1-REQ-005",
+        "L1-REQ-006",
+        "L1-REQ-007",
+        "L1-REQ-008",
+        "L1-REQ-009",
+        "L1-REQ-010",
+        "L1-REQ-011",
+        "L1-REQ-012",
+        "L1-REQ-013",
+        "L1-REQ-014",
+        "L1-REQ-015",
+        "L1-REQ-016",
+        "L1-REQ-017",
+        "L1-REQ-018",
+        "L1-REQ-019",
+        "L1-REQ-020",
+        "L1-REQ-021",
+        "L2-REQ-001",
+        "L2-REQ-002",
+        "L2-REQ-004",
+        "L2-REQ-005",
+        "L2-REQ-007",
+        "L2-REQ-009",
+        "L2-REQ-010",
+        "L2-REQ-012",
+        "L2-REQ-013",
+        "L2-REQ-014",
+        "L2-REQ-015",
+        "L2-REQ-016"
+      ],
+      "schema_fields": [
+        "effect-receipt.committed",
+        "admission-candidate.authority_alternatives"
+      ],
+      "enforcement_points": [
+        "OBSERVER"
+      ],
+      "tests": [
+        "T-RECEIPT-COMMITTED-SUBSET",
+        "T-AUTHORITY-CORRELATED-NO-CROSS-PAIR",
+        "T-Q46-DIRECT-WORKER-MUTATE-DENY"
+      ],
+      "evidence": [
+        "EV-NEGATIVE-MUTATIONS",
+        "EV-R4-Q46-001"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-005"
+    },
+    {
+      "id": "INV-006",
+      "claim": "Policy lower layers и human approval только сужают authority. Delegation child envelope — attenuated subset; authority join не используется для выдачи прав.",
+      "requirements": [
+        "L2-REQ-011",
+        "L3-REQ-016"
+      ],
+      "schema_fields": [
+        "capability.delegation"
+      ],
+      "enforcement_points": [
+        "BROKER_PEP",
+        "DURABLE_JOURNAL"
+      ],
+      "tests": [
+        "T-DELEGATE-EFFECT_AMPLIFICATION",
+        "T-DELEGATE-BUDGET_EXPANSION"
+      ],
+      "evidence": [
+        "EV-NEGATIVE-MUTATIONS"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-006"
+    },
+    {
+      "id": "INV-007",
+      "claim": "Для delegation tree: spent_parent + Σ(reserved_child + spent_child) ≤ parent_limit; partitions/reservations atomic и linear.",
+      "requirements": [
+        "L3-REQ-007",
+        "L3-REQ-009",
+        "L3-REQ-025"
+      ],
+      "schema_fields": [
+        "runtime-policy.transaction_semantics",
+        "runtime-policy.budgets"
+      ],
+      "enforcement_points": [
+        "DURABLE_JOURNAL"
+      ],
+      "tests": [
+        "T-BUDGET-CONSERVATION-COMMIT",
+        "T-BUDGET-DUPLICATE-DEMAND-AGGREGATED",
+        "T-Q50-BUDGET-SCOPE-IDENTITY-SUBSTITUTION",
+        "T-Q50-BUDGET-LINEAGE-IDENTITY-SUBSTITUTION",
+        "T-Q50-BUDGET-FOUR-PART-KEY-PRESERVED"
+      ],
+      "evidence": [
+        "EV-CAPABILITY-LIFECYCLE",
+        "EV-R4-Q50-001"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-007"
+    },
+    {
+      "id": "INV-008",
+      "claim": "Cumulative counters/budgets монотонны, durable, crash-safe; restart/retry/nested contract/branch не сбрасывает их. D2-PROVISIONAL соблюдается.",
+      "requirements": [
+        "L3-REQ-010",
+        "L3-REQ-019"
+      ],
+      "schema_fields": [
+        "admission-candidate.d2_frontier"
+      ],
+      "enforcement_points": [
+        "BROKER_PEP"
+      ],
+      "tests": [
+        "T-D2-CLASS-CONTROLLER_VISIBLE",
+        "T-Q40-D2-EMPTY",
+        "T-Q40-D2-STALE",
+        "T-Q40-D2-HIDDEN_N_PLUS_2",
+        "T-Q40-D2-REQUIRED-ARTIFACT-MISSING"
+      ],
+      "evidence": [
+        "EV-NEGATIVE-MUTATIONS",
+        "EV-R4-Q40-001"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-008"
+    },
+    {
+      "id": "INV-009",
+      "claim": "Material change prompt/context/model/tool/adapter/manifest/policy/contract/target invalidates связанный receipt/capability.",
+      "requirements": [
+        "L0-REQ-006",
+        "L2-REQ-014b",
+        "L3-REQ-005",
+        "L3-REQ-020",
+        "L5-REQ-005"
+      ],
+      "schema_fields": [
+        "admission-candidate.placement_attestation",
+        "admission-candidate.supply_chain"
+      ],
+      "enforcement_points": [
+        "BROKER_PEP",
+        "HOST_SUPERVISOR"
+      ],
+      "tests": [
+        "T-ATTESTATION-BINDING",
+        "T-REPORT-CORE-002",
+        "T-Q43-DESCRIPTOR-ROOT-SUBSTITUTION",
+        "T-Q44-CONTRACT-SUBSTITUTION"
+      ],
+      "evidence": [
+        "EV-NEGATIVE-MUTATIONS",
+        "EV-R4-Q43-001",
+        "EV-R4-Q44-001"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-009"
+    },
+    {
+      "id": "INV-010",
+      "claim": "Незаявленное persistent state не переносится между итерациями; разрешённая память versioned, scoped, labelled, taint-tracked и audited. N→N+1 — явный flow.",
+      "requirements": [
+        "L3-REQ-009"
+      ],
+      "schema_fields": [
+        "admission-candidate.d2_frontier"
+      ],
+      "enforcement_points": [
+        "BROKER_PEP",
+        "DURABLE_JOURNAL"
+      ],
+      "tests": [
+        "T-D2-ARTIFACT-PERSISTED_STATE"
+      ],
+      "evidence": [
+        "EV-NEGATIVE-MUTATIONS"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-010"
+    },
+    {
+      "id": "INV-011",
+      "claim": "Evidence/observability не создают authority. Safety events исходят от authoritative components; missing/corrupt mandatory telemetry/evidence для risk action — failure.",
+      "requirements": [
+        "L1-REQ-001",
+        "L3-REQ-005",
+        "L4-REQ-001",
+        "L4-REQ-002",
+        "L5-REQ-011"
+      ],
+      "schema_fields": [
+        "event-envelope.chain"
+      ],
+      "enforcement_points": [
+        "EXECUTOR_PEP",
+        "OBSERVER"
+      ],
+      "tests": [
+        "T-EVENT-TRUSTED-EMITTER",
+        "T-EVENT-KNOWN-EMPTY-REJECT",
+        "T-REPORT-CORE-001",
+        "T-REPORT-CORE-002",
+        "T-Q41-EVENT-EMITTER-ROLE-FORGE",
+        "T-Q42-EVENT-DIGEST-SUBSTITUTION"
+      ],
+      "evidence": [
+        "EV-NEGATIVE-MUTATIONS",
+        "EV-TRACEABILITY-EXECUTION",
+        "EV-R4-Q41-001",
+        "EV-R4-Q42-001"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-011"
+    },
+    {
+      "id": "INV-012",
+      "claim": "Seal требует quiescence и исключения concurrent writers; postcheck и commit относятся к одному immutable digest.",
+      "requirements": [
+        "L3-REQ-009",
+        "L3-REQ-024",
+        "L4-REQ-003"
+      ],
+      "schema_fields": [
+        "effect-receipt.committed"
+      ],
+      "enforcement_points": [
+        "EXECUTOR_PEP",
+        "OBSERVER"
+      ],
+      "tests": [
+        "T-RECEIPT-GUARD-SEAL",
+        "T-Q49-COMMIT-TYPED-EVIDENCE-FORGE",
+        "T-Q49-JOIN-TYPED-EVIDENCE-FORGE"
+      ],
+      "evidence": [
+        "EV-SCHEMA-CONFORMANCE",
+        "EV-R4-Q49-001"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-012"
+    },
+    {
+      "id": "INV-013",
+      "claim": "Confidentiality, integrity, provenance, taint, purpose и retention распространяются по data/control dependencies. Hash/schema/summary не declassify и не endorse. Эти два перехода требуют разных capabilities.",
+      "requirements": [
+        "L5-REQ-001",
+        "L5-REQ-006",
+        "L5-REQ-007"
+      ],
+      "schema_fields": [
+        "event-envelope.privacy",
+        "effect-receipt.privacy"
+      ],
+      "enforcement_points": [
+        "BROKER_PEP",
+        "OBSERVER",
+        "HUMAN_APPROVAL_SERVICE"
+      ],
+      "tests": [
+        "T-RECEIPT-PRIVACY-LIFECYCLE",
+        "T-AUTHORITY-TYPED-DECISION-RESULT"
+      ],
+      "evidence": [
+        "EV-SCHEMA-CONFORMANCE"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-013"
+    },
+    {
+      "id": "INV-014",
+      "claim": "Recovery, rollback и compensation — effectful операции с новыми manifest/policy/budget/capability. UNKNOWN_OUTCOME не auto-retry.",
+      "requirements": [
+        "L0-REQ-001",
+        "L3-REQ-021",
+        "L5-REQ-008",
+        "L5-REQ-009"
+      ],
+      "schema_fields": [
+        "runtime-policy.transaction_semantics"
+      ],
+      "enforcement_points": [
+        "RECOVERY",
+        "HOST_SUPERVISOR",
+        "BROKER_PEP"
+      ],
+      "tests": [
+        "T-EXTERNAL-UNKNOWN-NO-AUTORETRY",
+        "T-CRASH-ORPHAN-RECOVERY",
+        "T-COMPENSATION-FRESH-ADMISSION",
+        "T-Q45-STAGEABLE-CRASH-QUARANTINES"
+      ],
+      "evidence": [
+        "EV-HOST-LIFECYCLE",
+        "EV-R4-Q45-001"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-014"
+    },
+    {
+      "id": "INV-015",
+      "claim": "unknown/unclassified/unbounded/missing/stale/mismatched никогда не становится implicit allow; unbounded не approvable.",
+      "requirements": [
+        "L2-REQ-006",
+        "L2-REQ-014c",
+        "L3-REQ-023"
+      ],
+      "schema_fields": [
+        "decision-result.authorized_envelope"
+      ],
+      "enforcement_points": [
+        "EXECUTOR_PEP"
+      ],
+      "tests": [
+        "T-PATH-DESCRIPTOR-REJECT-6",
+        "T-Q48-POLICY-SCOPE-KIND-CROSS-MATRIX"
+      ],
+      "evidence": [
+        "EV-NEGATIVE-MUTATIONS",
+        "EV-R4-Q48-001"
+      ],
+      "claim_source": "04_FORMAL_CORE_AND_INVARIANTS.md#INV-015"
+    }
+  ],
+  "reverse_edges": {
+    "requirements": {
+      "L3-REQ-001": [
+        "INV-001"
+      ],
+      "L4-REQ-001": [
+        "INV-001",
+        "INV-011"
+      ],
+      "L3-REQ-002": [
+        "INV-001"
+      ],
+      "L3-REQ-003": [
+        "INV-001"
+      ],
+      "L3-REQ-008": [
+        "INV-001"
+      ],
+      "L3-REQ-011": [
+        "INV-001"
+      ],
+      "L3-REQ-012": [
+        "INV-001"
+      ],
+      "L3-REQ-013": [
+        "INV-001"
+      ],
+      "L3-REQ-014": [
+        "INV-001"
+      ],
+      "L3-REQ-015": [
+        "INV-001"
+      ],
+      "L3-REQ-017": [
+        "INV-001"
+      ],
+      "L3-REQ-018": [
+        "INV-001"
+      ],
+      "L0-REQ-001": [
+        "INV-002",
+        "INV-014"
+      ],
+      "L0-REQ-016": [
+        "INV-002"
+      ],
+      "L2-REQ-003": [
+        "INV-002"
+      ],
+      "L2-REQ-014a": [
+        "INV-002"
+      ],
+      "L0-REQ-002": [
+        "INV-002"
+      ],
+      "L0-REQ-003": [
+        "INV-002"
+      ],
+      "L0-REQ-004": [
+        "INV-002"
+      ],
+      "L0-REQ-005": [
+        "INV-002"
+      ],
+      "L0-REQ-007": [
+        "INV-002"
+      ],
+      "L0-REQ-008": [
+        "INV-002"
+      ],
+      "L0-REQ-009": [
+        "INV-002"
+      ],
+      "L0-REQ-010": [
+        "INV-002"
+      ],
+      "L0-REQ-011": [
+        "INV-002"
+      ],
+      "L0-REQ-012": [
+        "INV-002"
+      ],
+      "L0-REQ-013": [
+        "INV-002"
+      ],
+      "L0-REQ-014": [
+        "INV-002"
+      ],
+      "L0-REQ-015": [
+        "INV-002"
+      ],
+      "L0-REQ-017": [
+        "INV-002"
+      ],
+      "L0-REQ-018": [
+        "INV-002"
+      ],
+      "L0-REQ-019": [
+        "INV-002"
+      ],
+      "L0-REQ-021": [
+        "INV-002"
+      ],
+      "L0-REQ-022": [
+        "INV-002"
+      ],
+      "L2-REQ-008": [
+        "INV-003"
+      ],
+      "L3-REQ-004": [
+        "INV-003"
+      ],
+      "L3-REQ-006": [
+        "INV-004"
+      ],
+      "L3-REQ-022": [
+        "INV-004"
+      ],
+      "L3-REQ-026": [
+        "INV-004"
+      ],
+      "L5-REQ-003": [
+        "INV-004"
+      ],
+      "L5-REQ-004": [
+        "INV-004"
+      ],
+      "L5-REQ-010": [
+        "INV-004"
+      ],
+      "L0-REQ-020": [
+        "INV-005"
+      ],
+      "L1-REQ-022": [
+        "INV-005"
+      ],
+      "L2-REQ-006": [
+        "INV-005",
+        "INV-015"
+      ],
+      "L3-REQ-005": [
+        "INV-005",
+        "INV-009",
+        "INV-011"
+      ],
+      "L5-REQ-002": [
+        "INV-005"
+      ],
+      "L5-REQ-005": [
+        "INV-005",
+        "INV-009"
+      ],
+      "L1-REQ-002": [
+        "INV-005"
+      ],
+      "L1-REQ-003": [
+        "INV-005"
+      ],
+      "L1-REQ-004": [
+        "INV-005"
+      ],
+      "L1-REQ-005": [
+        "INV-005"
+      ],
+      "L1-REQ-006": [
+        "INV-005"
+      ],
+      "L1-REQ-007": [
+        "INV-005"
+      ],
+      "L1-REQ-008": [
+        "INV-005"
+      ],
+      "L1-REQ-009": [
+        "INV-005"
+      ],
+      "L1-REQ-010": [
+        "INV-005"
+      ],
+      "L1-REQ-011": [
+        "INV-005"
+      ],
+      "L1-REQ-012": [
+        "INV-005"
+      ],
+      "L1-REQ-013": [
+        "INV-005"
+      ],
+      "L1-REQ-014": [
+        "INV-005"
+      ],
+      "L1-REQ-015": [
+        "INV-005"
+      ],
+      "L1-REQ-016": [
+        "INV-005"
+      ],
+      "L1-REQ-017": [
+        "INV-005"
+      ],
+      "L1-REQ-018": [
+        "INV-005"
+      ],
+      "L1-REQ-019": [
+        "INV-005"
+      ],
+      "L1-REQ-020": [
+        "INV-005"
+      ],
+      "L1-REQ-021": [
+        "INV-005"
+      ],
+      "L2-REQ-001": [
+        "INV-005"
+      ],
+      "L2-REQ-002": [
+        "INV-005"
+      ],
+      "L2-REQ-004": [
+        "INV-005"
+      ],
+      "L2-REQ-005": [
+        "INV-005"
+      ],
+      "L2-REQ-007": [
+        "INV-005"
+      ],
+      "L2-REQ-009": [
+        "INV-005"
+      ],
+      "L2-REQ-010": [
+        "INV-005"
+      ],
+      "L2-REQ-012": [
+        "INV-005"
+      ],
+      "L2-REQ-013": [
+        "INV-005"
+      ],
+      "L2-REQ-014": [
+        "INV-005"
+      ],
+      "L2-REQ-015": [
+        "INV-005"
+      ],
+      "L2-REQ-016": [
+        "INV-005"
+      ],
+      "L2-REQ-011": [
+        "INV-006"
+      ],
+      "L3-REQ-016": [
+        "INV-006"
+      ],
+      "L3-REQ-007": [
+        "INV-007"
+      ],
+      "L3-REQ-009": [
+        "INV-007",
+        "INV-010",
+        "INV-012"
+      ],
+      "L3-REQ-025": [
+        "INV-007"
+      ],
+      "L3-REQ-010": [
+        "INV-008"
+      ],
+      "L3-REQ-019": [
+        "INV-008"
+      ],
+      "L0-REQ-006": [
+        "INV-009"
+      ],
+      "L2-REQ-014b": [
+        "INV-009"
+      ],
+      "L3-REQ-020": [
+        "INV-009"
+      ],
+      "L1-REQ-001": [
+        "INV-011"
+      ],
+      "L4-REQ-002": [
+        "INV-011"
+      ],
+      "L5-REQ-011": [
+        "INV-011"
+      ],
+      "L3-REQ-024": [
+        "INV-012"
+      ],
+      "L4-REQ-003": [
+        "INV-012"
+      ],
+      "L5-REQ-001": [
+        "INV-013"
+      ],
+      "L5-REQ-006": [
+        "INV-013"
+      ],
+      "L5-REQ-007": [
+        "INV-013"
+      ],
+      "L3-REQ-021": [
+        "INV-014"
+      ],
+      "L5-REQ-008": [
+        "INV-014"
+      ],
+      "L5-REQ-009": [
+        "INV-014"
+      ],
+      "L2-REQ-014c": [
+        "INV-015"
+      ],
+      "L3-REQ-023": [
+        "INV-015"
+      ]
+    },
+    "schema_fields": {
+      "admission-candidate.authority_alternatives": [
+        "INV-005"
+      ],
+      "admission-candidate.d2_frontier": [
+        "INV-008",
+        "INV-010"
+      ],
+      "admission-candidate.placement_attestation": [
+        "INV-009"
+      ],
+      "admission-candidate.supply_chain": [
+        "INV-009"
+      ],
+      "capability.bindings": [
+        "INV-004"
+      ],
+      "capability.delegation": [
+        "INV-006"
+      ],
+      "capability.execution_binding": [
+        "INV-004"
+      ],
+      "decision-result.authorized_envelope": [
+        "INV-015"
+      ],
+      "effect-receipt.committed": [
+        "INV-005",
+        "INV-012"
+      ],
+      "effect-receipt.privacy": [
+        "INV-013"
+      ],
+      "event-envelope.chain": [
+        "INV-003",
+        "INV-011"
+      ],
+      "event-envelope.privacy": [
+        "INV-013"
+      ],
+      "human-approval-receipt.approval_nonce": [
+        "INV-004"
+      ],
+      "isolation-profile.principal_envelopes": [
+        "INV-002"
+      ],
+      "runtime-policy.budgets": [
+        "INV-007"
+      ],
+      "runtime-policy.transaction_semantics": [
+        "INV-001",
+        "INV-007",
+        "INV-014"
+      ]
+    },
+    "enforcement_points": {
+      "BROKER_PEP": [
+        "INV-001",
+        "INV-004",
+        "INV-006",
+        "INV-008",
+        "INV-009",
+        "INV-010",
+        "INV-013",
+        "INV-014"
+      ],
+      "DURABLE_JOURNAL": [
+        "INV-004",
+        "INV-006",
+        "INV-007",
+        "INV-010"
+      ],
+      "EXECUTOR_PEP": [
+        "INV-003",
+        "INV-011",
+        "INV-012",
+        "INV-015"
+      ],
+      "HOST_SUPERVISOR": [
+        "INV-002",
+        "INV-009",
+        "INV-014"
+      ],
+      "OBSERVER": [
+        "INV-003",
+        "INV-005",
+        "INV-011",
+        "INV-012",
+        "INV-013"
+      ],
+      "RECOVERY": [
+        "INV-014"
+      ],
+      "HUMAN_APPROVAL_SERVICE": [
+        "INV-013"
+      ]
+    },
+    "tests": {
+      "T-ADMIT-NULL-DECISION": [
+        "INV-001"
+      ],
+      "T-APPROVAL-LIFECYCLE-VALID": [
+        "INV-004"
+      ],
+      "T-ATTESTATION-BINDING": [
+        "INV-009"
+      ],
+      "T-AUTHORITY-CORRELATED-NO-CROSS-PAIR": [
+        "INV-005"
+      ],
+      "T-AUTHORITY-TYPED-DECISION-RESULT": [
+        "INV-013"
+      ],
+      "T-BUDGET-CONSERVATION-COMMIT": [
+        "INV-007"
+      ],
+      "T-BUDGET-DUPLICATE-DEMAND-AGGREGATED": [
+        "INV-007"
+      ],
+      "T-CAPABILITY-REPLAY-AFTER-STOP": [
+        "INV-004"
+      ],
+      "T-D2-ARTIFACT-PERSISTED_STATE": [
+        "INV-010"
+      ],
+      "T-D2-CLASS-CONTROLLER_VISIBLE": [
+        "INV-008"
+      ],
+      "T-DELEGATE-BUDGET_EXPANSION": [
+        "INV-006"
+      ],
+      "T-DELEGATE-EFFECT_AMPLIFICATION": [
+        "INV-006"
+      ],
+      "T-EVENT-CANONICAL-VALID": [
+        "INV-003"
+      ],
+      "T-EVENT-KNOWN-EMPTY-REJECT": [
+        "INV-011"
+      ],
+      "T-EVENT-TRUSTED-EMITTER": [
+        "INV-011"
+      ],
+      "T-EXTERNAL-UNKNOWN-NO-AUTORETRY": [
+        "INV-014"
+      ],
+      "T-CRASH-ORPHAN-RECOVERY": [
+        "INV-014"
+      ],
+      "T-COMPENSATION-FRESH-ADMISSION": [
+        "INV-014"
+      ],
+      "T-ISOLATION-ACTIVE-VALID": [
+        "INV-002"
+      ],
+      "T-PATH-DESCRIPTOR-REJECT-6": [
+        "INV-015"
+      ],
+      "T-RECEIPT-COMMITTED-SUBSET": [
+        "INV-005"
+      ],
+      "T-RECEIPT-GUARD-SEAL": [
+        "INV-012"
+      ],
+      "T-RECEIPT-PRIVACY-LIFECYCLE": [
+        "INV-013"
+      ],
+      "T-REPORT-CORE-001": [
+        "INV-011"
+      ],
+      "T-REPORT-CORE-002": [
+        "INV-004",
+        "INV-009",
+        "INV-011"
+      ],
+      "T-SUPPLY-COMPOSITE": [],
+      "T-Q39-SUPPLY-EXTERNAL-BUNDLE-SUBSTITUTION": [
+        "INV-002"
+      ],
+      "T-Q40-D2-EMPTY": [
+        "INV-008"
+      ],
+      "T-Q40-D2-STALE": [
+        "INV-008"
+      ],
+      "T-Q40-D2-HIDDEN_N_PLUS_2": [
+        "INV-008"
+      ],
+      "T-Q40-D2-REQUIRED-ARTIFACT-MISSING": [
+        "INV-008"
+      ],
+      "T-Q41-EVENT-EMITTER-ROLE-FORGE": [
+        "INV-011"
+      ],
+      "T-Q42-EVENT-DIGEST-SUBSTITUTION": [
+        "INV-011"
+      ],
+      "T-Q43-DESCRIPTOR-ROOT-SUBSTITUTION": [
+        "INV-009"
+      ],
+      "T-Q44-CONTRACT-SUBSTITUTION": [
+        "INV-009"
+      ],
+      "T-Q45-STAGEABLE-CRASH-QUARANTINES": [
+        "INV-014"
+      ],
+      "T-Q46-DIRECT-WORKER-MUTATE-DENY": [
+        "INV-005"
+      ],
+      "T-Q47-MUTATION-SELF-AUDIENCE-DENY": [
+        "INV-004"
+      ],
+      "T-Q48-POLICY-SCOPE-KIND-CROSS-MATRIX": [
+        "INV-015"
+      ],
+      "T-Q49-COMMIT-TYPED-EVIDENCE-FORGE": [
+        "INV-012"
+      ],
+      "T-Q49-JOIN-TYPED-EVIDENCE-FORGE": [
+        "INV-012"
+      ],
+      "T-Q50-BUDGET-SCOPE-IDENTITY-SUBSTITUTION": [
+        "INV-007"
+      ],
+      "T-Q50-BUDGET-LINEAGE-IDENTITY-SUBSTITUTION": [
+        "INV-007"
+      ],
+      "T-Q50-BUDGET-FOUR-PART-KEY-PRESERVED": [
+        "INV-007"
+      ],
+      "T-Q51-ISSUE-EXTERNAL-FULL-RECORD": [
+        "INV-004"
+      ],
+      "T-Q51-DISPATCH-EXTERNAL-FULL-RECORD": [
+        "INV-004"
+      ]
+    },
+    "evidence": {
+      "EV-ADMISSION-MODEL": [
+        "INV-001"
+      ],
+      "EV-CAPABILITY-LIFECYCLE": [
+        "INV-004",
+        "INV-007"
+      ],
+      "EV-HOST-LIFECYCLE": [
+        "INV-014"
+      ],
+      "EV-NEGATIVE-MUTATIONS": [
+        "INV-005",
+        "INV-006",
+        "INV-008",
+        "INV-009",
+        "INV-010",
+        "INV-011",
+        "INV-015"
+      ],
+      "EV-SCHEMA-CONFORMANCE": [
+        "INV-002",
+        "INV-003",
+        "INV-012",
+        "INV-013"
+      ],
+      "EV-TRACEABILITY-EXECUTION": [
+        "INV-011"
+      ],
+      "EV-R4-Q39-001": [
+        "INV-002"
+      ],
+      "EV-R4-Q40-001": [
+        "INV-008"
+      ],
+      "EV-R4-Q41-001": [
+        "INV-011"
+      ],
+      "EV-R4-Q42-001": [
+        "INV-011"
+      ],
+      "EV-R4-Q43-001": [
+        "INV-009"
+      ],
+      "EV-R4-Q44-001": [
+        "INV-009"
+      ],
+      "EV-R4-Q45-001": [
+        "INV-014"
+      ],
+      "EV-R4-Q46-001": [
+        "INV-005"
+      ],
+      "EV-R4-Q47-001": [
+        "INV-004"
+      ],
+      "EV-R4-Q48-001": [
+        "INV-015"
+      ],
+      "EV-R4-Q49-001": [
+        "INV-012"
+      ],
+      "EV-R4-Q50-001": [
+        "INV-007"
+      ],
+      "EV-R4-Q51-001": [
+        "INV-004"
+      ]
+    }
+  },
+  "round5_regression_anchors": {
+    "Q-53": [
+      "T-ATTESTATION-SIGNED-FIELD-MUTATION-EXPIRY",
+      "T-ATTESTATION-SIGNED-FIELD-MUTATION-HOST",
+      "T-ATTESTATION-SIGNED-FIELD-MUTATION-NONCE",
+      "T-ATTESTATION-SIGNED-FIELD-MUTATION-SIGNER"
+    ],
+    "Q-54": [
+      "T-Q48-MANIFEST-FILE-PRINCIPAL-EXACT-DENY",
+      "T-Q48-MANIFEST-FILE-PATH-PREFIX-POSITIVE",
+      "T-Q48-MANIFEST-FILE-PATH-EXACT-POSITIVE"
+    ],
+    "Q-55": [
+      "T-Q43-PATH-EXACT-DESCRIPTOR-DIGEST-DENY",
+      "T-Q43-PATH-EXACT-DESCRIPTOR-ROOT-DENY",
+      "T-Q43-PATH-EXACT-DESCRIPTOR-MOUNT-DENY",
+      "T-Q43-PATH-EXACT-DESCRIPTOR-EPOCH-DENY"
+    ],
+    "Q-56": [
+      "T-ISOLATION-RESOURCE-CROSS-MATRIX-CPU-MIB-CGROUP_V2",
+      "T-ISOLATION-RESOURCE-CROSS-MATRIX-CPU-MILLISECONDS-SUPERVISOR"
+    ],
+    "Q-57": [
+      "T-SUPPLY-TRUSTED-ROOT-MISMATCH",
+      "T-SUPPLY-TRUSTED-ROOT-EXTERNAL-MISMATCH"
+    ],
+    "Q-58": [
+      "T-ISSUE_CAPABILITY-MALFORMED-ONE-DISPOSITION",
+      "T-ISSUE_CAPABILITY-NO-DUPLICATE-DISPOSITION",
+      "T-ISSUE_CAPABILITY-FRESH-BOUNDED-PROPOSAL",
+      "T-ISSUE_CAPABILITY-PREDISPATCH-ISSUED-QUARANTINE",
+      "T-ISSUE_CAPABILITY-PREDISPATCH-PRECHECKED-QUARANTINE"
+    ],
+    "Q-59": [
+      "T-Q59-EVENT-AUTHORIZED-SUBSET-MANIFESTED-DENY",
+      "T-Q59-EVENT-ATTEMPTED-EXCESS-BLOCKED",
+      "T-Q59-EVENT-ATTEMPTED-EXCESS-REQUIRES-BLOCKED",
+      "T-Q59-EVENT-TRUSTED-BINDING-NEGATIVE"
+    ]
+  },
+  "round8a_regression_anchors": {
+    "Q-79": [
+      "T-Q79-UNBOUND-DERIVED-EFFECT-DENY",
+      "T-Q79-CYCLIC-DERIVED-EFFECT-DENY",
+      "T-Q79-UNRELATED-TYPED-MUTATE-DENY",
+      "T-Q79-MISSING-REACHABLE-CLAUSE-DENY",
+      "T-Q79-EXACT-COMMUNICATE-MUTATE-CLOSURE"
+    ],
+    "Q-80": [
+      "T-Q80-FILESYSTEM-TARGET-SCHEMA-REQUIRED",
+      "T-Q80-SAME-PATH-ROOT-STOP",
+      "T-Q80-SAME-PATH-MOUNT-STOP",
+      "T-Q80-SAME-PATH-EPOCH-STOP",
+      "T-Q80-COHERENT-HIGHER-REBIND-STOP",
+      "T-Q80-DISPATCH-IMMUTABLE-CAPABILITY-TARGET"
+    ],
+    "Q-81": [
+      "T-Q81-CATALOG-RESOLVES",
+      "T-Q81-CATALOG-OMISSION-FAILS",
+      "T-Q81-CATALOG-DANGLING-FAILS",
+      "T-Q81-CATALOG-DIGEST-FAILS",
+      "T-Q81-CATALOG-EVIDENCE-PREIMAGE-FAILS",
+      "T-Q81-CATALOG-MALFORMED-ROW-FAILS",
+      "T-Q81-CATALOG-REVERSE-EDGE-FAILS",
+      "T-Q81-L5-REQ-001-MUTATION-FAILS"
+    ]
+  },
+  "round7a_regression_anchors": {
+    "Q-75": [
+      "T-Q75-ROOT-DELEGATE-AUTHORITY-NEEDS-NO-PARENT",
+      "T-Q75-DESCENDANT-WORK-REQUIRES-PROVENANCE",
+      "T-Q75-DESCENDANT-MUTATE-POSITIVE-BOUND",
+      "T-Q75-DESCENDANT-COMMUNICATE-POSITIVE-BOUND",
+      "T-Q75-DESCENDANT-ISSUE-TRUSTED-PROVENANCE",
+      "T-Q75-DESCENDANT-ISSUE-DURABLE-PARENT-REVOCATION",
+      "T-Q75-DESCENDANT-ISSUE-CURRENT-PARENT-REVOCATION-EPOCH",
+      "T-Q75-DESCENDANT-DISPATCH-RECHECKS-PARENT",
+      "T-Q75-DESCENDANT-DISPATCH-DURABLE-PARENT-REVOCATION",
+      "T-Q75-DESCENDANT-DISPATCH-CURRENT-PARENT-FENCE",
+      "T-Q75-DESCENDANT-DISPATCH-PARENT-SIGNER"
+    ],
+    "Q-76": [
+      "T-Q76-EXTERNAL-BARE-RECONCILE-REJECTED",
+      "T-Q76-KNOWN-SUCCESS-TERMINAL-ONCE",
+      "T-Q76-EXTERNAL-FAILURE-NO-EFFECT-RELEASES",
+      "T-Q76-EXTERNAL-RECONCILE-TRANSACTION",
+      "T-Q76-EXTERNAL-RECONCILE-OBJECT",
+      "T-Q76-EXTERNAL-RECONCILE-IDEMPOTENCY",
+      "T-Q76-EXTERNAL-RECONCILE-CONNECTOR",
+      "T-Q76-EXTERNAL-RECONCILE-CHAIN",
+      "T-Q76-EXTERNAL-RECONCILE-FENCE",
+      "T-Q76-EXTERNAL-RECONCILE-REVOKED",
+      "T-Q76-EXTERNAL-RECONCILE-STALE",
+      "T-Q76-EXTERNAL-RECONCILE-FORGED-VERIFIER"
+    ],
+    "Q-77": [
+      "T-Q77-D2-AUTHORITY-DOMAIN-TRANSPLANT",
+      "T-Q77-D2-JOURNAL-LINEAGE-TRANSPLANT",
+      "T-Q77-D2-PARENT-LINEAGE-TRANSPLANT",
+      "T-Q77-D2-JOURNAL-SEQUENCE-TRANSPLANT",
+      "T-Q77-D2-FENCING-EPOCH-TRANSPLANT",
+      "T-Q77-CAPABILITY-D2-BINDING",
+      "T-Q77-DISPATCH-D2-BINDING",
+      "T-Q77-DISPATCH-TRUSTED-FRONTIER-REQUIRED",
+      "T-Q77-DISPATCH-CURRENT-FRONTIER-FENCE-REQUIRED",
+      "T-Q77-DISPATCH-D2-AUTHORITY-DOMAIN",
+      "T-Q77-DISPATCH-D2-JOURNAL-LINEAGE",
+      "T-Q77-DISPATCH-D2-ROOT-PARENT",
+      "T-Q77-DISPATCH-D2-FRONTIER-SEQUENCE",
+      "T-Q77-DISPATCH-D2-FRONTIER-CONTENT",
+      "T-Q77-DISPATCH-D2-RUNTIME-SEQUENCE",
+      "T-Q77-DISPATCH-D2-SIGNER",
+      "T-Q77-DISPATCH-D2-KEY",
+      "T-Q77-DISPATCH-D2-EXPIRY",
+      "T-Q77-JOIN-D2-BINDING",
+      "T-Q77-RECOVERY-TRUSTED-FRONTIER-REQUIRED",
+      "T-Q77-RECOVERY-CURRENT-FRONTIER-FENCE-REQUIRED",
+      "T-Q77-RECOVERY-D2-EXACT-IDENTITY-REQUIRED"
+    ],
+    "Q-78": [
+      "T-Q78-COMPONENT-WISE-EXHAUSTION-PRESERVED",
+      "T-Q78-DURABLE-DISPATCH-KEYED-VECTOR",
+      "T-Q78-NO-CROSS-KEY-SUBSTITUTION",
+      "T-Q78-SCOPE-LINEAGE-KEY-SWAP-REJECTED",
+      "T-Q78-SCALAR-CONSERVATION-CANNOT-HIDE-KEY-SWAP"
+    ]
+  },
+  "non_normative_registry_nodes": {
+    "tests": [
+      "T-SUPPLY-COMPOSITE"
+    ]
+  },
+  "evidence_preimages": {
+    "command": "python3 tests/run_checks.py",
+    "environment": {
+      "python": "3.x",
+      "mode": "SPECIFICATION_MODEL_ONLY",
+      "network": "NOT_USED",
+      "runtime": "NOT_IMPLEMENTED",
+      "cwd": "outputs/harness-formalization"
+    },
+    "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+    "input": {
+      "traceability": "tests/invariant-traceability.json",
+      "invariants_source": "04_FORMAL_CORE_AND_INVARIANTS.md",
+      "test_source": "tests/run_checks.py",
+      "scope": "registry-and-model",
+      "normative_requirement_catalog_digest": "sha256:d6f1e08844de759e7d25c19631878d77b549b2a78be9f21db6fc59cb28c08370"
+    },
+    "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852"
+  },
+  "evidence_records": {
+    "EV-ADMISSION-MODEL": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "specification-model result only; runtime absent",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-CAPABILITY-LIFECYCLE": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "specification-model result only; runtime absent",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-HOST-LIFECYCLE": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "specification-model result only; runtime absent",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-NEGATIVE-MUTATIONS": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "specification-model result only; runtime absent",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-SCHEMA-CONFORMANCE": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "specification-model result only; runtime absent",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-TRACEABILITY-EXECUTION": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "normative_requirement_catalog_digest": "sha256:d6f1e08844de759e7d25c19631878d77b549b2a78be9f21db6fc59cb28c08370",
+      "result": "registry/reverse-edge contract; root-side validator required; runtime absent",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q39-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q39-SUPPLY-EXTERNAL-BUNDLE-SUBSTITUTION passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q40-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q40-D2-EMPTY, T-Q40-D2-STALE and T-Q40-D2-HIDDEN_N_PLUS_2 passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q41-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q41-EVENT-EMITTER-ROLE-FORGE passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q42-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q42-EVENT-DIGEST-SUBSTITUTION passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q43-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q43-DESCRIPTOR-ROOT-SUBSTITUTION passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q44-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q44-CONTRACT-SUBSTITUTION passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q45-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q45-STAGEABLE-CRASH-QUARANTINES passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q46-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q46-DIRECT-WORKER-MUTATE-DENY passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q47-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q47-MUTATION-SELF-AUDIENCE-DENY passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q48-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q48-POLICY-SCOPE-KIND-CROSS-MATRIX passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q49-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q49-JOIN-TYPED-EVIDENCE-FORGE passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q50-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q50-BUDGET-SCOPE-IDENTITY-SUBSTITUTION passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    },
+    "EV-R4-Q51-001": {
+      "command": "python3 tests/run_checks.py",
+      "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
+      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "result": "T-Q51-ISSUE-EXTERNAL-FULL-RECORD passed; specification model only",
+      "status": "SPECIFICATION_MODEL_TESTED"
+    }
+  }
+}

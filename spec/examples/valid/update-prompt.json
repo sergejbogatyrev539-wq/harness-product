@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "manifest:control/update-prompt",
+  "manifest_version": "1.0.0",
+  "status": "ACTIVE",
+  "tool": {
+    "tool_id": "tool:control-plane",
+    "owner": "team:control",
+    "implementation_digest": "sha256:7171717171717171717171717171717171717171717171717171717171717171",
+    "provenance_uri": "urn:artifact:control-plane:1.0.0",
+    "entrypoint": ["/opt/broker/control-plane", "prompt", "update"],
+    "dependencies": [],
+    "sbom_digest": "sha256:7272727272727272727272727272727272727272727272727272727272727272",
+    "signer": {"key_id": "key:manifest", "algorithm": "ED25519", "payload_digest": "sha256:7373737373737373737373737373737373737373737373737373737373737373", "signature": "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"}
+  },
+  "operation_id": "update-prompt",
+  "input_contract": {"schema_digest": "sha256:7474747474747474747474747474747474747474747474747474747474747474", "canonicalization": "RFC8785_JSON", "max_bytes": 16384, "max_depth": 6, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "output_contract": {"schema_digest": "sha256:7575757575757575757575757575757575757575757575757575757575757575", "canonicalization": "RFC8785_JSON", "max_bytes": 2048, "max_depth": 4, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "effect_bounds": [
+    {"clause_id": "clause:prompt-mutate", "effect": "MUTATE", "resources": [{"resource_kind": "PROMPT", "operations": ["UPDATE"], "selector": {"kind": "PROMPT_COMPONENT", "value": "prompt:project/instructions"}, "direction": "INTERNAL", "data_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:change:prompt"], "taints": ["USER_INPUT"], "purposes": ["CONTROL_CHANGE"], "retention": "CONTRACT"}, "temporal": {"max_duration_ms": 5000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "OPERATIONS", "limit": 1}, "max_concurrency": 1}], "derived_effects": ["clause:prompt-reflect"], "uncertainty": "BOUNDED"},
+    {"clause_id": "clause:prompt-reflect", "effect": "REFLECT", "resources": [{"resource_kind": "PROMPT", "operations": ["UPDATE"], "selector": {"kind": "PROMPT_COMPONENT", "value": "prompt:project/instructions"}, "direction": "INTERNAL", "data_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:change:prompt"], "taints": ["USER_INPUT"], "purposes": ["CONTROL_CHANGE"], "retention": "CONTRACT"}, "temporal": {"max_duration_ms": 5000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "OPERATIONS", "limit": 1}, "max_concurrency": 1}], "derived_effects": [], "uncertainty": "BOUNDED"}
+  ],
+  "authority_facets": ["EXECUTE_EFFECT", "PERSIST_SCHEDULE"],
+  "flow_rules": [],
+  "runtime_requirements": {"isolation_profile_id": "isolation:control-mediation", "isolation_profile_digest": "sha256:7676767676767676767676767676767676767676767676767676767676767676", "controls": ["MEDIATED_EXECUTION", "FD_CLOSURE", "RESOURCE_HARD_LIMITS", "NO_AMBIENT_CREDENTIALS", "REFLECTION_MEDIATION"], "ambient_dependencies": [], "credentials": "NONE"},
+  "resource_envelope": [{"name": "PROMPT_UPDATES", "unit": "OPERATIONS", "limit": 1, "scope_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "lineage_root": "lineage:root"}, {"name": "PROMPT_BYTES", "unit": "BYTES", "limit": 16384, "scope_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "lineage_root": "lineage:root"}],
+  "behavior": {"dynamic_dispatch": "DENIED", "unknown_behavior": "DENY", "determinism": "DETERMINISTIC", "idempotency": "DEDUP_KEY_REQUIRED", "reversibility": "REVERSIBLE", "compensation": "SEPARATE_AUTHORIZED_TRANSACTION", "persistence": "PERSISTENT", "expected_residual_effects": ["MUTATE", "REFLECT"]},
+  "assurance": {"preconditions": ["component.exact", "new.digest.reviewed"], "postconditions": ["prompt.version.incremented", "dependent.receipts.invalidated"], "invariants": ["INV-009", "INV-010", "INV-013", "INV-015"], "obligations": ["event.emit", "receipt.invalidate.material-change"], "evidence_plan_id": "evidence:update-prompt", "postcheck_required": true, "independent_observer_required": true, "conformance_evidence_digests": []},
+  "lifecycle": {"issued_at": "2026-08-24T00:00:00Z", "expires_at": "2026-09-24T00:00:00Z", "registry_generation": 7, "revocation_id": "revocation:control", "rollback_floor": 7},
+  "change_control": {"material_fields": ["TOOL_DIGEST", "ENTRYPOINT", "INPUT_SCHEMA", "OUTPUT_SCHEMA", "EFFECT_BOUND", "FLOW_RULE", "ISOLATION_PROFILE", "BUDGET", "BEHAVIOR", "OWNER", "SIGNER"], "compatibility": "EXACT_VERSION_ONLY", "migration": "NEW_MANIFEST_AND_RECEIPT", "dynamic_registry_updates": false}
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "manifest:orchestrator/spawn-subagent",
+  "manifest_version": "1.0.0",
+  "status": "ACTIVE",
+  "tool": {
+    "tool_id": "tool:orchestrator",
+    "owner": "team:orchestration",
+    "implementation_digest": "sha256:5151515151515151515151515151515151515151515151515151515151515151",
+    "provenance_uri": "urn:artifact:orchestrator:1.0.0",
+    "entrypoint": ["/opt/broker/orchestrator", "spawn"],
+    "dependencies": [{"id": "adapter:agent-runtime", "kind": "ADAPTER", "digest": "sha256:5252525252525252525252525252525252525252525252525252525252525252", "dispatch": "STATIC"}],
+    "sbom_digest": "sha256:5353535353535353535353535353535353535353535353535353535353535353",
+    "signer": {"key_id": "key:manifest", "algorithm": "ED25519", "payload_digest": "sha256:5454545454545454545454545454545454545454545454545454545454545454", "signature": "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"}
+  },
+  "operation_id": "spawn-subagent",
+  "input_contract": {"schema_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "canonicalization": "RFC8785_JSON", "max_bytes": 16384, "max_depth": 8, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "output_contract": {"schema_digest": "sha256:5656565656565656565656565656565656565656565656565656565656565656", "canonicalization": "RFC8785_JSON", "max_bytes": 4096, "max_depth": 5, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "effect_bounds": [
+    {"clause_id": "clause:spawn-delegate", "effect": "DELEGATE", "resources": [{"resource_kind": "PRINCIPAL", "operations": ["SPAWN", "BIND"], "selector": {"kind": "PRINCIPAL_EXACT", "value": "agent:bounded-child"}, "direction": "OUT", "data_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:task:delegation"], "taints": ["USER_INPUT"], "purposes": ["TASK"], "retention": "CONTRACT"}, "temporal": {"max_duration_ms": 60000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "AGENTS", "limit": 1}, "max_concurrency": 1}], "derived_effects": ["clause:spawn-compute"], "uncertainty": "BOUNDED"},
+    {"clause_id": "clause:spawn-compute", "effect": "COMPUTE", "resources": [{"resource_kind": "COMPUTE_RESOURCE", "operations": ["ALLOCATE"], "selector": {"kind": "LOCAL_RESOURCE", "value": "child-runtime"}, "direction": "INTERNAL", "data_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:task:delegation"], "taints": ["USER_INPUT"], "purposes": ["TASK"], "retention": "CONTRACT"}, "temporal": {"max_duration_ms": 60000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "MILLISECONDS", "limit": 60000}, "max_concurrency": 1}], "derived_effects": [], "uncertainty": "BOUNDED"}
+  ],
+  "authority_facets": ["EXECUTE_EFFECT", "ALLOCATE_RESOURCE"],
+  "flow_rules": [{"source": "parent.task", "sink": "agent:bounded-child", "direction": "OUT", "maximum_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:task:delegation"], "taints": ["USER_INPUT"], "purposes": ["TASK"], "retention": "CONTRACT"}, "purpose": "TASK", "declassification_required": false}],
+  "runtime_requirements": {"isolation_profile_id": "isolation:workspace-stageable", "isolation_profile_digest": "sha256:5757575757575757575757575757575757575757575757575757575757575757", "controls": ["MEDIATED_EXECUTION", "NETWORK_DISCONNECTED_WORKER", "FD_CLOSURE", "RESOURCE_HARD_LIMITS", "NO_AMBIENT_CREDENTIALS", "DELEGATION_MEDIATION"], "ambient_dependencies": [], "credentials": "NONE"},
+  "resource_envelope": [{"name": "AGENTS", "unit": "AGENTS", "limit": 1, "scope_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "lineage_root": "lineage:root"}, {"name": "CHILD_RUNTIME", "unit": "MILLISECONDS", "limit": 60000, "scope_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "lineage_root": "lineage:root"}],
+  "behavior": {"dynamic_dispatch": "PINNED_CLOSURE", "unknown_behavior": "DENY", "determinism": "NONDETERMINISTIC", "idempotency": "NON_IDEMPOTENT", "reversibility": "COMPENSATABLE", "compensation": "SEPARATE_AUTHORIZED_TRANSACTION", "persistence": "PERSISTENT", "expected_residual_effects": ["DELEGATE"]},
+  "assurance": {"preconditions": ["authority.attenuated", "budget.partition.atomic", "depth.within.bound"], "postconditions": ["child.joined.or.cancelled"], "invariants": ["INV-003", "INV-006", "INV-007", "INV-015"], "obligations": ["delegation.event.emit", "child.receipt.collect"], "evidence_plan_id": "evidence:spawn-subagent", "postcheck_required": true, "independent_observer_required": true, "conformance_evidence_digests": []},
+  "lifecycle": {"issued_at": "2026-08-24T00:00:00Z", "expires_at": "2026-09-24T00:00:00Z", "registry_generation": 7, "revocation_id": "revocation:orchestrator", "rollback_floor": 7},
+  "change_control": {"material_fields": ["TOOL_DIGEST", "DEPENDENCY_DIGEST", "ENTRYPOINT", "INPUT_SCHEMA", "OUTPUT_SCHEMA", "EFFECT_BOUND", "FLOW_RULE", "ISOLATION_PROFILE", "BUDGET", "BEHAVIOR", "OWNER", "SIGNER"], "compatibility": "EXACT_VERSION_ONLY", "migration": "NEW_MANIFEST_AND_RECEIPT", "dynamic_registry_updates": false}
+}

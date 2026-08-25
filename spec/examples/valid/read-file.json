@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "manifest:filesystem/read-file",
+  "manifest_version": "1.0.0",
+  "status": "ACTIVE",
+  "tool": {
+    "tool_id": "tool:filesystem",
+    "owner": "team:runtime",
+    "implementation_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "provenance_uri": "urn:artifact:filesystem-tool:1.0.0",
+    "entrypoint": ["/opt/harness/filesystem-tool", "read"],
+    "dependencies": [],
+    "sbom_digest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+    "signer": {"key_id": "key:manifest", "algorithm": "ED25519", "payload_digest": "sha256:1313131313131313131313131313131313131313131313131313131313131313", "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+  },
+  "operation_id": "read-file",
+  "input_contract": {"schema_digest": "sha256:1414141414141414141414141414141414141414141414141414141414141414", "canonicalization": "RFC8785_JSON", "max_bytes": 2048, "max_depth": 4, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "output_contract": {"schema_digest": "sha256:1515151515151515151515151515151515151515151515151515151515151515", "canonicalization": "RAW_EXACT", "max_bytes": 65536, "max_depth": 0, "encodings": ["UTF-8", "BINARY"], "content_types": ["application/octet-stream"]},
+  "effect_bounds": [
+    {"clause_id": "clause:read-file-observe", "effect": "OBSERVE", "resources": [{"resource_kind": "FILE", "operations": ["READ"], "selector": {"kind": "PATH_PREFIX", "value": "/workspace/input", "descriptor_binding_digest": "sha256:53496d0b138b19d1884bda90378f7ab7e2c181e2cff27fe2bf49210d19071de4", "physical_target_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "direction": "IN", "data_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:input:workspace"], "taints": ["USER_INPUT"], "purposes": ["TASK"], "retention": "SESSION"}, "temporal": {"max_duration_ms": 5000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "BYTES", "limit": 65536}, "max_concurrency": 1}], "derived_effects": [], "uncertainty": "BOUNDED"}
+  ],
+  "authority_facets": ["EXECUTE_EFFECT"],
+  "flow_rules": [],
+  "runtime_requirements": {"isolation_profile_id": "isolation:workspace-stageable", "isolation_profile_digest": "sha256:1616161616161616161616161616161616161616161616161616161616161616", "controls": ["MEDIATED_EXECUTION", "DESCRIPTOR_PATH_RESOLUTION", "NETWORK_DISCONNECTED_WORKER", "FD_CLOSURE", "NO_AMBIENT_CREDENTIALS"], "ambient_dependencies": [], "credentials": "NONE"},
+  "resource_envelope": [{"name": "CALLS", "unit": "CALLS", "limit": 1, "scope_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "lineage_root": "lineage:root"}, {"name": "READ_BYTES", "unit": "BYTES", "limit": 65536, "scope_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "lineage_root": "lineage:root"}],
+  "behavior": {"dynamic_dispatch": "DENIED", "unknown_behavior": "DENY", "determinism": "DETERMINISTIC", "idempotency": "IDEMPOTENT", "reversibility": "REVERSIBLE", "compensation": "NONE", "persistence": "EPHEMERAL", "expected_residual_effects": []},
+  "assurance": {"preconditions": ["path.resolved.beneath"], "postconditions": ["bytes.hash.recorded"], "invariants": ["INV-003", "INV-005", "INV-015"], "obligations": ["event.emit"], "evidence_plan_id": "evidence:read-file", "postcheck_required": true, "independent_observer_required": true, "conformance_evidence_digests": []},
+  "lifecycle": {"issued_at": "2026-08-24T00:00:00Z", "expires_at": "2026-09-24T00:00:00Z", "registry_generation": 7, "revocation_id": "revocation:filesystem", "rollback_floor": 7},
+  "change_control": {"material_fields": ["TOOL_DIGEST", "DEPENDENCY_DIGEST", "ENTRYPOINT", "INPUT_SCHEMA", "OUTPUT_SCHEMA", "EFFECT_BOUND", "FLOW_RULE", "ISOLATION_PROFILE", "BUDGET", "BEHAVIOR", "OWNER", "SIGNER"], "compatibility": "EXACT_VERSION_ONLY", "migration": "NEW_MANIFEST_AND_RECEIPT", "dynamic_registry_updates": false}
+}

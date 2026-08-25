@@ -1,0 +1,6 @@
+{
+  "case_id": "invalid-spawn-subagent-unknown-effect",
+  "base": "../valid/spawn-subagent.json",
+  "mutation": {"pointer": "/effect_bounds/0/effect", "value": "SPAWN"},
+  "expected_error_fragment": "is not one of"
+}

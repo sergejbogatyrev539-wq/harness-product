@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:harness:schema:effect-ontology:1",
+  "title": "Harness effect vector",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "classification_id",
+    "effects",
+    "authority_facets",
+    "lifecycle",
+    "information_flows"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "classification_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "effects": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/effect"}
+    },
+    "authority_facets": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/authorityFacet"}
+    },
+    "lifecycle": {"$ref": "#/$defs/lifecycle"},
+    "information_flows": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/informationFlow"}
+    }
+  },
+  "$defs": {
+    "effect": {
+      "enum": ["COMPUTE", "OBSERVE", "MUTATE", "COMMUNICATE", "DELEGATE", "REFLECT"]
+    },
+    "authorityFacet": {
+      "enum": ["AUTHORIZE", "DECLASSIFY", "ENDORSE", "PERSIST_SCHEDULE", "ALLOCATE", "EXECUTE"]
+    },
+    "label": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["confidentiality", "integrity", "provenance", "taints", "purposes", "retention"],
+      "properties": {
+        "confidentiality": {"enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]},
+        "integrity": {"enum": ["UNTRUSTED", "USER_ASSERTED", "SERVICE_ATTESTED", "VERIFIED"]},
+        "provenance": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "maxLength": 256}},
+        "taints": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}},
+        "purposes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}},
+        "retention": {"enum": ["EPHEMERAL", "SESSION", "CONTRACT", "FIXED_TERM", "LEGAL_HOLD"]}
+      }
+    },
+    "informationFlow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "sink", "direction", "label", "control_dependency"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1, "maxLength": 256},
+        "sink": {"type": "string", "minLength": 1, "maxLength": 256},
+        "direction": {"enum": ["IN", "OUT", "INTERNAL"]},
+        "label": {"$ref": "#/$defs/label"},
+        "control_dependency": {"type": "boolean"}
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["persistence", "reversibility", "externality", "uncertainty"],
+      "properties": {
+        "persistence": {"enum": ["EPHEMERAL", "STAGED", "PERSISTENT", "SCHEDULED"]},
+        "reversibility": {"enum": ["REVERSIBLE", "COMPENSATABLE", "IRREVERSIBLE", "UNKNOWN"]},
+        "externality": {"enum": ["LOCAL", "CROSS_PRINCIPAL", "EXTERNAL"]},
+        "uncertainty": {"enum": ["BOUNDED", "CONSERVATIVE_UPPER_BOUND", "UNKNOWN"]}
+      }
+    }
+  }
+}

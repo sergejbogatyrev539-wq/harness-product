@@ -1,0 +1,6 @@
+{
+  "case_id": "invalid-external-message-insecure-endpoint",
+  "base": "../valid/external-message.json",
+  "mutation": {"pointer": "/effect_bounds/0/resources/0/selector/value", "value": "http://messages.example.test/v1/send"},
+  "expected_error_fragment": "does not match"
+}

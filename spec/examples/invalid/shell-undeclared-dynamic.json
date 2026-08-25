@@ -1,0 +1,6 @@
+{
+  "case_id": "invalid-shell-undeclared-dynamic",
+  "base": "../valid/shell.json",
+  "mutation": {"pointer": "/behavior/dynamic_dispatch", "value": "UNDECLARED_DYNAMIC"},
+  "expected_error_fragment": "is not one of"
+}

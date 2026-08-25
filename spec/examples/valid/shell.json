@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "manifest:terminal/python-check",
+  "manifest_version": "1.0.0",
+  "status": "ACTIVE",
+  "tool": {
+    "tool_id": "tool:terminal",
+    "owner": "team:runtime",
+    "implementation_digest": "sha256:3131313131313131313131313131313131313131313131313131313131313131",
+    "provenance_uri": "urn:artifact:bounded-terminal:1.0.0",
+    "entrypoint": ["/opt/harness/bounded-terminal", "/usr/bin/python3", "-m", "compileall"],
+    "dependencies": [{"id": "binary:python3", "kind": "BINARY", "digest": "sha256:3232323232323232323232323232323232323232323232323232323232323232", "dispatch": "STATIC"}],
+    "sbom_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "signer": {"key_id": "key:manifest", "algorithm": "ED25519", "payload_digest": "sha256:3434343434343434343434343434343434343434343434343434343434343434", "signature": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"}
+  },
+  "operation_id": "shell-python-compile",
+  "input_contract": {"schema_digest": "sha256:3535353535353535353535353535353535353535353535353535353535353535", "canonicalization": "RFC8785_JSON", "max_bytes": 4096, "max_depth": 5, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "output_contract": {"schema_digest": "sha256:3636363636363636363636363636363636363636363636363636363636363636", "canonicalization": "UTF8_NFC", "max_bytes": 65536, "max_depth": 0, "encodings": ["UTF-8"], "content_types": ["text/plain"]},
+  "effect_bounds": [
+    {"clause_id": "clause:shell-compute", "effect": "COMPUTE", "resources": [{"resource_kind": "COMPUTE_RESOURCE", "operations": ["ALLOCATE"], "selector": {"kind": "LOCAL_RESOURCE", "value": "cpu"}, "direction": "INTERNAL", "data_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:workspace:source"], "taints": ["USER_INPUT"], "purposes": ["VALIDATION"], "retention": "EPHEMERAL"}, "temporal": {"max_duration_ms": 10000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "CPU_MILLISECONDS", "limit": 5000}, "max_concurrency": 1}], "derived_effects": ["clause:shell-observe", "clause:shell-mutate"], "uncertainty": "CONSERVATIVE_UPPER_BOUND"},
+    {"clause_id": "clause:shell-observe", "effect": "OBSERVE", "resources": [{"resource_kind": "FILE", "operations": ["READ", "LIST"], "selector": {"kind": "PATH_PREFIX", "value": "/workspace", "descriptor_binding_digest": "sha256:71dbfa9a336c9753665a6ef83a68fd71d643d7d9ab98b51ec4b2e419aefbf1ae", "physical_target_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "direction": "IN", "data_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:workspace:source"], "taints": ["USER_INPUT"], "purposes": ["VALIDATION"], "retention": "EPHEMERAL"}, "temporal": {"max_duration_ms": 10000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "FILES", "limit": 256}, "max_concurrency": 1}], "derived_effects": [], "uncertainty": "CONSERVATIVE_UPPER_BOUND"},
+    {"clause_id": "clause:shell-mutate", "effect": "MUTATE", "resources": [{"resource_kind": "FILE", "operations": ["CREATE", "WRITE"], "selector": {"kind": "PATH_PREFIX", "value": "/workspace/output/__pycache__", "descriptor_binding_digest": "sha256:71dbfa9a336c9753665a6ef83a68fd71d643d7d9ab98b51ec4b2e419aefbf1ae", "physical_target_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "direction": "OUT", "data_label": {"confidentiality": "INTERNAL", "integrity": "SERVICE_ATTESTED", "provenance": ["urn:tool:compileall"], "taints": ["DERIVED_CODE"], "purposes": ["VALIDATION"], "retention": "SESSION"}, "temporal": {"max_duration_ms": 10000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "FILES", "limit": 256}, "max_concurrency": 1}], "derived_effects": [], "uncertainty": "CONSERVATIVE_UPPER_BOUND"}
+  ],
+  "authority_facets": ["EXECUTE_EFFECT", "ALLOCATE_RESOURCE"],
+  "flow_rules": [],
+  "runtime_requirements": {"isolation_profile_id": "isolation:workspace-stageable", "isolation_profile_digest": "sha256:3737373737373737373737373737373737373737373737373737373737373737", "controls": ["MEDIATED_EXECUTION", "DESCRIPTOR_PATH_RESOLUTION", "NETWORK_DISCONNECTED_WORKER", "FD_CLOSURE", "PROCESS_TREE_KILL", "RESOURCE_HARD_LIMITS", "QUIESCENT_SEAL", "INDEPENDENT_POSTCHECK", "NO_AMBIENT_CREDENTIALS"], "ambient_dependencies": [], "credentials": "NONE"},
+  "resource_envelope": [{"name": "CALLS", "unit": "CALLS", "limit": 1, "scope_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "lineage_root": "lineage:root"}, {"name": "CPU", "unit": "CPU_MILLISECONDS", "limit": 5000, "scope_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "lineage_root": "lineage:root"}, {"name": "FILES", "unit": "FILES", "limit": 256, "scope_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "lineage_root": "lineage:root"}],
+  "behavior": {"dynamic_dispatch": "CONSERVATIVE_UPPER_BOUND", "unknown_behavior": "DENY", "determinism": "NONDETERMINISTIC", "idempotency": "IDEMPOTENT", "reversibility": "REVERSIBLE", "compensation": "NONE", "persistence": "STAGED", "expected_residual_effects": ["MUTATE"]},
+  "assurance": {"preconditions": ["argv.exact", "binary.digest.match"], "postconditions": ["snapshot.sealed", "postcheck.passed"], "invariants": ["INV-003", "INV-005", "INV-007", "INV-012", "INV-015"], "obligations": ["syscalls.observe", "event.emit", "postcheck.run"], "evidence_plan_id": "evidence:shell-python-compile", "postcheck_required": true, "independent_observer_required": true, "conformance_evidence_digests": []},
+  "lifecycle": {"issued_at": "2026-08-24T00:00:00Z", "expires_at": "2026-09-24T00:00:00Z", "registry_generation": 7, "revocation_id": "revocation:terminal", "rollback_floor": 7},
+  "change_control": {"material_fields": ["TOOL_DIGEST", "DEPENDENCY_DIGEST", "ENTRYPOINT", "INPUT_SCHEMA", "OUTPUT_SCHEMA", "EFFECT_BOUND", "ISOLATION_PROFILE", "BUDGET", "BEHAVIOR", "SIGNER"], "compatibility": "EXACT_VERSION_ONLY", "migration": "NEW_MANIFEST_AND_RECEIPT", "dynamic_registry_updates": false}
+}

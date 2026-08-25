@@ -1,0 +1,6 @@
+{
+  "case_id": "invalid-update-prompt-ambient-dependency",
+  "base": "../valid/update-prompt.json",
+  "mutation": {"pointer": "/runtime_requirements/ambient_dependencies", "value": ["HOST_PROMPT_DB"]},
+  "expected_error_fragment": "is too long"
+}

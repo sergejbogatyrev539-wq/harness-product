@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "manifest:filesystem/write-file",
+  "manifest_version": "1.0.0",
+  "status": "ACTIVE",
+  "tool": {
+    "tool_id": "tool:filesystem",
+    "owner": "team:runtime",
+    "implementation_digest": "sha256:2121212121212121212121212121212121212121212121212121212121212121",
+    "provenance_uri": "urn:artifact:filesystem-tool:1.0.0",
+    "entrypoint": ["/opt/harness/filesystem-tool", "write"],
+    "dependencies": [],
+    "sbom_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "signer": {"key_id": "key:manifest", "algorithm": "ED25519", "payload_digest": "sha256:2323232323232323232323232323232323232323232323232323232323232323", "signature": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}
+  },
+  "operation_id": "write-file",
+  "input_contract": {"schema_digest": "sha256:2424242424242424242424242424242424242424242424242424242424242424", "canonicalization": "RFC8785_JSON", "max_bytes": 67584, "max_depth": 4, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "output_contract": {"schema_digest": "sha256:2525252525252525252525252525252525252525252525252525252525252525", "canonicalization": "RFC8785_JSON", "max_bytes": 1024, "max_depth": 3, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "effect_bounds": [
+    {"clause_id": "clause:write-file-mutate", "effect": "MUTATE", "resources": [{"resource_kind": "FILE", "operations": ["CREATE", "WRITE"], "selector": {"kind": "PATH_PREFIX", "value": "/workspace/output", "descriptor_binding_digest": "sha256:791c19a838829a06140a023bf6bb456d5b7e8db5c0349b1e47bc55d763dc19d9", "physical_target_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "direction": "OUT", "data_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:request:write-file"], "taints": ["USER_INPUT"], "purposes": ["TASK"], "retention": "CONTRACT"}, "temporal": {"max_duration_ms": 5000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "BYTES", "limit": 65536}, "max_concurrency": 1}], "derived_effects": [], "uncertainty": "BOUNDED"}
+  ],
+  "authority_facets": ["EXECUTE_EFFECT"],
+  "flow_rules": [],
+  "runtime_requirements": {"isolation_profile_id": "isolation:workspace-stageable", "isolation_profile_digest": "sha256:2626262626262626262626262626262626262626262626262626262626262626", "controls": ["MEDIATED_EXECUTION", "DESCRIPTOR_PATH_RESOLUTION", "NETWORK_DISCONNECTED_WORKER", "FD_CLOSURE", "QUIESCENT_SEAL", "INDEPENDENT_POSTCHECK", "NO_AMBIENT_CREDENTIALS"], "ambient_dependencies": [], "credentials": "NONE"},
+  "resource_envelope": [{"name": "CALLS", "unit": "CALLS", "limit": 1, "scope_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "lineage_root": "lineage:root"}, {"name": "WRITE_BYTES", "unit": "BYTES", "limit": 65536, "scope_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "lineage_root": "lineage:root"}],
+  "behavior": {"dynamic_dispatch": "DENIED", "unknown_behavior": "DENY", "determinism": "DETERMINISTIC", "idempotency": "IDEMPOTENT", "reversibility": "REVERSIBLE", "compensation": "NONE", "persistence": "STAGED", "expected_residual_effects": ["MUTATE"]},
+  "assurance": {"preconditions": ["path.resolved.beneath"], "postconditions": ["snapshot.sealed", "postcheck.passed"], "invariants": ["INV-003", "INV-005", "INV-012", "INV-015"], "obligations": ["event.emit", "postcheck.run"], "evidence_plan_id": "evidence:write-file", "postcheck_required": true, "independent_observer_required": true, "conformance_evidence_digests": []},
+  "lifecycle": {"issued_at": "2026-08-24T00:00:00Z", "expires_at": "2026-09-24T00:00:00Z", "registry_generation": 7, "revocation_id": "revocation:filesystem", "rollback_floor": 7},
+  "change_control": {"material_fields": ["TOOL_DIGEST", "ENTRYPOINT", "INPUT_SCHEMA", "OUTPUT_SCHEMA", "EFFECT_BOUND", "ISOLATION_PROFILE", "BUDGET", "BEHAVIOR", "SIGNER"], "compatibility": "EXACT_VERSION_ONLY", "migration": "NEW_MANIFEST_AND_RECEIPT", "dynamic_registry_updates": false}
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "manifest:messaging/send-external",
+  "manifest_version": "1.0.0",
+  "status": "ACTIVE",
+  "tool": {
+    "tool_id": "tool:messaging-broker",
+    "owner": "team:communications",
+    "implementation_digest": "sha256:4141414141414141414141414141414141414141414141414141414141414141",
+    "provenance_uri": "urn:artifact:messaging-broker:1.0.0",
+    "entrypoint": ["/opt/broker/send-message"],
+    "dependencies": [{"id": "adapter:messages-v1", "kind": "ADAPTER", "digest": "sha256:4242424242424242424242424242424242424242424242424242424242424242", "dispatch": "STATIC"}],
+    "sbom_digest": "sha256:4343434343434343434343434343434343434343434343434343434343434343",
+    "signer": {"key_id": "key:manifest", "algorithm": "ED25519", "payload_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "signature": "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"}
+  },
+  "operation_id": "send-external-message",
+  "input_contract": {"schema_digest": "sha256:4545454545454545454545454545454545454545454545454545454545454545", "canonicalization": "RFC8785_JSON", "max_bytes": 8192, "max_depth": 6, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "output_contract": {"schema_digest": "sha256:4646464646464646464646464646464646464646464646464646464646464646", "canonicalization": "RFC8785_JSON", "max_bytes": 4096, "max_depth": 5, "encodings": ["UTF-8"], "content_types": ["application/json"]},
+  "effect_bounds": [
+    {"clause_id": "clause:external-send", "effect": "COMMUNICATE", "resources": [{"resource_kind": "ENDPOINT", "operations": ["SEND"], "selector": {"kind": "ENDPOINT_EXACT", "value": "https://messages.example.test/v1/send", "endpoint_binding": {"endpoint_id": "endpoint:message", "canonical_endpoint": "https://messages.example.test/v1/send", "connector_id": "connector:reference", "connector_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "method": "POST", "idempotency_key_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666", "endpoint_binding_digest": "sha256:bd2ff7a5af2817142a166135bda1f2298e35aea943cbf59c8cd2e3e7771a835c"}}, "direction": "OUT", "data_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:request:message"], "taints": ["USER_INPUT"], "purposes": ["CUSTOMER_SUPPORT"], "retention": "FIXED_TERM"}, "temporal": {"max_duration_ms": 15000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "MESSAGES", "limit": 1}, "max_concurrency": 1}], "derived_effects": ["clause:external-mutate-endpoint"], "uncertainty": "BOUNDED"},
+    {"clause_id": "clause:external-mutate-endpoint", "effect": "MUTATE", "resources": [{"resource_kind": "ENDPOINT", "operations": ["UPDATE"], "selector": {"kind": "ENDPOINT_EXACT", "value": "https://messages.example.test/v1/send", "endpoint_binding": {"endpoint_id": "endpoint:message", "canonical_endpoint": "https://messages.example.test/v1/send", "connector_id": "connector:reference", "connector_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "method": "POST", "idempotency_key_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666", "endpoint_binding_digest": "sha256:bd2ff7a5af2817142a166135bda1f2298e35aea943cbf59c8cd2e3e7771a835c"}}, "direction": "OUT", "data_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:request:message"], "taints": ["USER_INPUT"], "purposes": ["CUSTOMER_SUPPORT"], "retention": "FIXED_TERM"}, "temporal": {"max_duration_ms": 15000, "not_before": "2026-08-24T00:00:00Z", "not_after": "2026-08-25T00:00:00Z"}, "quantity": {"unit": "MESSAGES", "limit": 1}, "max_concurrency": 1}], "derived_effects": [], "uncertainty": "BOUNDED"}
+  ],
+  "authority_facets": ["EXECUTE_EFFECT"],
+  "flow_rules": [{"source": "request.body", "sink": "principal:message-recipient", "direction": "OUT", "maximum_label": {"confidentiality": "INTERNAL", "integrity": "USER_ASSERTED", "provenance": ["urn:request:message"], "taints": ["USER_INPUT"], "purposes": ["CUSTOMER_SUPPORT"], "retention": "FIXED_TERM"}, "purpose": "CUSTOMER_SUPPORT", "declassification_required": false}],
+  "runtime_requirements": {"isolation_profile_id": "isolation:mediated-external", "isolation_profile_digest": "sha256:4747474747474747474747474747474747474747474747474747474747474747", "controls": ["MEDIATED_EXECUTION", "NETWORK_DISCONNECTED_WORKER", "FD_CLOSURE", "RESOURCE_HARD_LIMITS", "NO_AMBIENT_CREDENTIALS"], "ambient_dependencies": [], "credentials": "BROKER_RESOLVED_REFERENCE_ONLY"},
+  "resource_envelope": [{"name": "CALLS", "unit": "CALLS", "limit": 1, "scope_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "lineage_root": "lineage:root"}, {"name": "MESSAGES", "unit": "MESSAGES", "limit": 1, "scope_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "lineage_root": "lineage:root"}],
+  "behavior": {"dynamic_dispatch": "PINNED_CLOSURE", "unknown_behavior": "DENY", "determinism": "NONDETERMINISTIC", "idempotency": "DEDUP_KEY_REQUIRED", "reversibility": "COMPENSATABLE", "compensation": "SEPARATE_AUTHORIZED_TRANSACTION", "persistence": "PERSISTENT", "expected_residual_effects": ["COMMUNICATE", "MUTATE"]},
+  "assurance": {"preconditions": ["recipient.exact", "dedup.key.present", "precheck.passed"], "postconditions": ["outcome.reconciled"], "invariants": ["INV-003", "INV-005", "INV-011", "INV-014", "INV-015"], "obligations": ["event.emit", "outcome.reconcile"], "evidence_plan_id": "evidence:external-message", "postcheck_required": true, "independent_observer_required": true, "conformance_evidence_digests": []},
+  "lifecycle": {"issued_at": "2026-08-24T00:00:00Z", "expires_at": "2026-09-24T00:00:00Z", "registry_generation": 7, "revocation_id": "revocation:messaging", "rollback_floor": 7},
+  "change_control": {"material_fields": ["TOOL_DIGEST", "DEPENDENCY_DIGEST", "ENTRYPOINT", "INPUT_SCHEMA", "OUTPUT_SCHEMA", "EFFECT_BOUND", "FLOW_RULE", "ISOLATION_PROFILE", "BUDGET", "BEHAVIOR", "OWNER", "SIGNER"], "compatibility": "EXACT_VERSION_ONLY", "migration": "NEW_MANIFEST_AND_RECEIPT", "dynamic_registry_updates": false}
+}

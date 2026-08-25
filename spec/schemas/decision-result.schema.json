@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:harness:schema:decision-result:1",
+  "title": "Pure policy decision result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "decision", "reason_codes", "authorized_effects", "authorized_envelope", "decision_digest", "approval_receipt_digest", "obligations", "reservations", "capability_issuance", "next_state", "evaluation"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "decision": {"enum": ["ALLOW", "DENY", "REQUIRE_HUMAN", "STOP"]},
+    "reason_codes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}},
+    "authorized_effects": {"type": "array", "uniqueItems": true, "items": {"enum": ["COMPUTE", "OBSERVE", "MUTATE", "COMMUNICATE", "DELEGATE", "REFLECT"]}},
+    "authorized_envelope": {"type": "array", "items": {"$ref": "#/$defs/authorityEntry"}},
+    "decision_digest": {"$ref": "#/$defs/digest"},
+    "approval_receipt_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "obligations": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"}},
+    "reservations": {"type": "array", "items": {"$ref": "#/$defs/reservation"}},
+    "capability_issuance": {"type": "boolean"},
+    "next_state": {"enum": ["STOPPED", "ADMITTED", "HUMAN_PENDING"]},
+    "evaluation": {"$ref": "#/$defs/evaluation"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"decision": {"const": "ALLOW"}, "evaluation": {"required": ["approval_mode"], "properties": {"approval_mode": {"const": "REQUIRED"}}}}, "required": ["decision", "evaluation"]},
+      "then": {"properties": {"approval_receipt_digest": {"$ref": "#/$defs/digest"}, "evaluation": {"properties": {"approval_receipt_digest": {"$ref": "#/$defs/digest"}}}}}
+    },
+    {
+      "if": {"properties": {"evaluation": {"required": ["approval_mode"], "properties": {"approval_mode": {"const": "NOT_REQUIRED"}}}}, "required": ["evaluation"]},
+      "then": {"properties": {"approval_receipt_digest": {"type": "null"}, "evaluation": {"properties": {"approval_receipt_digest": {"type": "null"}}}}}
+    },
+    {
+      "if": {"properties": {"decision": {"const": "ALLOW"}}, "required": ["decision"]},
+      "then": {
+        "properties": {
+          "capability_issuance": {"const": true},
+          "next_state": {"const": "ADMITTED"},
+          "authorized_effects": {"minItems": 1},
+          "authorized_envelope": {"minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"decision": {"enum": ["DENY", "STOP", "REQUIRE_HUMAN"]}}, "required": ["decision"]},
+      "then": {
+        "properties": {
+          "capability_issuance": {"const": false},
+          "authorized_effects": {"maxItems": 0},
+          "authorized_envelope": {"maxItems": 0}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"decision": {"const": "REQUIRE_HUMAN"}}, "required": ["decision"]},
+      "then": {"properties": {"next_state": {"const": "HUMAN_PENDING"}, "approval_receipt_digest": {"type": "null"}, "evaluation": {"properties": {"approval_receipt_digest": {"type": "null"}}}}}
+    },
+    {
+      "if": {"properties": {"decision": {"enum": ["DENY", "STOP"]}}, "required": ["decision"]},
+      "then": {"properties": {"next_state": {"const": "STOPPED"}}}
+    },
+    {
+      "if": {"properties": {"authorized_envelope": {"contains": {"properties": {"resource_kind": {"const": "ENDPOINT"}}, "required": ["resource_kind"]}}}, "required": ["authorized_envelope"]},
+      "then": {"properties": {"evaluation": {"required": ["endpoint_binding_digest"], "not": {"required": ["descriptor_binding_digest"]}}, "authorized_envelope": {"not": {"contains": {"properties": {"resource_kind": {"not": {"const": "ENDPOINT"}}}, "required": ["resource_kind"]}}}}},
+      "else": {"properties": {"evaluation": {"required": ["descriptor_binding_digest"], "not": {"required": ["endpoint_binding_digest"]}}}}
+    }
+  ],
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "label": {
+      "type": "object", "additionalProperties": false,
+      "required": ["confidentiality", "integrity", "provenance", "taints", "purposes", "retention"],
+      "properties": {
+        "confidentiality": {"enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]},
+        "integrity": {"enum": ["UNTRUSTED", "USER_ASSERTED", "SERVICE_ATTESTED", "VERIFIED"]},
+        "provenance": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "maxLength": 256}},
+        "taints": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}},
+        "purposes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}},
+        "retention": {"enum": ["EPHEMERAL", "SESSION", "CONTRACT", "FIXED_TERM", "LEGAL_HOLD"]}
+      }
+    },
+    "flow": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source", "sink", "direction", "maximum_label", "purpose", "declassification_required"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1, "maxLength": 256},
+        "sink": {"type": "string", "minLength": 1, "maxLength": 256},
+        "direction": {"enum": ["IN", "OUT", "INTERNAL"]},
+        "maximum_label": {"$ref": "#/$defs/label"},
+        "purpose": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"},
+        "declassification_required": {"type": "boolean"}
+      }
+    },
+    "authorityConstraints": {
+      "type": "object", "additionalProperties": false,
+      "required": ["direction", "data_label", "temporal", "quantity", "max_concurrency", "flows", "obligations"],
+      "properties": {
+        "direction": {"enum": ["IN", "OUT", "INTERNAL", "BIDIRECTIONAL"]},
+        "data_label": {"$ref": "#/$defs/label"},
+        "temporal": {"type": "object", "additionalProperties": false, "required": ["max_duration_ms", "not_before", "not_after"], "properties": {"max_duration_ms": {"type": "integer", "minimum": 1}, "not_before": {"type": "string", "format": "date-time"}, "not_after": {"type": "string", "format": "date-time"}}},
+        "quantity": {"type": "object", "additionalProperties": false, "required": ["unit", "limit"], "properties": {"unit": {"enum": ["CALLS", "BYTES", "FILES", "MESSAGES", "AGENTS", "TOKENS", "MILLISECONDS", "CPU_MILLISECONDS", "MIB", "OPERATIONS"]}, "limit": {"type": "integer", "minimum": 0}}},
+        "max_concurrency": {"type": "integer", "minimum": 1},
+        "flows": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/flow"}},
+        "obligations": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/id"}}
+      }
+    },
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+    "reservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "unit", "amount", "scope_digest", "lineage_root"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"},
+        "unit": {"enum": ["CALLS", "BYTES", "FILES", "MESSAGES", "AGENTS", "TOKENS", "MILLISECONDS", "CPU_MILLISECONDS", "MIB", "OPERATIONS"]},
+        "amount": {"type": "integer", "minimum": 0},
+        "scope_digest": {"$ref": "#/$defs/digest"},
+        "lineage_root": {"$ref": "#/$defs/id"}
+      }
+    },
+    "authorityEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entry_id", "effect", "resource_kind", "operation", "selector", "facets", "constraints"],
+      "properties": {
+        "entry_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+        "effect": {"enum": ["COMPUTE", "OBSERVE", "MUTATE", "COMMUNICATE", "DELEGATE", "REFLECT"]},
+        "resource_kind": {"enum": ["FILE", "DIRECTORY", "PROCESS", "ENDPOINT", "PRINCIPAL", "MEMORY", "PROMPT", "POLICY", "REGISTRY", "COMPUTE_RESOURCE"]},
+        "operation": {"enum": ["READ", "LIST", "WRITE", "CREATE", "DELETE", "EXECUTE", "SEND", "SPAWN", "UPDATE", "BIND", "ALLOCATE"]},
+        "selector": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reference", "canonical_value", "resolution"],
+          "properties": {
+            "kind": {"enum": ["PATH_DESCRIPTOR", "ENDPOINT_DESCRIPTOR", "LOCAL_RESOURCE"]},
+            "reference": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$"},
+            "canonical_value": {"type": "string", "minLength": 1, "maxLength": 512},
+              "resolution": {"enum": ["DESCRIPTOR_PROVEN_BENEATH_NO_MAGICLINKS", "PINNED_EXACT_ENDPOINT", "EXACT_REGISTRY_ID"]},
+              "descriptor_binding_digest": {"$ref": "#/$defs/digest"},
+              "physical_target_digest": {"$ref": "#/$defs/digest"},
+              "endpoint_binding": {"$ref": "#/$defs/endpointBinding"}
+          },
+          "allOf": [
+            {"if": {"properties": {"kind": {"const": "PATH_DESCRIPTOR"}}, "required": ["kind"]}, "then": {"required": ["descriptor_binding_digest", "physical_target_digest"]}, "else": {"not": {"anyOf": [{"required": ["descriptor_binding_digest"]}, {"required": ["physical_target_digest"]}]}}},
+            {"if": {"properties": {"kind": {"const": "ENDPOINT_DESCRIPTOR"}}, "required": ["kind"]}, "then": {"required": ["endpoint_binding"]}, "else": {"not": {"required": ["endpoint_binding"]}}}
+          ]
+        },
+        "facets": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"enum": ["EXECUTE_EFFECT", "AUTHORIZE_EFFECT", "DECLASSIFY_DATA", "ENDORSE_DATA", "PERSIST_SCHEDULE", "ALLOCATE_RESOURCE"]}
+        },
+        "constraints": {"$ref": "#/$defs/authorityConstraints"}
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_digest", "manifest_digest", "policy_digest", "contract_id", "contract_digest", "iteration_slot_digest", "d2_frontier_digest", "d2_frontier_record", "capability_digest", "approval_mode", "approval_receipt_digest", "registry_digest", "isolation_profile_digest", "placement_attestation_digest", "session_attestation_digest", "broker_ipc_attestation_digest", "broker_ipc_binding_digest", "resource_vector_digest", "supply_chain_measurement_digest", "evaluated_at"],
+      "properties": {
+        "request_digest": {"$ref": "#/$defs/digest"},
+        "manifest_digest": {"$ref": "#/$defs/digest"},
+        "policy_digest": {"$ref": "#/$defs/digest"},
+        "contract_id": {"$ref": "#/$defs/id"},
+        "contract_digest": {"$ref": "#/$defs/digest"},
+        "iteration_slot_digest": {"$ref": "#/$defs/digest"},
+        "d2_frontier_digest": {"$ref": "#/$defs/digest"},
+        "d2_frontier_record": {"$ref": "#/$defs/d2Frontier"},
+        "capability_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "approval_mode": {"enum": ["NOT_REQUIRED", "REQUIRED"]},
+        "approval_receipt_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "registry_digest": {"$ref": "#/$defs/digest"},
+        "isolation_profile_digest": {"$ref": "#/$defs/digest"},
+        "placement_attestation_digest": {"$ref": "#/$defs/digest"},
+        "session_attestation_digest": {"$ref": "#/$defs/digest"},
+        "broker_ipc_attestation_digest": {"$ref": "#/$defs/digest"},
+        "broker_ipc_binding_digest": {"$ref": "#/$defs/digest"},
+        "resource_vector_digest": {"$ref": "#/$defs/digest"},
+        "supply_chain_measurement_digest": {"$ref": "#/$defs/digest"},
+        "descriptor_binding_digest": {"$ref": "#/$defs/digest"}, "endpoint_binding_digest": {"$ref": "#/$defs/digest"},
+        "evaluated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "d2Artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_id", "class", "iteration", "controller_visible", "persisted", "staged", "tool_bound", "budgeted", "reusable"],
+      "properties": {
+        "artifact_id": {"$ref": "#/$defs/id"},
+        "class": {"enum": ["PLAN", "PROMPT", "CONTEXT", "CANDIDATE", "REUSABLE_BRANCH", "TOOL_BINDING", "CAPABILITY", "BUDGET_RESERVATION", "LOCK", "TARGET_BINDING", "DISPATCH_INTENT", "EXTERNAL_AUTHORIZATION", "STAGED_OUTPUT", "PERSISTED_STATE", "CONTROLLER_TOKEN"]},
+        "iteration": {"type": "integer", "minimum": 0},
+        "controller_visible": {"type": "boolean"}, "persisted": {"type": "boolean"}, "staged": {"type": "boolean"}, "tool_bound": {"type": "boolean"}, "budgeted": {"type": "boolean"}, "reusable": {"type": "boolean"}
+      }
+    },
+    "endpointBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["endpoint_id", "canonical_endpoint", "connector_id", "connector_digest", "method", "idempotency_key_digest", "endpoint_binding_digest"],
+      "properties": {
+        "endpoint_id": {"$ref": "#/$defs/id"}, "canonical_endpoint": {"type": "string", "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._~!$&'()*+,;=:@/-]*$"},
+        "connector_id": {"$ref": "#/$defs/id"}, "connector_digest": {"$ref": "#/$defs/digest"}, "method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+        "idempotency_key_digest": {"$ref": "#/$defs/digest"}, "endpoint_binding_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "d2Frontier": {
+      "type": "object", "additionalProperties": false,
+      "required": ["definition_status", "contract_digest", "contract_version", "authority_domain_id", "journal_lineage_id", "root_contract_digest", "parent_contract_digest", "journal_sequence", "fencing_epoch", "frontier_record_digest", "joined_iteration", "max_iteration", "durable_state_digest", "inventory"],
+      "properties": {
+        "definition_status": {"const": "PROVISIONAL_OPERATIONAL"}, "contract_digest": {"$ref": "#/$defs/digest"}, "contract_version": {"const": "1.0.0"}, "authority_domain_id": {"$ref": "#/$defs/id"}, "journal_lineage_id": {"$ref": "#/$defs/id"}, "root_contract_digest": {"$ref": "#/$defs/digest"}, "parent_contract_digest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}, "journal_sequence": {"type": "integer", "minimum": 0}, "fencing_epoch": {"type": "integer", "minimum": 0}, "frontier_record_digest": {"$ref": "#/$defs/digest"}, "joined_iteration": {"type": "integer", "minimum": 0}, "max_iteration": {"type": "integer", "minimum": 1}, "durable_state_digest": {"$ref": "#/$defs/digest"}, "inventory": {"type": "array", "items": {"$ref": "#/$defs/d2Artifact"}}
+      }
+    }
+  }
+}
