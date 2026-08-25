@@ -1,202 +1,489 @@
-"""Cooperative in-process reference dispatch kernel.
+"""Pure M1 normalization, classification, and authority derivation.
 
-No method in this module performs shell, network, filesystem, or other real
-effects.  ``executed`` means only that the exact call reached this model's
-executor after its checks.  The journal is intentionally non-production: it
-is process-local, not durable, serialized, signed, or crash-safe.  Python
-private names and object identity are not a security boundary; actual
-non-bypassable mediation needs M2/M3 process-isolated principals and an
-enforced executor profile.
+The module consumes only in-memory values and never calls filesystem, network,
+process, shell, clock, random, or environment APIs.  Time is explicit input.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
+from datetime import datetime, timezone
+import re
+import unicodedata
 
 from .model import (
-    Capability,
+    EFFECT_RESOURCE_OPERATIONS,
+    AuthorityClause,
+    AuthoritySource,
+    ClassifiedInput,
     Decision,
+    DerivedAuthority,
     EffectKind,
-    Manifest,
+    Facet,
+    NormalizedInput,
+    Operation,
     Outcome,
-    Policy,
-    Principal,
-    PrincipalRole,
+    Proposal,
+    QuantityUnit,
     Reason,
-    Request,
-    decide,
-    is_valid_physical_ceiling,
-    is_valid_principal,
-    is_valid_request,
+    ResourceKind,
+    Selector,
+    SelectorKind,
+    Stage,
+    TrustedFacts,
+    canonical_digest,
+    clause_digest,
+    decision_data,
+    proposal_digest,
 )
 
 
-class CapabilityState(str, Enum):
-    ISSUED = "ISSUED"
-    CONSUMED = "CONSUMED"
+_OPERATION_ID = re.compile(r"^[a-z][a-z0-9._/-]{0,127}$")
+_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_UTC_TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+_ENDPOINT = re.compile(r"^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._~!$&'()*+,;=:@/-]*$")
+_MAX_AUTHORITY_CLAUSES = 256
+_MAX_BOUND = (1 << 63) - 1
+
+_SELECTORS_BY_RESOURCE = {
+    ResourceKind.FILE: frozenset({SelectorKind.PATH_EXACT, SelectorKind.PATH_PREFIX}),
+    ResourceKind.DIRECTORY: frozenset({SelectorKind.PATH_EXACT, SelectorKind.PATH_PREFIX}),
+    ResourceKind.ENDPOINT: frozenset({SelectorKind.ENDPOINT_EXACT}),
+    ResourceKind.PROCESS: frozenset({SelectorKind.LOCAL_EXACT}),
+    ResourceKind.PRINCIPAL: frozenset({SelectorKind.LOCAL_EXACT}),
+    ResourceKind.MEMORY: frozenset({SelectorKind.LOCAL_EXACT}),
+    ResourceKind.PROMPT: frozenset({SelectorKind.LOCAL_EXACT}),
+    ResourceKind.POLICY: frozenset({SelectorKind.LOCAL_EXACT}),
+    ResourceKind.REGISTRY: frozenset({SelectorKind.LOCAL_EXACT}),
+    ResourceKind.COMPUTE_RESOURCE: frozenset({SelectorKind.LOCAL_EXACT}),
+}
 
 
-@dataclass(frozen=True)
-class DispatchReceipt:
-    executed: bool
-    reason: Reason
-    sequence: int | None = None
+def _decision(outcome: Outcome, reason: Reason, stage: Stage) -> Decision:
+    payload = decision_data(outcome, reason, stage, None, ())
+    return Decision(outcome, reason, stage, None, (), canonical_digest(payload))
 
 
-@dataclass(frozen=True)
-class _DispatchOrder:
-    """Internal simulated dispatch message for cooperative API calls."""
-
-    request: Request
-    capability: Capability
-    sequence: int
-    broker_key: object
+def _closed_dict(value: object, keys: frozenset[str]) -> bool:
+    return type(value) is dict and all(type(key) is str for key in value) and frozenset(value) == keys
 
 
-class _InMemoryJournal:
-    """Monotonic reference journal.  It is explicitly not a durable journal."""
-
-    def __init__(self, authority: object) -> None:
-        self._authority = authority
-        self._sequence = 0
-        self._states: dict[str, CapabilityState] = {}
-        self._capabilities: dict[str, Capability] = {}
-        self._events: list[tuple[int, str, str]] = []
-
-    @property
-    def sequence(self) -> int:
-        return self._sequence
-
-    @property
-    def events(self) -> tuple[tuple[int, str, str], ...]:
-        return tuple(self._events)
-
-    def state_of(self, capability: object) -> CapabilityState | None:
-        if not _is_valid_capability(capability):
-            return None
-        stored = self._capabilities.get(capability.identifier)
-        if stored != capability:
-            return None
-        return self._states.get(capability.identifier)
-
-    def _issue(self, request: Request, audience: Principal, authority: object) -> Capability | None:
-        if authority is not self._authority or not is_valid_request(request) or not is_valid_principal(audience, PrincipalRole.EXECUTOR):
-            return None
-        self._sequence += 1
-        identifier = f"cap-{self._sequence}"
-        capability = Capability(identifier, request.digest(), request.principal, audience, self._sequence)
-        self._capabilities[identifier] = capability
-        self._states[identifier] = CapabilityState.ISSUED
-        self._events.append((self._sequence, "ISSUED", identifier))
-        return capability
-
-    def _consume(self, capability: object, authority: object) -> tuple[bool, Reason, int | None]:
-        if authority is not self._authority:
-            return False, Reason.NO_DIRECT_DISPATCH, None
-        state = self.state_of(capability)
-        if state is None:
-            return False, Reason.CAPABILITY_BINDING_MISMATCH, None
-        if state is CapabilityState.CONSUMED:
-            return False, Reason.REPLAY, None
-        self._sequence += 1
-        self._states[capability.identifier] = CapabilityState.CONSUMED
-        self._events.append((self._sequence, "CONSUMED", capability.identifier))
-        return True, Reason.AUTHORIZED_EXACT_BOUND, self._sequence
+def _enum(enum_type: type, value: object) -> object | None:
+    if type(value) is not str:
+        return None
+    return enum_type._value2member_map_.get(value)
 
 
-def _is_request_digest(value: object) -> bool:
-    return type(value) is str and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+def _bounded_integer(value: object, minimum: int) -> bool:
+    return type(value) is int and minimum <= value <= _MAX_BOUND
 
 
-def _is_valid_capability(value: object) -> bool:
+def _parse_time(value: object) -> datetime | None:
+    if type(value) is not str or _UTC_TIME.fullmatch(value) is None:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _canonical_path(value: object) -> bool:
+    if type(value) is not str or not 2 <= len(value) <= 2048 or not value.startswith("/"):
+        return False
+    if "//" in value or "\\" in value or "%" in value:
+        return False
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf"}
+        or character in {"\u2044", "\u2215", "\uff0f", "\uff3c"}
+        for character in value
+    ):
+        return False
+    return all(component not in {"", ".", ".."} for component in value.split("/")[1:])
+
+
+def _normalize_selector(raw: object) -> tuple[Selector | None, Reason | None]:
+    if not _closed_dict(raw, frozenset({"kind", "value"})):
+        return None, Reason.MALFORMED_INPUT
+    kind = _enum(SelectorKind, raw["kind"])
+    if kind is None:
+        return None, Reason.UNKNOWN_INPUT
+    value = raw["value"]
+    if kind in {SelectorKind.PATH_EXACT, SelectorKind.PATH_PREFIX}:
+        valid = _canonical_path(value)
+    elif kind is SelectorKind.ENDPOINT_EXACT:
+        valid = type(value) is str and len(value) <= 2048 and "%" not in value and _ENDPOINT.fullmatch(value) is not None
+    else:
+        valid = type(value) is str and _IDENTIFIER.fullmatch(value) is not None
+    if not valid:
+        return None, Reason.MALFORMED_INPUT
+    return Selector(kind, value), None
+
+
+_CLAUSE_KEYS = frozenset(
+    {
+        "effect",
+        "resource",
+        "operation",
+        "selector",
+        "facets",
+        "not_before",
+        "not_after",
+        "max_duration_ms",
+        "quantity_unit",
+        "max_quantity",
+        "max_concurrency",
+    }
+)
+
+
+def _normalize_clause(raw: object) -> tuple[AuthorityClause | None, Reason | None]:
+    if not _closed_dict(raw, _CLAUSE_KEYS):
+        return None, Reason.MALFORMED_INPUT
+    effect = _enum(EffectKind, raw["effect"])
+    resource = _enum(ResourceKind, raw["resource"])
+    operation = _enum(Operation, raw["operation"])
+    unit = _enum(QuantityUnit, raw["quantity_unit"])
+    if None in {effect, resource, operation, unit}:
+        return None, Reason.UNKNOWN_INPUT
+    selector, selector_error = _normalize_selector(raw["selector"])
+    if selector_error is not None:
+        return None, selector_error
+    facets_raw = raw["facets"]
+    if type(facets_raw) is not list or not facets_raw or len(facets_raw) > len(Facet):
+        return None, Reason.UNBOUNDED_INPUT if facets_raw in (None, []) else Reason.MALFORMED_INPUT
+    facets: list[Facet] = []
+    for item in facets_raw:
+        facet = _enum(Facet, item)
+        if facet is None:
+            return None, Reason.UNKNOWN_INPUT
+        facets.append(facet)
+    if len(set(facets)) != len(facets):
+        return None, Reason.MALFORMED_INPUT
+    not_before = _parse_time(raw["not_before"])
+    not_after = _parse_time(raw["not_after"])
+    if not_before is None or not_after is None or not_before >= not_after:
+        return None, Reason.UNBOUNDED_INPUT if raw["not_before"] is None or raw["not_after"] is None else Reason.MALFORMED_INPUT
+    for field, minimum in (("max_duration_ms", 1), ("max_quantity", 0), ("max_concurrency", 1)):
+        if raw[field] is None:
+            return None, Reason.UNBOUNDED_INPUT
+        if not _bounded_integer(raw[field], minimum):
+            return None, Reason.MALFORMED_INPUT
     return (
-        type(value) is Capability
-        and type(value.identifier) is str
-        and bool(value.identifier)
-        and _is_request_digest(value.request_digest)
-        and is_valid_principal(value.worker, PrincipalRole.WORKER)
-        and is_valid_principal(value.audience, PrincipalRole.EXECUTOR)
-        and type(value.issued_sequence) is int
-        and value.issued_sequence > 0
+        AuthorityClause(
+            effect,
+            resource,
+            operation,
+            selector,
+            tuple(sorted(facets, key=lambda item: item.value)),
+            not_before,
+            not_after,
+            raw["max_duration_ms"],
+            unit,
+            raw["max_quantity"],
+            raw["max_concurrency"],
+        ),
+        None,
     )
 
 
-class Executor:
-    """Cooperative exact-call checker, not an isolation or enforcement boundary."""
-
-    def __init__(self, principal: object, journal: _InMemoryJournal, broker_key: object) -> None:
-        self._principal = principal
-        self._journal = journal
-        self._broker_key = broker_key
-
-    @property
-    def principal(self) -> object:
-        return self._principal
-
-    def dispatch(self, order: object) -> DispatchReceipt:
-        """Reject every object except a consumed, exact, broker-bound order."""
-        if type(order) is not _DispatchOrder or order.broker_key is not self._broker_key:
-            return DispatchReceipt(False, Reason.NO_DIRECT_DISPATCH)
-        if not is_valid_request(order.request) or not _is_valid_capability(order.capability) or type(order.sequence) is not int:
-            return DispatchReceipt(False, Reason.MALFORMED_INPUT)
-        capability = order.capability
-        if self._journal.state_of(capability) is not CapabilityState.CONSUMED:
-            return DispatchReceipt(False, Reason.CAPABILITY_UNCONSUMED)
-        if capability.audience != self._principal or capability.worker != order.request.principal:
-            return DispatchReceipt(False, Reason.CAPABILITY_BINDING_MISMATCH)
-        if capability.request_digest != order.request.digest():
-            return DispatchReceipt(False, Reason.CAPABILITY_BINDING_MISMATCH)
-        return DispatchReceipt(True, Reason.AUTHORIZED_EXACT_BOUND, order.sequence)
+def _normalize_clauses(raw: object) -> tuple[tuple[AuthorityClause, ...] | None, Reason | None]:
+    if type(raw) is not list or not raw:
+        return None, Reason.UNBOUNDED_INPUT if raw in (None, []) else Reason.MALFORMED_INPUT
+    if len(raw) > _MAX_AUTHORITY_CLAUSES:
+        return None, Reason.UNBOUNDED_INPUT
+    clauses: list[AuthorityClause] = []
+    for item in raw:
+        clause, error = _normalize_clause(item)
+        if error is not None:
+            return None, error
+        clauses.append(clause)
+    ordered = tuple(sorted(clauses, key=clause_digest))
+    digests = tuple(clause_digest(item) for item in ordered)
+    if len(set(digests)) != len(digests):
+        return None, Reason.MALFORMED_INPUT
+    return ordered, None
 
 
-class Broker:
-    """Coordinates authorization and simulated dispatch in this reference model."""
+def _normalize_source(raw: object) -> tuple[AuthoritySource | None, Reason | None]:
+    if not _closed_dict(raw, frozenset({"operation_id", "authority"})):
+        return None, Reason.MALFORMED_INPUT
+    if type(raw["operation_id"]) is not str or _OPERATION_ID.fullmatch(raw["operation_id"]) is None:
+        return None, Reason.MALFORMED_INPUT
+    clauses, error = _normalize_clauses(raw["authority"])
+    if error is not None:
+        return None, error
+    return AuthoritySource(raw["operation_id"], clauses), None
 
-    def __init__(self, executor_principal: object, physical_ceiling: object) -> None:
-        """Build a disabled fail-closed broker rather than raising on bad input."""
-        self._broker_key = object()
-        self._journal_authority = object()
-        self._journal = _InMemoryJournal(self._journal_authority)
-        self._executor = Executor(executor_principal, self._journal, self._broker_key)
-        self._physical_ceiling = physical_ceiling
-        self._configuration_valid = (
-            is_valid_principal(executor_principal, PrincipalRole.EXECUTOR)
-            and is_valid_physical_ceiling(physical_ceiling)
+
+def normalize(raw: object) -> NormalizedInput | Decision:
+    """Close and type every raw field without repairing or defaulting it."""
+
+    try:
+        keys = frozenset({"evaluation_time", "proposal", "manifest", "policy", "physical_ceiling", "trusted_facts"})
+        if not _closed_dict(raw, keys):
+            return _decision(Outcome.STOP, Reason.MALFORMED_INPUT, Stage.NORMALIZE)
+        evaluation_time = _parse_time(raw["evaluation_time"])
+        proposal_raw = raw["proposal"]
+        if evaluation_time is None or not _closed_dict(
+            proposal_raw,
+            frozenset({"operation_id", "principal_id", "material_digest", "authority"}),
+        ):
+            return _decision(Outcome.STOP, Reason.MALFORMED_INPUT, Stage.NORMALIZE)
+        if (
+            type(proposal_raw["operation_id"]) is not str
+            or _OPERATION_ID.fullmatch(proposal_raw["operation_id"]) is None
+            or type(proposal_raw["principal_id"]) is not str
+            or _IDENTIFIER.fullmatch(proposal_raw["principal_id"]) is None
+            or type(proposal_raw["material_digest"]) is not str
+            or _DIGEST.fullmatch(proposal_raw["material_digest"]) is None
+        ):
+            return _decision(Outcome.STOP, Reason.MALFORMED_INPUT, Stage.NORMALIZE)
+        proposal_clause, error = _normalize_clause(proposal_raw["authority"])
+        if error is not None:
+            return _decision(Outcome.STOP, error, Stage.NORMALIZE)
+        sources: list[AuthoritySource] = []
+        for name in ("manifest", "policy", "physical_ceiling"):
+            source, error = _normalize_source(raw[name])
+            if error is not None:
+                return _decision(Outcome.STOP, error, Stage.NORMALIZE)
+            sources.append(source)
+        facts_raw = raw["trusted_facts"]
+        if not _closed_dict(
+            facts_raw,
+            frozenset({"operation_id", "material_digest", "observed_at", "expires_at", "authority"}),
+        ):
+            return _decision(Outcome.STOP, Reason.MALFORMED_INPUT, Stage.NORMALIZE)
+        if (
+            type(facts_raw["operation_id"]) is not str
+            or _OPERATION_ID.fullmatch(facts_raw["operation_id"]) is None
+            or type(facts_raw["material_digest"]) is not str
+            or _DIGEST.fullmatch(facts_raw["material_digest"]) is None
+        ):
+            return _decision(Outcome.STOP, Reason.MALFORMED_INPUT, Stage.NORMALIZE)
+        observed_at = _parse_time(facts_raw["observed_at"])
+        expires_at = _parse_time(facts_raw["expires_at"])
+        if observed_at is None or expires_at is None or observed_at >= expires_at:
+            reason = Reason.UNBOUNDED_INPUT if facts_raw["expires_at"] is None else Reason.MALFORMED_INPUT
+            return _decision(Outcome.STOP, reason, Stage.NORMALIZE)
+        fact_clauses, error = _normalize_clauses(facts_raw["authority"])
+        if error is not None:
+            return _decision(Outcome.STOP, error, Stage.NORMALIZE)
+        proposal = Proposal(
+            proposal_raw["operation_id"],
+            proposal_raw["principal_id"],
+            proposal_raw["material_digest"],
+            proposal_clause,
         )
+        facts = TrustedFacts(
+            facts_raw["operation_id"],
+            facts_raw["material_digest"],
+            observed_at,
+            expires_at,
+            fact_clauses,
+        )
+        return NormalizedInput(evaluation_time, proposal, sources[0], sources[1], sources[2], facts)
+    except Exception:
+        return _decision(Outcome.STOP, Reason.INTERNAL_ERROR, Stage.NORMALIZE)
 
-    @property
-    def journal_sequence(self) -> int:
-        """Read-only view of the non-production journal's monotonic sequence."""
-        return self._journal.sequence
 
-    @property
-    def journal_events(self) -> tuple[tuple[int, str, str], ...]:
-        """Read-only event snapshot; this is not durable audit evidence."""
-        return self._journal.events
+def _selector_matches_resource(clause: AuthorityClause) -> bool:
+    return clause.selector.kind in _SELECTORS_BY_RESOURCE.get(clause.resource, frozenset())
 
-    def capability_state(self, capability: object) -> CapabilityState | None:
-        """Read-only capability state lookup."""
-        return self._journal.state_of(capability)
 
-    def authorize(self, request: object, manifest: object, policy: object) -> tuple[Decision, Capability | None]:
-        if not self._configuration_valid:
-            return Decision(Outcome.STOP, Reason.MALFORMED_INPUT), None
-        decision = decide(request, manifest, policy, self._physical_ceiling)
-        if not decision.allowed or not is_valid_request(request):
-            return decision, None
-        capability = self._journal._issue(request, self._executor.principal, self._journal_authority)
-        if capability is None:
-            return Decision(Outcome.STOP, Reason.MALFORMED_INPUT), None
-        return decision, capability
+def _clause_is_typed(value: object) -> bool:
+    try:
+        return (
+            type(value) is AuthorityClause
+            and type(value.effect) is EffectKind
+            and type(value.resource) is ResourceKind
+            and type(value.operation) is Operation
+            and type(value.selector) is Selector
+            and type(value.selector.kind) is SelectorKind
+            and type(value.selector.value) is str
+            and type(value.facets) is tuple
+            and bool(value.facets)
+            and all(type(facet) is Facet for facet in value.facets)
+            and tuple(sorted(value.facets, key=lambda item: item.value)) == value.facets
+            and len(set(value.facets)) == len(value.facets)
+            and type(value.not_before) is datetime
+            and type(value.not_after) is datetime
+            and value.not_before.tzinfo is timezone.utc
+            and value.not_after.tzinfo is timezone.utc
+            and value.not_before < value.not_after
+            and _bounded_integer(value.max_duration_ms, 1)
+            and type(value.quantity_unit) is QuantityUnit
+            and _bounded_integer(value.max_quantity, 0)
+            and _bounded_integer(value.max_concurrency, 1)
+        )
+    except Exception:
+        return False
 
-    def dispatch(self, request: object, capability: object) -> DispatchReceipt:
-        """Atomically consume in the reference journal before simulated dispatch."""
-        if not is_valid_request(request) or not _is_valid_capability(capability):
-            return DispatchReceipt(False, Reason.MALFORMED_INPUT)
-        if capability.request_digest != request.digest() or capability.worker != request.principal:
-            return DispatchReceipt(False, Reason.CAPABILITY_BINDING_MISMATCH)
-        consumed, reason, sequence = self._journal._consume(capability, self._journal_authority)
-        if not consumed:
-            return DispatchReceipt(False, reason)
-        return self._executor.dispatch(_DispatchOrder(request, capability, sequence, self._broker_key))
+
+def _source_is_typed(value: object) -> bool:
+    try:
+        return (
+            type(value) is AuthoritySource
+            and type(value.operation_id) is str
+            and _OPERATION_ID.fullmatch(value.operation_id) is not None
+            and type(value.clauses) is tuple
+            and 1 <= len(value.clauses) <= _MAX_AUTHORITY_CLAUSES
+            and all(_clause_is_typed(item) for item in value.clauses)
+            and tuple(sorted(value.clauses, key=clause_digest)) == value.clauses
+            and len({clause_digest(item) for item in value.clauses}) == len(value.clauses)
+        )
+    except Exception:
+        return False
+
+
+def _normalized_is_typed(value: object) -> bool:
+    try:
+        proposal = value.proposal
+        facts = value.trusted_facts
+        return (
+            type(value) is NormalizedInput
+            and type(value.evaluation_time) is datetime
+            and value.evaluation_time.tzinfo is timezone.utc
+            and type(proposal) is Proposal
+            and type(proposal.operation_id) is str
+            and _OPERATION_ID.fullmatch(proposal.operation_id) is not None
+            and type(proposal.principal_id) is str
+            and _IDENTIFIER.fullmatch(proposal.principal_id) is not None
+            and type(proposal.material_digest) is str
+            and _DIGEST.fullmatch(proposal.material_digest) is not None
+            and _clause_is_typed(proposal.authority)
+            and _source_is_typed(value.manifest)
+            and _source_is_typed(value.policy)
+            and _source_is_typed(value.physical_ceiling)
+            and type(facts) is TrustedFacts
+            and type(facts.operation_id) is str
+            and _OPERATION_ID.fullmatch(facts.operation_id) is not None
+            and type(facts.material_digest) is str
+            and _DIGEST.fullmatch(facts.material_digest) is not None
+            and type(facts.observed_at) is datetime
+            and type(facts.expires_at) is datetime
+            and facts.observed_at.tzinfo is timezone.utc
+            and facts.expires_at.tzinfo is timezone.utc
+            and facts.observed_at < facts.expires_at
+            and type(facts.clauses) is tuple
+            and 1 <= len(facts.clauses) <= _MAX_AUTHORITY_CLAUSES
+            and all(_clause_is_typed(item) for item in facts.clauses)
+            and tuple(sorted(facts.clauses, key=clause_digest)) == facts.clauses
+            and len({clause_digest(item) for item in facts.clauses}) == len(facts.clauses)
+        )
+    except Exception:
+        return False
+
+
+def classify(value: object) -> ClassifiedInput | Decision:
+    """Validate closed relations, typed selectors, bindings, and freshness."""
+
+    try:
+        if not _normalized_is_typed(value):
+            return _decision(Outcome.STOP, Reason.MALFORMED_INPUT, Stage.CLASSIFY)
+        clauses = (
+            value.proposal.authority,
+            *value.manifest.clauses,
+            *value.policy.clauses,
+            *value.physical_ceiling.clauses,
+            *value.trusted_facts.clauses,
+        )
+        if any((item.effect, item.resource, item.operation) not in EFFECT_RESOURCE_OPERATIONS for item in clauses):
+            return _decision(Outcome.STOP, Reason.UNKNOWN_INPUT, Stage.CLASSIFY)
+        if any(not _selector_matches_resource(item) for item in clauses):
+            return _decision(Outcome.DENY, Reason.TYPED_SCOPE_MISMATCH, Stage.CLASSIFY)
+        operation_id = value.proposal.operation_id
+        if any(
+            source.operation_id != operation_id
+            for source in (value.manifest, value.policy, value.physical_ceiling, value.trusted_facts)
+        ):
+            return _decision(Outcome.STOP, Reason.BINDING_MISMATCH, Stage.CLASSIFY)
+        if value.trusted_facts.material_digest != value.proposal.material_digest:
+            return _decision(Outcome.STOP, Reason.BINDING_MISMATCH, Stage.CLASSIFY)
+        now = value.evaluation_time
+        if not (value.trusted_facts.observed_at <= now < value.trusted_facts.expires_at):
+            return _decision(Outcome.STOP, Reason.STALE_INPUT, Stage.CLASSIFY)
+        proposed = value.proposal.authority
+        if not (proposed.not_before <= now < proposed.not_after):
+            return _decision(Outcome.STOP, Reason.STALE_INPUT, Stage.CLASSIFY)
+        return ClassifiedInput(value)
+    except Exception:
+        return _decision(Outcome.STOP, Reason.INTERNAL_ERROR, Stage.CLASSIFY)
+
+
+def _path_within(path: str, root: str) -> bool:
+    path_parts = path.split("/")[1:]
+    root_parts = root.split("/")[1:]
+    return path_parts[: len(root_parts)] == root_parts
+
+
+def _selector_contains(bound: Selector, requested: Selector) -> bool:
+    if bound.kind is SelectorKind.PATH_EXACT:
+        return requested.kind is SelectorKind.PATH_EXACT and bound.value == requested.value
+    if bound.kind is SelectorKind.PATH_PREFIX:
+        return requested.kind in {SelectorKind.PATH_EXACT, SelectorKind.PATH_PREFIX} and _path_within(
+            requested.value,
+            bound.value,
+        )
+    return bound == requested
+
+
+def _contains(bound: AuthorityClause, requested: AuthorityClause) -> bool:
+    return (
+        bound.effect is requested.effect
+        and bound.resource is requested.resource
+        and bound.operation is requested.operation
+        and _selector_contains(bound.selector, requested.selector)
+        and set(requested.facets) <= set(bound.facets)
+        and bound.not_before <= requested.not_before
+        and requested.not_after <= bound.not_after
+        and requested.max_duration_ms <= bound.max_duration_ms
+        and requested.quantity_unit is bound.quantity_unit
+        and requested.max_quantity <= bound.max_quantity
+        and requested.max_concurrency <= bound.max_concurrency
+    )
+
+
+def derive(value: object) -> DerivedAuthority | Decision:
+    """Meet manifest, policy, physical ceiling, and trusted fact authority."""
+
+    try:
+        if type(value) is not ClassifiedInput:
+            return _decision(Outcome.STOP, Reason.MALFORMED_INPUT, Stage.DERIVE)
+        checked = classify(value.normalized)
+        if type(checked) is Decision:
+            return _decision(checked.outcome, checked.reason, Stage.DERIVE)
+        if checked != value:
+            return _decision(Outcome.STOP, Reason.MALFORMED_INPUT, Stage.DERIVE)
+        requested = value.normalized.proposal.authority
+        sources = (
+            value.normalized.manifest.clauses,
+            value.normalized.policy.clauses,
+            value.normalized.physical_ceiling.clauses,
+            value.normalized.trusted_facts.clauses,
+        )
+        selected: list[str] = []
+        for clauses in sources:
+            correlated = tuple(
+                item
+                for item in clauses
+                if item.effect is requested.effect
+                and item.resource is requested.resource
+                and item.operation is requested.operation
+            )
+            if not correlated:
+                return _decision(Outcome.DENY, Reason.AUTHORITY_EXCEEDED, Stage.DERIVE)
+            selector_matches = tuple(item for item in correlated if _selector_contains(item.selector, requested.selector))
+            if not selector_matches:
+                return _decision(Outcome.DENY, Reason.TYPED_SCOPE_MISMATCH, Stage.DERIVE)
+            covering = tuple(item for item in selector_matches if _contains(item, requested))
+            if not covering:
+                return _decision(Outcome.DENY, Reason.AUTHORITY_EXCEEDED, Stage.DERIVE)
+            selected.append(min(clause_digest(item) for item in covering))
+        return DerivedAuthority(
+            value,
+            requested,
+            proposal_digest(value.normalized.proposal),
+            (selected[0], selected[1], selected[2], selected[3]),
+        )
+    except Exception:
+        return _decision(Outcome.STOP, Reason.INTERNAL_ERROR, Stage.DERIVE)

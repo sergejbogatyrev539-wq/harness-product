@@ -1,257 +1,297 @@
+from __future__ import annotations
+
+from copy import deepcopy
 import unittest
 
 from harness_product import (
-    Broker,
-    CapabilityState,
-    EffectKind,
-    Manifest,
+    ClassifiedInput,
+    Decision,
+    DerivedAuthority,
+    NormalizedInput,
     Outcome,
-    Policy,
-    Principal,
-    PrincipalRole,
     Reason,
-    Request,
-    ResourceKind,
-    Selector,
-    SelectorKind,
-    ScopeBound,
-    decide,
+    Stage,
+    classify,
+    derive,
+    normalize,
 )
 
 
-class KernelTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.worker = Principal("worker-1", PrincipalRole.WORKER)
-        self.executor = Principal("executor-1", PrincipalRole.EXECUTOR)
-        self.request = Request(
-            operation_id="write-report/v1",
-            principal=self.worker,
-            effect=EffectKind.MUTATE,
-            resource=ResourceKind.FILE,
-            selector=Selector(SelectorKind.PATH_EXACT, "/workspace/reports/report.txt"),
-            material_digest="sha256:" + "a" * 64,
+DIGEST_A = "sha256:" + "a" * 64
+DIGEST_B = "sha256:" + "b" * 64
+
+
+def clause(
+    *,
+    effect: str = "MUTATE",
+    resource: str = "FILE",
+    operation: str = "WRITE",
+    selector_kind: str = "PATH_PREFIX",
+    selector_value: str = "/project/reports",
+    facets: list[str] | None = None,
+    not_before: str = "2026-08-25T00:00:00Z",
+    not_after: str = "2026-08-26T00:00:00Z",
+    max_duration_ms: int = 60_000,
+    quantity_unit: str = "FILES",
+    max_quantity: int = 10,
+    max_concurrency: int = 4,
+) -> dict[str, object]:
+    return {
+        "effect": effect,
+        "resource": resource,
+        "operation": operation,
+        "selector": {"kind": selector_kind, "value": selector_value},
+        "facets": ["EXECUTE_EFFECT"] if facets is None else facets,
+        "not_before": not_before,
+        "not_after": not_after,
+        "max_duration_ms": max_duration_ms,
+        "quantity_unit": quantity_unit,
+        "max_quantity": max_quantity,
+        "max_concurrency": max_concurrency,
+    }
+
+
+def raw_input() -> dict[str, object]:
+    requested = clause(
+        selector_kind="PATH_EXACT",
+        selector_value="/project/reports/report.txt",
+        not_before="2026-08-25T11:00:00Z",
+        not_after="2026-08-25T13:00:00Z",
+        max_duration_ms=30_000,
+        max_quantity=1,
+        max_concurrency=2,
+    )
+    bound = clause()
+    source = {"operation_id": "write-report/v1", "authority": [bound]}
+    return {
+        "evaluation_time": "2026-08-25T12:00:00Z",
+        "proposal": {
+            "operation_id": "write-report/v1",
+            "principal_id": "worker-1",
+            "material_digest": DIGEST_A,
+            "authority": requested,
+        },
+        "manifest": deepcopy(source),
+        "policy": deepcopy(source),
+        "physical_ceiling": deepcopy(source),
+        "trusted_facts": {
+            "operation_id": "write-report/v1",
+            "material_digest": DIGEST_A,
+            "observed_at": "2026-08-25T11:59:00Z",
+            "expires_at": "2026-08-25T12:05:00Z",
+            "authority": [deepcopy(bound)],
+        },
+    }
+
+
+class KernelStagesTests(unittest.TestCase):
+    def assert_failure(
+        self,
+        result: object,
+        outcome: Outcome,
+        reason: Reason,
+        stage: Stage,
+    ) -> Decision:
+        self.assertIs(type(result), Decision)
+        self.assertEqual((result.outcome, result.reason, result.stage), (outcome, reason, stage))
+        self.assertIsNone(result.proposal_digest)
+        self.assertEqual(result.proposals, ())
+        self.assertRegex(result.decision_digest, r"^sha256:[0-9a-f]{64}$")
+        return result
+
+    def pipeline_to_classified(self, raw: object) -> ClassifiedInput:
+        normalized = normalize(raw)
+        self.assertIs(type(normalized), NormalizedInput)
+        classified = classify(normalized)
+        self.assertIs(type(classified), ClassifiedInput)
+        return classified
+
+    def test_positive_normalize_classify_derive_is_deterministic_and_pure(self) -> None:
+        raw = raw_input()
+        extra = clause(
+            effect="OBSERVE",
+            resource="MEMORY",
+            operation="READ",
+            selector_kind="LOCAL_EXACT",
+            selector_value="memory-session",
+            quantity_unit="BYTES",
         )
-        self.bound = ScopeBound(
-            EffectKind.MUTATE,
-            ResourceKind.FILE,
-            Selector(SelectorKind.PATH_PREFIX, "/workspace/reports"),
-        )
-        self.manifest = Manifest("write-report/v1", frozenset({self.bound}))
-        self.policy = Policy(frozenset({self.bound}))
-        self.broker = Broker(self.executor, frozenset({self.bound}))
+        for name in ("manifest", "policy", "physical_ceiling", "trusted_facts"):
+            raw[name]["authority"].append(deepcopy(extra))
+        snapshot = deepcopy(raw)
 
-    def issue(self):
-        decision, capability = self.broker.authorize(self.request, self.manifest, self.policy)
-        self.assertEqual(decision.outcome, Outcome.ALLOW)
-        self.assertIsNotNone(capability)
-        return capability
+        normalized = normalize(raw)
+        self.assertIs(type(normalized), NormalizedInput)
+        reordered = deepcopy(raw)
+        for name in ("manifest", "policy", "physical_ceiling", "trusted_facts"):
+            reordered[name]["authority"].reverse()
+        self.assertEqual(normalized, normalize(reordered))
+        self.assertEqual(raw, snapshot)
 
-    def test_deny_by_default_for_malformed_input(self) -> None:
-        decision = decide({}, self.manifest, self.policy, frozenset({self.bound}))
-        self.assertEqual((decision.outcome, decision.reason), (Outcome.STOP, Reason.MALFORMED_INPUT))
+        classified = classify(normalized)
+        self.assertIs(type(classified), ClassifiedInput)
+        derived = derive(classified)
+        self.assertIs(type(derived), DerivedAuthority)
+        self.assertEqual(derived.effective, normalized.proposal.authority)
+        self.assertEqual(len(derived.source_clause_digests), 4)
+        self.assertTrue(all(item.startswith("sha256:") for item in derived.source_clause_digests))
+        self.assertEqual(derived, derive(classified))
+        self.assertEqual(raw, snapshot)
 
-    def test_malformed_physical_ceiling_stops_without_throwing(self) -> None:
-        decision = decide(self.request, self.manifest, self.policy, None)
-        self.assertEqual((decision.outcome, decision.reason), (Outcome.STOP, Reason.MALFORMED_INPUT))
-        malformed_broker = Broker(self.executor, None)
-        decision, capability = malformed_broker.authorize(self.request, self.manifest, self.policy)
-        self.assertEqual((decision.outcome, capability), (Outcome.STOP, None))
-        malformed_principal_broker = Broker(object(), frozenset({self.bound}))
-        decision, capability = malformed_principal_broker.authorize(self.request, self.manifest, self.policy)
-        self.assertEqual((decision.outcome, capability), (Outcome.STOP, None))
+    def test_logical_paths_are_not_tied_to_one_project_root(self) -> None:
+        for root in ("/srv/customer-a", "/opt/product-b/repository"):
+            raw = raw_input()
+            raw["proposal"]["authority"]["selector"]["value"] = root + "/out/report.txt"
+            for name in ("manifest", "policy", "physical_ceiling", "trusted_facts"):
+                raw[name]["authority"][0]["selector"]["value"] = root + "/out"
+            result = derive(self.pipeline_to_classified(raw))
+            self.assertIs(type(result), DerivedAuthority)
 
-    def test_noncanonical_material_digest_stops(self) -> None:
-        invalid = Request(
-            self.request.operation_id,
-            self.worker,
-            self.request.effect,
-            self.request.resource,
-            self.request.selector,
-            "material-a",
-        )
-        decision, capability = self.broker.authorize(invalid, self.manifest, self.policy)
-        self.assertEqual((decision.outcome, capability), (Outcome.STOP, None))
+    def test_closed_normalization_rejects_missing_extra_unknown_and_unbounded_mutations(self) -> None:
+        cases: list[tuple[dict[str, object], Reason]] = []
 
-    def test_capability_is_exactly_bound_to_scope(self) -> None:
-        capability = self.issue()
-        changed = Request(
-            operation_id=self.request.operation_id,
-            principal=self.worker,
-            effect=self.request.effect,
-            resource=self.request.resource,
-            selector=Selector(SelectorKind.PATH_EXACT, "/workspace/reports/other.txt"),
-            material_digest=self.request.material_digest,
-        )
-        receipt = self.broker.dispatch(changed, capability)
-        self.assertFalse(receipt.executed)
-        self.assertEqual(receipt.reason, Reason.CAPABILITY_BINDING_MISMATCH)
-        self.assertEqual(self.broker.capability_state(capability), CapabilityState.ISSUED)
+        missing = raw_input()
+        del missing["policy"]
+        cases.append((missing, Reason.MALFORMED_INPUT))
 
-    def test_material_change_stops_capability_use(self) -> None:
-        capability = self.issue()
-        changed = Request(
-            operation_id=self.request.operation_id,
-            principal=self.worker,
-            effect=self.request.effect,
-            resource=self.request.resource,
-            selector=self.request.selector,
-            material_digest="sha256:" + "b" * 64,
-        )
-        receipt = self.broker.dispatch(changed, capability)
-        self.assertFalse(receipt.executed)
-        self.assertEqual(receipt.reason, Reason.CAPABILITY_BINDING_MISMATCH)
+        extra = raw_input()
+        extra["ambient_authority"] = True
+        cases.append((extra, Reason.MALFORMED_INPUT))
 
-    def test_replay_is_stopped_after_single_dispatch(self) -> None:
-        capability = self.issue()
-        self.assertTrue(self.broker.dispatch(self.request, capability).executed)
-        replay = self.broker.dispatch(self.request, capability)
-        self.assertFalse(replay.executed)
-        self.assertEqual(replay.reason, Reason.REPLAY)
+        unknown = raw_input()
+        unknown["proposal"]["authority"]["effect"] = "TRANSFORM"
+        cases.append((unknown, Reason.UNKNOWN_INPUT))
 
-    def test_cross_kind_scope_is_stopped(self) -> None:
-        invalid = Request(
-            operation_id="write-report/v1",
-            principal=self.worker,
-            effect=EffectKind.MUTATE,
-            resource=ResourceKind.FILE,
-            selector=Selector(SelectorKind.ENDPOINT_EXACT, "/workspace/reports/report.txt"),
-            material_digest="sha256:" + "a" * 64,
-        )
-        decision, capability = self.broker.authorize(invalid, self.manifest, self.policy)
-        self.assertEqual(decision.reason, Reason.TYPED_SCOPE_MISMATCH)
-        self.assertIsNone(capability)
+        unbounded_quantity = raw_input()
+        unbounded_quantity["proposal"]["authority"]["max_quantity"] = None
+        cases.append((unbounded_quantity, Reason.UNBOUNDED_INPUT))
 
-    def test_prefix_bound_contains_exact_and_nested_prefix_requests(self) -> None:
-        nested = Request(
-            self.request.operation_id,
-            self.worker,
-            self.request.effect,
-            self.request.resource,
-            Selector(SelectorKind.PATH_PREFIX, "/workspace/reports/drafts"),
-            self.request.material_digest,
-        )
-        decision, capability = self.broker.authorize(nested, self.manifest, self.policy)
-        self.assertEqual(decision.outcome, Outcome.ALLOW)
-        self.assertIsNotNone(capability)
+        unbounded_facets = raw_input()
+        unbounded_facets["manifest"]["authority"][0]["facets"] = []
+        cases.append((unbounded_facets, Reason.UNBOUNDED_INPUT))
 
-    def test_same_kind_path_outside_declared_bound_is_denied(self) -> None:
-        outside = Request(
-            self.request.operation_id,
-            self.worker,
-            self.request.effect,
-            self.request.resource,
-            Selector(SelectorKind.PATH_EXACT, "/workspace/other/report.txt"),
-            self.request.material_digest,
-        )
-        decision, capability = self.broker.authorize(outside, self.manifest, self.policy)
-        self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.DENY, Reason.TYPED_SCOPE_MISMATCH, None))
+        bool_bound = raw_input()
+        bool_bound["proposal"]["authority"]["max_duration_ms"] = True
+        cases.append((bool_bound, Reason.MALFORMED_INPUT))
 
-    def test_every_authority_input_must_cover_the_exact_path_scope(self) -> None:
-        other_bound = ScopeBound(
-            EffectKind.MUTATE,
-            ResourceKind.FILE,
-            Selector(SelectorKind.PATH_EXACT, "/workspace/other/report.txt"),
-        )
-        for manifest, policy, physical_ceiling in (
-            (Manifest(self.request.operation_id, frozenset({other_bound})), self.policy, frozenset({self.bound})),
-            (self.manifest, Policy(frozenset({other_bound})), frozenset({self.bound})),
-            (self.manifest, self.policy, frozenset({other_bound})),
-        ):
-            decision = decide(self.request, manifest, policy, physical_ceiling)
-            self.assertEqual((decision.outcome, decision.reason), (Outcome.DENY, Reason.TYPED_SCOPE_MISMATCH))
+        bad_path = raw_input()
+        bad_path["proposal"]["authority"]["selector"]["value"] = "/project/reports/../escape"
+        cases.append((bad_path, Reason.MALFORMED_INPUT))
 
-    def test_unknown_or_unbounded_scope_stops_before_issuance(self) -> None:
-        for selector in (
-            Selector(SelectorKind.PATH_EXACT, "/outside-any-profile"),
-            Selector(SelectorKind.PATH_EXACT, "/workspace/reports/../escape.txt"),
-            Selector(SelectorKind.PATH_EXACT, "/workspace/reports/%2e%2e/escape.txt"),
-            Selector(SelectorKind.PATH_EXACT, "/workspace/reports/bad\nname.txt"),
-            object(),
-        ):
-            request = Request(
-                self.request.operation_id,
-                self.worker,
-                self.request.effect,
-                self.request.resource,
-                selector,
-                self.request.material_digest,
-            )
-            decision, capability = self.broker.authorize(request, self.manifest, self.policy)
-            self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.STOP, Reason.MALFORMED_INPUT, None))
+        no_expiry = raw_input()
+        no_expiry["trusted_facts"]["expires_at"] = None
+        cases.append((no_expiry, Reason.UNBOUNDED_INPUT))
 
-    def test_unicode_path_controls_and_separator_confusables_stop_before_issuance(self) -> None:
-        for value in (
-            "/workspace/reports/a\u200eb.txt",
-            "/workspace/reports/a\u2044b.txt",
-            "/workspace/reports/a\u2215b.txt",
-            "/workspace/reports/a\uff0fb.txt",
-            "/workspace/reports/a\uff3cb.txt",
-        ):
-            request = Request(
-                self.request.operation_id,
-                self.worker,
-                self.request.effect,
-                self.request.resource,
-                Selector(SelectorKind.PATH_EXACT, value),
-                self.request.material_digest,
-            )
-            decision, capability = self.broker.authorize(request, self.manifest, self.policy)
-            self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.STOP, Reason.MALFORMED_INPUT, None))
+        duplicate = raw_input()
+        duplicate["manifest"]["authority"].append(deepcopy(duplicate["manifest"]["authority"][0]))
+        cases.append((duplicate, Reason.MALFORMED_INPUT))
 
-    def test_operation_id_requires_exact_bounded_ascii_form_before_issuance(self) -> None:
+        for mutated, reason in cases:
+            with self.subTest(reason=reason, mutation=mutated):
+                self.assert_failure(normalize(mutated), Outcome.STOP, reason, Stage.NORMALIZE)
+
+    def test_hostile_python_objects_do_not_escape_the_public_stage_api(self) -> None:
         class ExplodingStr(str):
             def __len__(self):
-                raise AssertionError("must not inspect string subclasses")
+                raise AssertionError("must not inspect subclasses")
 
-            def startswith(self, *args, **kwargs):
-                raise AssertionError("must not inspect string subclasses")
+        class ExplodingDict(dict):
+            def keys(self):
+                raise AssertionError("must not inspect subclasses")
 
-        for operation_id in (
-            "write\nreport",
-            "write report",
-            "a" * 129,
-            "a" * 10000,
-            "1write-report",
-            ExplodingStr("write-report"),
-        ):
-            request = Request(
-                operation_id,
-                self.worker,
-                self.request.effect,
-                self.request.resource,
-                self.request.selector,
-                self.request.material_digest,
-            )
-            decision, capability = self.broker.authorize(request, self.manifest, self.policy)
-            self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.STOP, Reason.MALFORMED_INPUT, None))
-            decision, capability = self.broker.authorize(
-                self.request,
-                Manifest(operation_id, self.manifest.bounds),
-                self.policy,
-            )
-            self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.STOP, Reason.MALFORMED_INPUT, None))
+        raw = raw_input()
+        raw["proposal"]["operation_id"] = ExplodingStr("write-report/v1")
+        self.assert_failure(normalize(raw), Outcome.STOP, Reason.MALFORMED_INPUT, Stage.NORMALIZE)
+        self.assert_failure(normalize(ExplodingDict(raw_input())), Outcome.STOP, Reason.MALFORMED_INPUT, Stage.NORMALIZE)
+        self.assert_failure(classify(object()), Outcome.STOP, Reason.MALFORMED_INPUT, Stage.CLASSIFY)
+        self.assert_failure(derive(object()), Outcome.STOP, Reason.MALFORMED_INPUT, Stage.DERIVE)
 
-    def test_valid_128_character_operation_id_can_be_authorized(self) -> None:
-        operation_id = "a" + "b" * 127
-        request = Request(
-            operation_id,
-            self.worker,
-            self.request.effect,
-            self.request.resource,
-            self.request.selector,
-            self.request.material_digest,
+        cyclic = raw_input()
+        cyclic["proposal"] = cyclic
+        self.assert_failure(normalize(cyclic), Outcome.STOP, Reason.MALFORMED_INPUT, Stage.NORMALIZE)
+
+    def test_classification_rejects_cross_pairs_and_selector_kind_mismatch(self) -> None:
+        cross_pair = raw_input()
+        cross_pair["proposal"]["authority"]["operation"] = "READ"
+        normalized = normalize(cross_pair)
+        self.assertIs(type(normalized), NormalizedInput)
+        self.assert_failure(classify(normalized), Outcome.STOP, Reason.UNKNOWN_INPUT, Stage.CLASSIFY)
+
+        typed_mismatch = raw_input()
+        typed_mismatch["proposal"]["authority"]["selector"] = {
+            "kind": "ENDPOINT_EXACT",
+            "value": "https://example.invalid/report",
+        }
+        normalized = normalize(typed_mismatch)
+        self.assertIs(type(normalized), NormalizedInput)
+        self.assert_failure(classify(normalized), Outcome.DENY, Reason.TYPED_SCOPE_MISMATCH, Stage.CLASSIFY)
+
+    def test_binding_and_freshness_mutations_stop_before_derivation(self) -> None:
+        mutations: list[tuple[dict[str, object], Reason]] = []
+        for source in ("manifest", "policy", "physical_ceiling", "trusted_facts"):
+            raw = raw_input()
+            raw[source]["operation_id"] = "different/v1"
+            mutations.append((raw, Reason.BINDING_MISMATCH))
+
+        material = raw_input()
+        material["trusted_facts"]["material_digest"] = DIGEST_B
+        mutations.append((material, Reason.BINDING_MISMATCH))
+
+        stale_facts = raw_input()
+        stale_facts["trusted_facts"]["expires_at"] = "2026-08-25T12:00:00Z"
+        mutations.append((stale_facts, Reason.STALE_INPUT))
+
+        stale_proposal = raw_input()
+        stale_proposal["proposal"]["authority"]["not_after"] = "2026-08-25T12:00:00Z"
+        mutations.append((stale_proposal, Reason.STALE_INPUT))
+
+        for mutated, reason in mutations:
+            with self.subTest(reason=reason):
+                normalized = normalize(mutated)
+                self.assertIs(type(normalized), NormalizedInput)
+                self.assert_failure(classify(normalized), Outcome.STOP, reason, Stage.CLASSIFY)
+
+    def test_every_authority_source_must_cover_the_typed_selector(self) -> None:
+        for source in ("manifest", "policy", "physical_ceiling", "trusted_facts"):
+            raw = raw_input()
+            raw[source]["authority"][0]["selector"]["value"] = "/different/root"
+            result = derive(self.pipeline_to_classified(raw))
+            self.assert_failure(result, Outcome.DENY, Reason.TYPED_SCOPE_MISMATCH, Stage.DERIVE)
+
+        boundary = raw_input()
+        boundary["proposal"]["authority"]["selector"]["value"] = "/project/reports-old/file.txt"
+        result = derive(self.pipeline_to_classified(boundary))
+        self.assert_failure(result, Outcome.DENY, Reason.TYPED_SCOPE_MISMATCH, Stage.DERIVE)
+
+    def test_each_correlated_bound_can_only_narrow_the_proposal(self) -> None:
+        field_mutations = (
+            ("max_duration_ms", 1_000),
+            ("max_quantity", 0),
+            ("max_concurrency", 1),
+            ("quantity_unit", "BYTES"),
+            ("not_after", "2026-08-25T12:30:00Z"),
+            ("facets", ["AUTHORIZE_EFFECT"]),
         )
-        decision, capability = self.broker.authorize(
-            request,
-            Manifest(operation_id, self.manifest.bounds),
-            self.policy,
-        )
-        self.assertEqual(decision.outcome, Outcome.ALLOW)
-        self.assertIsNotNone(capability)
+        for source in ("manifest", "policy", "physical_ceiling", "trusted_facts"):
+            for field, replacement in field_mutations:
+                with self.subTest(source=source, field=field):
+                    raw = raw_input()
+                    raw[source]["authority"][0][field] = replacement
+                    result = derive(self.pipeline_to_classified(raw))
+                    self.assert_failure(result, Outcome.DENY, Reason.AUTHORITY_EXCEEDED, Stage.DERIVE)
 
-    def test_missing_scope_bound_stops_before_issuance(self) -> None:
-        decision, capability = self.broker.authorize(self.request, self.manifest, Policy(frozenset()))
-        self.assertEqual((decision.outcome, decision.reason, capability), (Outcome.STOP, Reason.MALFORMED_INPUT, None))
+    def test_independently_valid_atoms_cannot_form_a_cross_source_union(self) -> None:
+        raw = raw_input()
+        raw["policy"]["authority"] = [
+            clause(
+                effect="OBSERVE",
+                resource="FILE",
+                operation="READ",
+                selector_value="/project/reports",
+            )
+        ]
+        result = derive(self.pipeline_to_classified(raw))
+        self.assert_failure(result, Outcome.DENY, Reason.AUTHORITY_EXCEEDED, Stage.DERIVE)
 
 
 if __name__ == "__main__":
