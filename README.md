@@ -34,7 +34,7 @@ skip.
 See [architecture](docs/ARCHITECTURE.md), [roadmap](ROADMAP.md), and
 [security boundary](SECURITY.md). Implementations must follow [AGENTS.md](AGENTS.md).
 
-`src/harness_product/` implements only the M1 in-memory model. Its public
+`src/harness_product/` keeps the M1 in-memory model pure. Its public
 `evaluate` API runs the deterministic
 `normalize → classify → derive → decide → transition` chain over closed input
 data and explicit time. Effective authority is the exact proposal contained by
@@ -43,6 +43,23 @@ contains only an immutable proposal marked `authority=NONE`; it cannot dispatch
 or perform an effect. The returned digest is a deterministic binding, not a
 signature or attestation.
 
-M2 and later gates remain absent: there is no capability, durable state or
-budget, broker/executor, OS isolation, effect adapter, authoritative event,
-runtime evidence, enforcement, or readiness claim.
+M2 adds one direct, non-root-exported `harness_product.durable` stdlib SQLite
+store. Its schema v1 uses `STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
+rollback-journal (`DELETE`) mode, and `synchronous=FULL`. Issue reruns the exact
+M1 decision and stores the complete canonical M1 inputs/bindings and complete
+verifier record; consume checks them again. A single commit consumes the
+capability, reserves every budget component, records the exact durable dispatch
+intent, counters/journal, and a mandatory local outbox event. Reservations end
+exactly once as `SPENT`, `RELEASED`, or `QUARANTINED_ESCROW`; release requires an
+independently verified no-effect record. Recovery never dispatches or retries.
+
+`DELETE` is intentional for this single-writer profile: `BEGIN IMMEDIATE`
+serializes mutations, while rollback journaling avoids a separate WAL checkpoint
+lifecycle. It still uses a transient rollback-journal file during a transaction.
+
+This is durable intent only: it has no executor, connector, effect adapter,
+external crypto/trust root/attestation, OS enforcement, non-bypassability, or
+readiness claim. A local hash chain cannot detect a coherent whole-database
+rollback without an independent external anchor. `synchronous=FULL` depends on
+the filesystem and device honoring flush/order guarantees and does not prove
+power-loss durability. M3+ enforcement and evidence remain future work.

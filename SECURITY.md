@@ -28,3 +28,23 @@ are available. Any material digest change invalidates dependent evidence.
 
 The detailed threat model and residual-risk requirements are normative in
 `spec/03_SYSTEM_THREAT_TRUST_MODEL.md`.
+
+## Implemented M2 durable-intent boundary
+
+`harness_product.durable` is a direct stdlib SQLite store, not an executor or
+effect route. Schema v1 uses `STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
+rollback-journal (`DELETE`) mode, and `synchronous=FULL`. At issue and consume
+it reruns/rechecks the exact M1 result, full canonical bindings, and full
+verifier record. Its one durable consume transaction records capability use,
+component-wise reservation, exact dispatch intent, monotonic journal/counters,
+and a mandatory local outbox event. Recovery only exposes that state; it never
+dispatches or creates a retry. A reservation has one terminal disposition:
+`SPENT`, `RELEASED`, or `QUARANTINED_ESCROW`; `RELEASED` requires an independently
+verified no-effect record.
+
+This is not external cryptography, a trust root, runtime attestation, OS
+enforcement, non-bypassable mediation, or readiness. The local hash chain can
+detect inconsistent local chain state, but cannot detect a coherent rollback of
+the whole database without an independent external anchor. `synchronous=FULL`
+also relies on the filesystem/device honoring flush and ordering guarantees; it
+does not prove power-loss durability.

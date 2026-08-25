@@ -4,10 +4,15 @@ from copy import deepcopy
 from dataclasses import is_dataclass
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 import harness_product
 
@@ -281,6 +286,21 @@ class FaultAt:
             raise InjectedFault(point)
 
 
+class BarrierAt:
+    """A deterministic test-only rendezvous at the store's pre-transaction hook."""
+
+    def __init__(self, parties: int) -> None:
+        self.barrier = threading.Barrier(parties)
+        self.seen: list[str] = []
+        self.lock = threading.Lock()
+
+    def __call__(self, point: str) -> None:
+        with self.lock:
+            self.seen.append(point)
+        if point == "before_transaction":
+            self.barrier.wait(timeout=5)
+
+
 class DurableStoreIssueTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -325,6 +345,117 @@ class DurableStoreIssueTests(unittest.TestCase):
             row = connection.execute(sql, parameters).fetchone()
         self.assertIsNotNone(row, sql)
         return row
+
+    def populated_database(self, name: str, *, disposition: str | None = None) -> Path:
+        database = Path(self.temporary.name) / f"{name}.sqlite3"
+        no_effect = ExactNoEffectVerifier()
+        store = DurableStore(str(database), ExactVerifier(), no_effect_verifier=no_effect)
+        self.assert_result(store.bootstrap(_bootstrap_raw()), committed=True)
+        issued = store.issue(_issue_raw())
+        self.assert_result(issued, committed=True)
+        with sqlite3.connect(database) as connection:
+            payload = json.loads(
+                connection.execute(
+                    "SELECT payload_json FROM capabilities WHERE capability_id=?",
+                    (issued.capability_id,),
+                ).fetchone()[0]
+            )
+        self.assert_result(store.consume(_consume_from_payload(issued.capability_id, payload)), committed=True)
+        if disposition is not None:
+            evidence = (
+                {
+                    "verifier_id": "test-no-effect/v1",
+                    "observer_id": "independent-observer/v1",
+                    "key_id": "test-no-effect-key/v1",
+                    "proof": _digest("d"),
+                }
+                if disposition == "RELEASED"
+                else {"evidence_digest": _digest("d")}
+            )
+            self.assert_result(
+                store.settle(
+                    {
+                        "transaction_id": "transaction-0001",
+                        "disposition": disposition,
+                        "observed_at": "2026-08-25T12:02:00Z",
+                        "evidence": evidence,
+                    }
+                ),
+                committed=True,
+            )
+        return database
+
+    def rewrite_chains(self, connection: sqlite3.Connection) -> None:
+        journal_previous: str | None = None
+        outbox_previous: str | None = None
+        rows = connection.execute(
+            "SELECT sequence, event_type, subject_id, payload_json "
+            "FROM journal_entries ORDER BY sequence"
+        ).fetchall()
+        for sequence, event_type, subject_id, payload_text in rows:
+            payload = json.loads(payload_text)
+            journal_body = {
+                "sequence": sequence,
+                "previous_digest": journal_previous,
+                "event_type": event_type,
+                "subject_id": subject_id,
+                "payload": payload,
+            }
+            journal_digest = _sha256(_canonical(journal_body))
+            outbox_payload = {"journal_digest": journal_digest, "event": payload}
+            outbox_body = {
+                "sequence": sequence,
+                "previous_digest": outbox_previous,
+                "event_type": event_type,
+                "subject_id": subject_id,
+                "payload": outbox_payload,
+            }
+            outbox_digest = _sha256(_canonical(outbox_body))
+            connection.execute(
+                "UPDATE journal_entries SET previous_digest=?, entry_digest=? WHERE sequence=?",
+                (journal_previous, journal_digest, sequence),
+            )
+            connection.execute(
+                "UPDATE outbox_events SET previous_digest=?, event_type=?, subject_id=?, "
+                "payload_json=?, event_digest=? WHERE sequence=?",
+                (
+                    outbox_previous,
+                    event_type,
+                    subject_id,
+                    _canonical(outbox_payload).decode(),
+                    outbox_digest,
+                    sequence,
+                ),
+            )
+            journal_previous = journal_digest
+            outbox_previous = outbox_digest
+        connection.execute(
+            "UPDATE store_meta SET journal_head_sequence=?, journal_head_digest=?, "
+            "outbox_head_sequence=?, outbox_head_digest=? WHERE id=1",
+            (len(rows), journal_previous, len(rows), outbox_previous),
+        )
+
+    def assert_corrupt_and_stopped(self, database: Path) -> None:
+        with sqlite3.connect(database) as connection:
+            before = connection.execute(
+                "SELECT (SELECT COUNT(*) FROM capabilities), "
+                "(SELECT COUNT(*) FROM dispatch_intents), "
+                "(SELECT COUNT(*) FROM journal_entries), "
+                "(SELECT COUNT(*) FROM outbox_events)"
+            ).fetchone()
+        corrupted = DurableStore(str(database), ExactVerifier())
+        health = corrupted.health()
+        self.assertEqual((health.outcome, health.reason), (DurableOutcome.STOP, DurableReason.CORRUPT_STORE))
+        stopped = corrupted.consume({})
+        self.assertEqual((stopped.outcome, stopped.reason), (DurableOutcome.STOP, DurableReason.CORRUPT_STORE))
+        with sqlite3.connect(database) as connection:
+            after = connection.execute(
+                "SELECT (SELECT COUNT(*) FROM capabilities), "
+                "(SELECT COUNT(*) FROM dispatch_intents), "
+                "(SELECT COUNT(*) FROM journal_entries), "
+                "(SELECT COUNT(*) FROM outbox_events)"
+            ).fetchone()
+        self.assertEqual(after, before)
 
     def issue_capability(self, store: DurableStore, **kwargs: object) -> str:
         self.assert_result(store.bootstrap(_bootstrap_raw()), committed=True)
@@ -886,6 +1017,428 @@ class DurableStoreIssueTests(unittest.TestCase):
                     self.assertEqual((state, budget, intents, journals, outbox), (("CONSUMED",), (9, 1, 0), (1,), (3,), (3,)))
                 else:
                     self.assertEqual((state, budget, intents, journals, outbox), (("ISSUED",), (10, 0, 0), (0,), (2,), (2,)))
+
+    def test_two_connections_concurrently_consume_one_capability_only_once(self) -> None:
+        setup = self.store()
+        capability_id = self.issue_capability(setup)
+        raw = self.consume_raw(capability_id)
+        barrier = BarrierAt(2)
+        stores = [self.store(fault=barrier), self.store(fault=barrier)]
+        results: list[object] = []
+        errors: list[BaseException] = []
+
+        def consume(store: DurableStore, transaction_id: str) -> None:
+            try:
+                request = deepcopy(raw)
+                request["transaction_id"] = transaction_id
+                results.append(store.consume(request))
+            except BaseException as error:  # pragma: no cover - proves a leaked boundary error.
+                errors.append(error)
+
+        threads = [
+            threading.Thread(target=consume, args=(stores[0], "transaction-a")),
+            threading.Thread(target=consume, args=(stores[1], "transaction-b")),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+            self.assertFalse(thread.is_alive(), "consume race deadlocked")
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertEqual(sum(result.outcome is DurableOutcome.COMMITTED for result in results), 1)
+        self.assertEqual(sum(result.outcome in {DurableOutcome.DENY, DurableOutcome.STOP} for result in results), 1)
+        self.assertEqual(barrier.seen.count("before_transaction"), 2)
+        self.assertEqual(self.query_one("SELECT COUNT(*) FROM dispatch_intents"), (1,))
+        self.assertEqual(self.query_one("SELECT COUNT(*) FROM outbox_events"), (3,))
+        self.assertEqual(self.query_one("SELECT remaining, reserved, spent FROM budgets"), (9, 1, 0))
+
+    def test_two_component_budget_reservation_is_component_wise_under_concurrency(self) -> None:
+        bootstrap = _bootstrap_raw(limit=1)
+        bootstrap["budgets"].append(
+            {
+                "name": "bytes",
+                "unit": "BYTES",
+                "scope_digest": SCOPE,
+                "lineage_root": LINEAGE,
+                "limit": 10,
+            }
+        )
+        setup = self.store()
+        self.assert_result(setup.bootstrap(bootstrap), committed=True)
+
+        def issue_two_component(nonce: str, digest: str) -> object:
+            raw = _issue_raw(nonce=nonce, idempotency_key_digest=digest)
+            raw["budget"].append(
+                {
+                    "name": "bytes",
+                    "unit": "BYTES",
+                    "scope_digest": SCOPE,
+                    "lineage_root": LINEAGE,
+                    "amount": 1,
+                }
+            )
+            result = setup.issue(raw)
+            self.assert_result(result, committed=True)
+            return result
+
+        first = issue_two_component("nonce-two-a", _digest("c"))
+        second = issue_two_component("nonce-two-b", _digest("d"))
+        barrier = BarrierAt(2)
+        stores = [self.store(fault=barrier), self.store(fault=barrier)]
+        raws = [
+            self.consume_raw(first.capability_id, transaction_id="two-component-a"),
+            self.consume_raw(second.capability_id, transaction_id="two-component-b"),
+        ]
+        results: list[object] = []
+        threads = [threading.Thread(target=lambda store=store, raw=raw: results.append(store.consume(raw))) for store, raw in zip(stores, raws)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+            self.assertFalse(thread.is_alive(), "component race deadlocked")
+        self.assertEqual(len(results), 2)
+        self.assertEqual(sum(result.outcome is DurableOutcome.COMMITTED for result in results), 1)
+        self.assertEqual(
+            self.query_one("SELECT name, remaining, reserved, spent FROM budgets ORDER BY name"),
+            ("bytes", 9, 1, 0),
+        )
+        with sqlite3.connect(self.db_path) as connection:
+            self.assertEqual(
+                connection.execute("SELECT name, remaining, reserved, spent FROM budgets ORDER BY name").fetchall(),
+                [("bytes", 9, 1, 0), ("writes", 0, 1, 0)],
+            )
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM dispatch_intents").fetchone(), (1,))
+
+    def test_separate_connections_serialize_revoke_against_consume(self) -> None:
+        setup = self.store()
+        capability_id = self.issue_capability(setup)
+        barrier = BarrierAt(2)
+        consumer = self.store(fault=barrier)
+        revoker = self.store(fault=barrier)
+        results: list[object] = []
+        errors: list[BaseException] = []
+
+        def consume() -> None:
+            try:
+                results.append(consumer.consume(self.consume_raw(capability_id)))
+            except BaseException as error:  # pragma: no cover - proves a leaked boundary error.
+                errors.append(error)
+
+        def revoke() -> None:
+            try:
+                results.append(
+                    revoker.revoke(
+                        {
+                            "capability_id": capability_id,
+                            "expected_revocation_epoch": 7,
+                            "new_revocation_epoch": 8,
+                            "fencing_epoch": 11,
+                            "reason_digest": _digest("c"),
+                        }
+                    )
+                )
+            except BaseException as error:  # pragma: no cover - proves a leaked boundary error.
+                errors.append(error)
+
+        threads = [threading.Thread(target=consume), threading.Thread(target=revoke)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+            self.assertFalse(thread.is_alive(), "revoke/consume race deadlocked")
+        self.assertEqual(errors, [])
+        self.assertEqual(sum(result.outcome is DurableOutcome.COMMITTED for result in results), 1)
+        (state,) = self.query_one("SELECT state FROM capabilities")
+        if state == "CONSUMED":
+            self.assertEqual(self.query_one("SELECT revocation_epoch FROM store_meta"), (7,))
+            self.assertEqual(self.query_one("SELECT COUNT(*) FROM dispatch_intents"), (1,))
+            self.assertEqual(self.query_one("SELECT remaining, reserved, spent FROM budgets"), (9, 1, 0))
+        else:
+            self.assertEqual(state, "REVOKED")
+            self.assertEqual(self.query_one("SELECT revocation_epoch FROM store_meta"), (8,))
+            self.assertEqual(self.query_one("SELECT COUNT(*) FROM dispatch_intents"), (0,))
+            self.assertEqual(self.query_one("SELECT remaining, reserved, spent FROM budgets"), (10, 0, 0))
+
+    def test_duplicate_delivery_after_reopen_is_rejected_without_new_intent_or_event(self) -> None:
+        store = self.store()
+        capability_id = self.issue_capability(store)
+        raw = self.consume_raw(capability_id)
+        self.assert_result(store.consume(raw), committed=True)
+        reopened = self.store()
+        duplicate = deepcopy(raw)
+        duplicate["transaction_id"] = "duplicate-after-reopen"
+        self.assert_stopped(reopened.consume(duplicate))
+        self.assertEqual(self.query_one("SELECT COUNT(*) FROM dispatch_intents"), (1,))
+        self.assertEqual(self.query_one("SELECT COUNT(*) FROM outbox_events"), (3,))
+
+    def test_subprocess_crashes_leave_no_precommit_parts_and_preserve_postcommit_transition(self) -> None:
+        child = """
+import json
+import os
+import sqlite3
+import sys
+from tests.test_durable import ExactVerifier, _bootstrap_raw, _consume_from_payload, _issue_raw
+from harness_product.durable import DurableStore
+
+class ExitAt:
+    def __init__(self, target):
+        self.target = target
+    def __call__(self, point):
+        if point == self.target:
+            os._exit(86)
+
+path, point = sys.argv[1:]
+setup = DurableStore(path, ExactVerifier())
+setup.bootstrap(_bootstrap_raw())
+issued = setup.issue(_issue_raw())
+with sqlite3.connect(path) as connection:
+    payload = json.loads(connection.execute(
+        "SELECT payload_json FROM capabilities WHERE capability_id=?", (issued.capability_id,)
+    ).fetchone()[0])
+store = DurableStore(path, ExactVerifier(), _fault=ExitAt(point))
+store.consume(_consume_from_payload(issued.capability_id, payload))
+os._exit(87)
+"""
+        project_root = Path(__file__).resolve().parents[1]
+        source_root = project_root / "src"
+        child_environment = dict(os.environ)
+        child_environment["PYTHONPATH"] = os.pathsep.join((str(source_root), str(project_root)))
+        for point in ("before_transaction", "after_intent", "after_commit_before_ack"):
+            with self.subTest(point=point):
+                database = Path(self.temporary.name) / f"subprocess-{point}.sqlite3"
+                completed = subprocess.run(
+                    [sys.executable, "-c", child, str(database), point],
+                    cwd=project_root,
+                    env=child_environment,
+                    check=False,
+                    timeout=15,
+                )
+                self.assertEqual(completed.returncode, 86)
+                reopened = DurableStore(str(database), ExactVerifier())
+                self.assert_result(reopened.health(), committed=False)
+                with sqlite3.connect(database) as connection:
+                    state = connection.execute("SELECT state FROM capabilities").fetchone()
+                    budget = connection.execute("SELECT remaining, reserved, spent FROM budgets").fetchone()
+                    intents = connection.execute("SELECT COUNT(*) FROM dispatch_intents").fetchone()
+                    events = connection.execute("SELECT COUNT(*) FROM outbox_events").fetchone()
+                if point == "after_commit_before_ack":
+                    self.assertEqual((state, budget, intents, events), (("CONSUMED",), (9, 1, 0), (1,), (3,)))
+                else:
+                    self.assertEqual((state, budget, intents, events), (("ISSUED",), (10, 0, 0), (0,), (2,)))
+
+    def test_multikey_limits_and_duplicate_durable_budget_primary_key_fail_closed(self) -> None:
+        invalid_limits: list[tuple[str, object]] = [
+            ("max-plus-one", 1 << 63),
+            ("negative", -1),
+            ("bool", True),
+            ("string", "1"),
+        ]
+        for name, limit in invalid_limits:
+            with self.subTest(name=name):
+                database = Path(self.temporary.name) / f"bad-limit-{name}.sqlite3"
+                result = DurableStore(str(database), ExactVerifier()).bootstrap(_bootstrap_raw(limit=limit))
+                self.assert_result(result, committed=False)
+                with sqlite3.connect(database) as connection:
+                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM budgets").fetchone(), (0,))
+
+        store = self.store()
+        self.assert_result(store.bootstrap(_bootstrap_raw()), committed=True)
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("INSERT INTO budgets SELECT * FROM budgets")
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM budgets").fetchone(), (1,))
+
+    def test_mandatory_outbox_foreign_keys_prevent_deletion_and_match_committed_intent(self) -> None:
+        store = self.store()
+        capability_id = self.issue_capability(store)
+        self.assert_result(store.consume(self.consume_raw(capability_id)), committed=True)
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            matching = connection.execute(
+                "SELECT d.transaction_id, j.subject_id, o.subject_id, j.outbox_sequence, o.journal_sequence "
+                "FROM dispatch_intents AS d "
+                "JOIN journal_entries AS j ON j.sequence=d.journal_sequence "
+                "JOIN outbox_events AS o ON o.sequence=j.outbox_sequence "
+                "WHERE d.transaction_id='transaction-0001'"
+            ).fetchone()
+            self.assertEqual(matching, ("transaction-0001", "transaction-0001", "transaction-0001", 3, 3))
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute("DELETE FROM outbox_events WHERE sequence=3")
+                connection.commit()
+            connection.rollback()
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM outbox_events").fetchone(), (3,))
+
+    def test_journal_outbox_digest_sequence_fork_and_truncation_mutations_fail_closed(self) -> None:
+        mutations: tuple[tuple[str, tuple[tuple[str, tuple[object, ...]], ...]], ...] = (
+            (
+                "journal-digest",
+                (("UPDATE journal_entries SET entry_digest=? WHERE sequence=3", (_digest("e"),)),),
+            ),
+            (
+                "outbox-digest",
+                (("UPDATE outbox_events SET event_digest=? WHERE sequence=3", (_digest("f"),)),),
+            ),
+            (
+                "sequence-gap",
+                (("UPDATE journal_entries SET sequence=30 WHERE sequence=3", ()),),
+            ),
+            (
+                "forked-predecessor",
+                (("UPDATE journal_entries SET previous_digest=? WHERE sequence=3", (_digest("d"),)),),
+            ),
+            (
+                "outbox-payload",
+                (("UPDATE outbox_events SET payload_json='{}' WHERE sequence=3", ()),),
+            ),
+            (
+                "lost-outbox",
+                (("DELETE FROM outbox_events WHERE sequence=3", ()),),
+            ),
+            (
+                "truncated-tail",
+                (
+                    ("DELETE FROM outbox_events WHERE sequence=3", ()),
+                    ("DELETE FROM journal_entries WHERE sequence=3", ()),
+                ),
+            ),
+            (
+                "mismatched-head",
+                (("UPDATE store_meta SET journal_head_digest=? WHERE id=1", (_digest("c"),)),),
+            ),
+        )
+        for name, statements in mutations:
+            with self.subTest(name=name):
+                database = self.populated_database(f"chain-{name}")
+                with sqlite3.connect(database) as connection:
+                    connection.execute("PRAGMA foreign_keys=OFF")
+                    connection.execute("PRAGMA ignore_check_constraints=ON")
+                    for statement, parameters in statements:
+                        connection.execute(statement, parameters)
+                self.assert_corrupt_and_stopped(database)
+
+        database = self.populated_database("duplicate-sequence")
+        with sqlite3.connect(database) as connection:
+            connection.execute("PRAGMA foreign_keys=ON")
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO journal_entries SELECT * FROM journal_entries WHERE sequence=3"
+                )
+            connection.rollback()
+        healthy = DurableStore(str(database), ExactVerifier())
+        self.assertEqual(
+            (healthy.health().outcome, healthy.health().reason),
+            (DurableOutcome.OK, DurableReason.READY),
+        )
+
+    def test_closed_records_exact_events_epochs_and_schema_mutations_fail_closed(self) -> None:
+        for name, sequence, mutation in (
+            ("issue-event", 2, lambda value: value.update({"unknown": True})),
+            ("consume-event", 3, lambda value: value.pop("intent")),
+            (
+                "terminal-event",
+                4,
+                lambda value: value.update({"terminal_record_digest": _digest("f")}),
+            ),
+        ):
+            with self.subTest(name=name):
+                database = self.populated_database(
+                    f"semantic-{name}",
+                    disposition="SPENT" if sequence == 4 else None,
+                )
+                with sqlite3.connect(database) as connection:
+                    payload = json.loads(
+                        connection.execute(
+                            "SELECT payload_json FROM journal_entries WHERE sequence=?",
+                            (sequence,),
+                        ).fetchone()[0]
+                    )
+                    mutation(payload)
+                    connection.execute(
+                        "UPDATE journal_entries SET payload_json=? WHERE sequence=?",
+                        (_canonical(payload).decode(), sequence),
+                    )
+                    self.rewrite_chains(connection)
+                self.assert_corrupt_and_stopped(database)
+
+        database = self.populated_database("closed-verification")
+        with sqlite3.connect(database) as connection:
+            verification = json.loads(
+                connection.execute("SELECT verification_json FROM capabilities").fetchone()[0]
+            )
+            verification["unknown"] = True
+            verification_text = _canonical(verification).decode()
+            verification_digest = _sha256(verification_text.encode())
+            connection.execute(
+                "UPDATE capabilities SET verification_json=?, verification_digest=?",
+                (verification_text, verification_digest),
+            )
+            event = json.loads(
+                connection.execute(
+                    "SELECT payload_json FROM journal_entries WHERE sequence=2"
+                ).fetchone()[0]
+            )
+            event["verification_digest"] = verification_digest
+            connection.execute(
+                "UPDATE journal_entries SET payload_json=? WHERE sequence=2",
+                (_canonical(event).decode(),),
+            )
+            self.rewrite_chains(connection)
+        self.assert_corrupt_and_stopped(database)
+
+        database = self.populated_database("closed-terminal", disposition="SPENT")
+        with sqlite3.connect(database) as connection:
+            terminal = json.loads(
+                connection.execute(
+                    "SELECT terminal_record_json FROM budget_reservations"
+                ).fetchone()[0]
+            )
+            terminal["unknown"] = True
+            terminal_text = _canonical(terminal).decode()
+            terminal_digest = _sha256(terminal_text.encode())
+            connection.execute(
+                "UPDATE budget_reservations SET terminal_record_json=?, terminal_record_digest=?",
+                (terminal_text, terminal_digest),
+            )
+            event = json.loads(
+                connection.execute(
+                    "SELECT payload_json FROM journal_entries WHERE sequence=4"
+                ).fetchone()[0]
+            )
+            event["terminal_record_digest"] = terminal_digest
+            connection.execute(
+                "UPDATE journal_entries SET payload_json=? WHERE sequence=4",
+                (_canonical(event).decode(),),
+            )
+            self.rewrite_chains(connection)
+        self.assert_corrupt_and_stopped(database)
+
+        for name, statement in (
+            ("epoch-without-history", "UPDATE store_meta SET revocation_epoch=8 WHERE id=1"),
+            ("missing-schema-index", "DROP INDEX reservations_disposition"),
+        ):
+            with self.subTest(name=name):
+                database = self.populated_database(f"semantic-{name}")
+                with sqlite3.connect(database) as connection:
+                    connection.execute(statement)
+                self.assert_corrupt_and_stopped(database)
+
+    def test_issue_and_consume_have_no_socket_process_shell_or_target_open_surface(self) -> None:
+        store = self.store()
+        self.assert_result(store.bootstrap(_bootstrap_raw()), committed=True)
+        forbidden = AssertionError("M2 durable state attempted an external effect")
+        with (
+            patch("builtins.open", side_effect=forbidden),
+            patch("os.open", side_effect=forbidden),
+            patch("os.system", side_effect=forbidden),
+            patch("socket.socket", side_effect=forbidden),
+            patch("subprocess.Popen", side_effect=forbidden),
+            patch("subprocess.run", side_effect=forbidden),
+        ):
+            issued = store.issue(_issue_raw())
+            self.assert_result(issued, committed=True)
+            self.assert_result(store.consume(self.consume_raw(issued.capability_id)), committed=True)
 
     def test_root_public_surface_still_excludes_effect_and_capability_symbols(self) -> None:
         for name in ("Broker", "Capability", "Executor", "DispatchReceipt"):
