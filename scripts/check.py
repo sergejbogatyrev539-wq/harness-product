@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One fail-closed repository and specification conformance gate."""
+"""The sole fail-closed repository development and specification conformance gate."""
 
 from __future__ import annotations
 

@@ -108,6 +108,14 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python scripts/check_m3_l0.py
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python scripts/check_m3_l0.py --evidence <bundle-directory>
 ```
 
+`scripts/check.py` is the sole repository-level development conformance
+harness. Every milestone implementation regression must be discoverable by its
+existing `tests/test_*.py` unittest discovery. Milestone-specific scripts may
+be narrow focused, host, or evidence probes only; they must not duplicate a
+repository gate, policy engine, or runtime path. A green repository gate proves
+repository/code and specification-model conformance only; it is not host, VM,
+runtime, production, or attestation evidence.
+
 The no-argument M3 check is a read-only developer-host availability probe and
 may correctly return nonzero; it is not a prerequisite that can verify a future
 VM result. The focused signed-bundle unit test above is the cheap parser oracle.

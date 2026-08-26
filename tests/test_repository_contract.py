@@ -128,6 +128,9 @@ class RepositoryContractTests(unittest.TestCase):
             "A success target never enlarges an attempt ceiling.",
             "Do not start the next milestone or a new review cycle.",
             "a formally process-blind reviewer reads only its frozen review packet",
+            "`scripts/check.py` is the sole repository-level development conformance harness.",
+            "Every milestone implementation regression must be discoverable",
+            "it is not host, VM, runtime, production, or attestation evidence.",
         )
         for rule in required_rules:
             self.assertIn(rule, normalized_agents)
@@ -146,6 +149,38 @@ class RepositoryContractTests(unittest.TestCase):
                 self._assert_work_context(mutated)
 
         self.assertLessEqual(len(agents.splitlines()), 180)
+
+    def test_scripts_check_is_the_single_discovering_development_harness(self) -> None:
+        self.assertEqual(
+            repository_check.__doc__,
+            "The sole fail-closed repository development and specification conformance gate.",
+        )
+        with patch.object(repository_check.subprocess, "run") as run:
+            repository_check.run_product_tests()
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command,
+            [
+                repository_check.sys.executable,
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "tests",
+                "-p",
+                "test_*.py",
+                "-v",
+            ],
+        )
+        self.assertEqual(run.call_args.kwargs["cwd"], ROOT)
+        self.assertTrue(run.call_args.kwargs["check"])
+        self.assertEqual(run.call_args.kwargs["env"]["PYTHONDONTWRITEBYTECODE"], "1")
+        self.assertEqual(run.call_args.kwargs["env"]["PYTHONPATH"], str(ROOT / "src"))
+
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        self.assertEqual(workflow.count("- run: python scripts/check.py"), 1)
+        self.assertNotRegex(workflow, r"- run: python scripts/check_m[0-9]")
 
     def test_required_spec_groups_are_present(self) -> None:
         documents = {
