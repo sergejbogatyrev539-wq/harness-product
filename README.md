@@ -6,10 +6,19 @@ workers can propose bounded work but cannot bypass the control path.
 
 ## Current status
 
-`specification=SPECIFIED; runtime=NOT_IMPLEMENTED; runtime_attestation=NOT_ATTESTED; overall=NOT_READY`.
+`specification=SPECIFIED; implementation=NOT_IMPLEMENTED; runtime_attestation=NOT_ATTESTED; overall=NOT_READY`.
 The copied `spec/` corpus is normative; it is not a runnable security product.
+Here `NOT_IMPLEMENTED` means that no complete current non-bypassable deployment
+implements the full specification; it does not mean that M1-M3 source modules
+are absent.
 
 ## Start here
+
+Agents must first read all of [AGENTS.md](AGENTS.md) and the ignored live record
+`.agent/WORKING_CONTEXT.json`, initialized from the closed
+[working-context template](WORKING_CONTEXT.template.json). The record preserves
+the current invariant, exact oracle, and progress across compaction or handoff,
+but is non-authorizing and cannot start work.
 
 ```bash
 python -m venv .venv
@@ -102,8 +111,11 @@ has no fallback or retry: it repeats host measurement, durably commits
 `PREPARED`, creates and verifies one cgroup, launches only typed bwrap argv with
 `shell=False`, releases an early start gate, applies external wall/CPU limits,
 kills the cgroup process tree on failure, and terminally releases or quarantines
-the durable reservation. This path has not run successfully on this host and is
-not an attested enforcement claim. Separately,
+the durable reservation. These properties were qualified for the exact
+disposable test-VM candidate at product commit
+`437ee01ca331cd7e4632fb8ad55eaa894254daa9`. That retained bundle is historical,
+test-profile evidence: it is not production attestation and cannot attest any
+later commit. Separately,
 `resolve_target` uses Linux `openat2` with `BENEATH`, `NO_MAGICLINKS`,
 `NO_SYMLINKS`, and `NO_XDEV`; broker ingress accepts only bounded
 `UNIX_SEQPACKET` messages with exact `SO_PEERCRED` and binding checks. The sole
@@ -118,12 +130,19 @@ Run the non-skipping exact-profile availability gate separately:
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python scripts/check_m3_l0.py
 ```
 
-It exits nonzero unless the exact runtime and external evidence are verified.
-On this development session it reports `ABSENT` with
-`CGROUP_DELEGATION_ABSENT`: the current cgroup has only memory/PID controllers
-and is shared, so CPU/IO limits and complete process-tree lifecycle cannot be
-enforced. No weaker fallback is selected. A real isolated worker, runtime
-principal topology, production external trust root, privileged runtime attestor,
-restart cleanup proof, and same-profile runtime evidence remain absent. The
-implemented staging boundary is not a physically attested executor principal.
-Status therefore stays `NOT_IMPLEMENTED`, `NOT_ATTESTED`, and `NOT_READY`.
+With no argument this is a read-only developer-host preflight. The following
+mode verifies only a same-candidate bundle while its exact live lab, checkout,
+and freshness window are still available; it is not an offline verifier for a
+historical retained bundle and never launches a VM:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python scripts/check_m3_l0.py --evidence <bundle-directory>
+```
+
+Each mode exits nonzero unless its exact requirement is satisfied.
+On a host without the exact dedicated cgroup-v2 CPU/IO delegation it reports
+`ABSENT/CGROUP_DELEGATION_ABSENT`; no weaker fallback is selected. The
+historical disposable-VM qualification does not provide a production trust
+root, production privileged attestor, or production deployment evidence.
+Status therefore stays
+`NOT_IMPLEMENTED`, `NOT_ATTESTED`, and `NOT_READY`.

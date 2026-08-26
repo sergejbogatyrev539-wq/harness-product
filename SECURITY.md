@@ -26,6 +26,12 @@ or production readiness. A control becomes an enforceable claim only after its
 non-bypassable implementation, negative tests, and retained same-profile evidence
 are available. Any material digest change invalidates dependent evidence.
 
+This includes development and review inputs that are part of the measured
+candidate. A retained bundle remains valid evidence about its exact historical
+candidate; it must never be relabelled as evidence for a later commit. A failed
+qualification is not permission to retry or patch: the user authorizes the
+action, and `AGENTS.md` controls the bounded diagnostic cadence.
+
 The detailed threat model and residual-risk requirements are normative in
 `spec/03_SYSTEM_THREAT_TRUST_MODEL.md`.
 
@@ -76,9 +82,8 @@ mismatched profile/control input returns a structured `STOP` without a partial
 profile. Host/runtime exceptions also become `STOP`.
 
 Preflight creates no namespaces, cgroups, sockets, worker, executor, or staging
-write. On the current host it stops before launch because the session lacks a
-dedicated cgroup-v2 subtree with delegated CPU and IO controllers. No fallback
-runtime is attempted.
+write. A host without a dedicated cgroup-v2 subtree with delegated CPU and IO
+controllers stops before launch. No fallback runtime is attempted.
 
 The same module has two separately callable, closed boundaries: exact
 `UNIX_SEQPACKET` ingress with peer-credential and canonical binding checks, and
@@ -103,12 +108,17 @@ The supervisor implementation repeats host measurement, requires the durable
 `shell=False`, releases an early start gate only after cgroup controls and PID
 placement, enforces external wall/CPU termination, kills the complete cgroup,
 and fails terminal uncertainty to quarantine without retry. These are code and
-unit-test properties, not current physical evidence.
+unit-test properties in the current tree. The exact disposable test-VM candidate
+at product commit `437ee01ca331cd7e4632fb8ad55eaa894254daa9` also produced
+retained physical test evidence. That evidence is historical after any later
+commit and is not a production trust root, deployment attestation, or readiness
+claim.
 
-`scripts/check_m3_l0.py` is a separate non-skipping gate. It currently exits
-nonzero with `ABSENT/CGROUP_DELEGATION_ABSENT`; the host lacks the exact delegated
-CPU/IO cgroup boundary. Production external trust roots, a privileged runtime
-attestor, same-profile attack evidence, restart cleanup proof, and an attested
-distinct worker/broker/executor topology are also absent. Consequently no
-runtime isolation, non-bypassability, supply attestation, or readiness claim is
-made.
+`scripts/check_m3_l0.py` is a separate non-skipping gate. Its no-argument host
+preflight exits nonzero with `ABSENT/CGROUP_DELEGATION_ABSENT` whenever the exact
+delegated CPU/IO cgroup boundary is unavailable. Production external trust
+roots, a production privileged runtime attestor, and production deployment
+evidence remain absent.
+Consequently the disposable-VM qualification does not establish production
+isolation, production non-bypassability, production supply attestation, or
+readiness.

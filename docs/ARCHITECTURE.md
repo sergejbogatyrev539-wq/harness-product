@@ -5,7 +5,7 @@ that a runtime exists.
 
 ## Implemented M1/M2 and M3 exact-profile code boundary
 
-The current implementation is one pure in-memory pipeline:
+The M1 portion of the current implementation is one pure in-memory pipeline:
 
 ```text
 closed raw data → NORMALIZED → CLASSIFIED → DERIVED → DECIDED
@@ -97,10 +97,16 @@ early gate, applies RLIMIT and external wall/CPU termination, kills the complete
 cgroup and terminally releases or quarantines the reservation. The implementation
 does not retry after any uncertain outcome.
 
-The current host result is a structured `STOP/CGROUP_DELEGATION_ABSENT`: the
-application cgroup is shared and lacks delegated CPU/IO controllers. The
-preflight consequently returns no partial compiled/measurement authority and
-does not fall back to Docker or a weaker profile.
+A host without a dedicated cgroup-v2 subtree and delegated CPU/IO controllers
+returns structured `STOP/CGROUP_DELEGATION_ABSENT`. Preflight returns no partial
+compiled/measurement authority and does not fall back to Docker or a weaker
+profile.
+
+The exact disposable test-VM candidate at product commit
+`437ee01ca331cd7e4632fb8ad55eaa894254daa9` completed its physical qualification
+and produced a retained signed bundle. This is exact historical test-profile
+evidence, not a reusable claim about later commits and not production
+attestation.
 
 The boundaries above implement the powerless proposal/claim/session/staging
 edges. The following physical principal topology remains unattested on this
@@ -162,12 +168,33 @@ filesystem/device flush and ordering behavior and is not proof of power-loss
 durability. The M3 compiler/preflight, supply, lifecycle and local staging tests
 prove closed planning, durable ordering, descriptor mediation, fail-closed error
 handling and the one disposable-root operation only. `scripts/check_m3_l0.py`
-is a separate non-skipping exact-profile gate and currently exits nonzero with
-`ABSENT/CGROUP_DELEGATION_ABSENT`. No worker has been successfully launched or
-attested under the exact profile; no production external trust root, privileged
-runtime attestor, same-profile attack evidence, or restart cleanup proof exists.
-Therefore the product remains `NOT_IMPLEMENTED`, `NOT_ATTESTED`, and
-`NOT_READY`; runtime enforcement and external evidence remain absent.
+is a separate non-skipping exact-profile gate. Its host preflight exits nonzero
+with `ABSENT/CGROUP_DELEGATION_ABSENT` when exact cgroup delegation is absent. A worker was qualified
+only in the exact disposable test VM bound to the historical commit named
+above. No production external trust root, production privileged runtime
+attestor, or current production evidence exists. Therefore the product remains
+`NOT_IMPLEMENTED`, `NOT_ATTESTED`, and `NOT_READY`.
+
+## Development control loop
+
+The implementation process is fail-closed. One micro-iteration changes one
+cohesive invariant and proves it with the smallest focused oracle. A module
+suite follows a coherent cluster; repository conformance follows a checkpoint;
+physical qualification follows only a stable candidate whose cheaper gates are
+green. Host-side evidence parsing is tested against retained or synthetic
+bundles before a VM is started.
+
+`.agent/WORKING_CONTEXT.json`, initialized from the tracked closed template, is
+ignored non-authorizing handoff state. After compaction, restart, or handoff,
+the root/controller agent rereads the complete `AGENTS.md` and that record before
+acting; process-blind reviewers do not. The live record is not part of a runtime
+candidate. No report, passing test, or roadmap transition starts another attempt
+or milestone without fresh user authority.
+
+No reviewed host VM entrypoint or append-only attempt ledger exists yet, so a
+new full VM cycle is forbidden. A future launcher must consume the exact
+candidate/environment/ceiling/user-scope tuple once before launch and reject
+replay across restart or handoff.
 
 ## Evidence and profiles
 

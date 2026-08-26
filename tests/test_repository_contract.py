@@ -16,6 +16,137 @@ SPEC = ROOT / "spec"
 
 
 class RepositoryContractTests(unittest.TestCase):
+    def _assert_work_context(self, context: object) -> None:
+        self.assertIs(type(context), dict)
+        self.assertEqual(
+            set(context),
+            {"meta", "task", "invariant", "oracle", "progress", "qualification", "continuation", "notes"},
+        )
+        meta = context["meta"]
+        self.assertEqual(
+            meta,
+            {
+                "format_version": "1.0.0",
+                "record_kind": "NON_AUTHORIZING_WORK_CONTEXT",
+                "authority": "NONE",
+                "owner": "ROOT_CONTROLLER",
+            },
+        )
+        task = context["task"]
+        self.assertEqual(
+            set(task),
+            {"task_id", "status", "user_scope_reference", "active_milestone", "last_product_commit"},
+        )
+        self.assertRegex(task["last_product_commit"], r"^[0-9a-f]{40}$")
+        self.assertIn(task["status"], {"IDLE", "ACTIVE", "BLOCKED", "READY_FOR_GATE"})
+
+        oracle = context["oracle"]
+        progress = context["progress"]
+        qualification = context["qualification"]
+        continuation = context["continuation"]
+        self.assertEqual(set(oracle), {"command", "expected"})
+        self.assertEqual(set(progress), {"working_set", "last_check", "cause", "diagnostic_attempts"})
+        self.assertEqual(set(qualification), {"candidate_environment_pair", "attempt_ledger", "vm_start"})
+        self.assertEqual(set(continuation), {"next_step_hint", "automatic_continuation"})
+        self.assertEqual(continuation["automatic_continuation"], "FORBIDDEN")
+        self.assertIn(
+            continuation["next_step_hint"],
+            {
+                "STOP_AWAIT_EXPLICIT_USER_GOAL",
+                "REVALIDATE_USER_SCOPE_BEFORE_NEXT_STEP",
+                "REPORT_BLOCKER_TO_USER",
+                "AWAIT_FROZEN_REVIEW_PACKET",
+            },
+        )
+
+        self.assertIs(type(progress["diagnostic_attempts"]), int)
+        self.assertGreaterEqual(progress["diagnostic_attempts"], 0)
+        self.assertLessEqual(progress["diagnostic_attempts"], 3)
+        if progress["diagnostic_attempts"] == 3:
+            self.assertEqual(task["status"], "BLOCKED")
+        self.assertIsInstance(progress["working_set"], list)
+        self.assertEqual(len(progress["working_set"]), len(set(progress["working_set"])))
+        for relative in progress["working_set"]:
+            self.assertIsInstance(relative, str)
+            self.assertFalse(Path(relative).is_absolute())
+            self.assertNotIn("..", Path(relative).parts)
+        if progress["last_check"] is not None:
+            self.assertEqual(set(progress["last_check"]), {"scope", "command", "result"})
+            self.assertIn(progress["last_check"]["scope"], {"FOCUSED", "MODULE", "REPOSITORY", "HOST", "VM"})
+            self.assertIn(progress["last_check"]["result"], {"PASS", "EXPECTED_NONZERO", "FAIL"})
+            self.assertIsInstance(progress["last_check"]["command"], str)
+            self.assertTrue(progress["last_check"]["command"])
+
+        pair = qualification["candidate_environment_pair"]
+        self.assertIn(qualification["attempt_ledger"], {"ABSENT", "PRESENT"})
+        if qualification["attempt_ledger"] == "ABSENT":
+            self.assertIsNone(pair)
+            self.assertEqual(qualification["vm_start"], "FORBIDDEN_WITHOUT_REVIEWED_HOST_ENTRYPOINT")
+        else:
+            self.assertEqual(set(pair), {"candidate_digest", "environment_digest"})
+            self.assertRegex(pair["candidate_digest"], r"^sha256:[0-9a-f]{64}$")
+            self.assertRegex(pair["environment_digest"], r"^sha256:[0-9a-f]{64}$")
+            self.assertIn(qualification["vm_start"], {"NOT_CONSUMED", "CONSUMED"})
+
+        self.assertIsInstance(context["notes"], list)
+        self.assertTrue(all(isinstance(note, str) and note for note in context["notes"]))
+        if task["status"] == "IDLE":
+            self.assertIsNone(task["task_id"])
+            self.assertIsNone(task["user_scope_reference"])
+            self.assertIsNone(task["active_milestone"])
+            self.assertIsNone(context["invariant"])
+            self.assertEqual(oracle, {"command": None, "expected": None})
+            self.assertEqual(continuation["next_step_hint"], "STOP_AWAIT_EXPLICIT_USER_GOAL")
+        else:
+            self.assertRegex(task["task_id"], r"^[a-z0-9][a-z0-9._-]{0,63}$")
+            self.assertIsInstance(task["user_scope_reference"], str)
+            self.assertTrue(task["user_scope_reference"])
+            self.assertIsInstance(task["active_milestone"], str)
+            self.assertTrue(task["active_milestone"])
+            self.assertIsInstance(context["invariant"], str)
+            self.assertTrue(context["invariant"])
+            self.assertIsInstance(oracle["command"], str)
+            self.assertTrue(oracle["command"])
+            self.assertIsInstance(oracle["expected"], str)
+            self.assertTrue(oracle["expected"])
+            self.assertTrue(progress["working_set"])
+
+    def test_agent_workflow_is_closed_non_authorizing_and_compaction_safe(self) -> None:
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        normalized_agents = " ".join(agents.split())
+        template_path = ROOT / "WORKING_CONTEXT.template.json"
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+
+        required_rules = (
+            "Read this entire file from first line to last.",
+            "Repeat all four steps immediately after context compaction",
+            "automatic_continuation` is always `FORBIDDEN`",
+            "Do not run it after every small edit.",
+            "Do not rerun an unchanged failed command without a new hypothesis.",
+            "There is no reviewed host VM launcher or append-only attempt ledger",
+            "A future reviewed host entrypoint must atomically consume one append-only attempt record",
+            "A success target never enlarges an attempt ceiling.",
+            "Do not start the next milestone or a new review cycle.",
+            "a formally process-blind reviewer reads only its frozen review packet",
+        )
+        for rule in required_rules:
+            self.assertIn(rule, normalized_agents)
+
+        self.assertEqual(len(template_path.read_text(encoding="utf-8").splitlines()), 10)
+        self._assert_work_context(template)
+        self.assertIn(".agent/", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
+        live_path = ROOT / ".agent" / "WORKING_CONTEXT.json"
+        if live_path.exists():
+            self._assert_work_context(json.loads(live_path.read_text(encoding="utf-8")))
+
+        for hint in ("COMPLETE_AUTHORIZED_COMMIT", "RUN_FULL_VM", "START_M4", "PATCH", "FREEZE", "REVIEW"):
+            mutated = json.loads(json.dumps(template))
+            mutated["continuation"]["next_step_hint"] = hint
+            with self.subTest(hint=hint), self.assertRaises(AssertionError):
+                self._assert_work_context(mutated)
+
+        self.assertLessEqual(len(agents.splitlines()), 180)
+
     def test_required_spec_groups_are_present(self) -> None:
         documents = {
             "03_SYSTEM_THREAT_TRUST_MODEL.md",
