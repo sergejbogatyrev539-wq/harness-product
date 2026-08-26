@@ -429,7 +429,15 @@ class M4DurableLifecycleTests(unittest.TestCase):
             "missing": lambda value: value.pop("external_branch"),
             "external": lambda value: value.update(operation_kind="ENDPOINT", external_branch="ALLOW"),
             "stale": lambda value: value.update(expires_at="2026-08-25T12:00:00Z"),
-            "lineage": lambda value: value.update(lineage_root=m2._digest("9")),
+            "T-Q44-CONTRACT-SUBSTITUTION": lambda value: value.update(
+                lineage_root=m2._digest("9")
+            ),
+            "T-Q50-BUDGET-SCOPE-IDENTITY-SUBSTITUTION": lambda value: value[
+                "budget_vector"
+            ][0].update(scope_digest=m2._digest("8")),
+            "T-Q50-BUDGET-LINEAGE-IDENTITY-SUBSTITUTION": lambda value: value[
+                "budget_vector"
+            ][0].update(lineage_root=m2._digest("9")),
         }
         for name, mutate in contract_cases.items():
             with self.subTest(contract=name):
@@ -491,6 +499,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 )
 
     def test_same_object_writer_observer_and_typed_chain_mutations_are_denied(self) -> None:
+        """T-Q49-COMMIT-TYPED-EVIDENCE-FORGE and T-Q49-JOIN-TYPED-EVIDENCE-FORGE."""
         chain = self.chain()
         stage = self.advance(chain, "STAGED")
         self.assertTrue(stage.committed)
@@ -589,7 +598,26 @@ class M4DurableLifecycleTests(unittest.TestCase):
             (1,),
         )
 
+    def test_joined_uncertainty_reconciles_without_a_second_budget_terminal(self) -> None:
+        chain = self.advance_through("JOINED")
+        spent = self.row("SELECT remaining, reserved, spent FROM budgets")
+        reconciled = self.advance(chain, "RECONCILING")
+        self.assertEqual(
+            (reconciled.outcome, reconciled.m4_state),
+            (DurableOutcome.COMMITTED, "RECONCILING"),
+        )
+        self.assertEqual(self.row("SELECT remaining, reserved, spent FROM budgets"), spent)
+        self.assertEqual(
+            self.row("SELECT COUNT(*) FROM journal_entries WHERE event_type='BUDGET_TERMINAL_SPENT'"),
+            (1,),
+        )
+        recovered = chain["store"].recover().m4_recovery[0]
+        self.assertEqual(recovered.state, "RECONCILING")
+        self.assertFalse(recovered.resume_allowed)
+        self.assertFalse(recovered.retry_allowed)
+
     def test_four_part_budget_identity_is_immutable_in_every_transition(self) -> None:
+        """T-Q50-BUDGET-FOUR-PART-KEY-PRESERVED across every M4 record."""
         self.advance_through("JOINED")
         expected = [("writes", "FILES", m2.SCOPE, m2.LINEAGE, 1)]
         with sqlite3.connect(self.path) as connection:

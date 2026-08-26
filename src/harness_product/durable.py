@@ -101,6 +101,7 @@ _M4_NEXT = {
     "SEALED": frozenset({"POSTCHECKED", "DISCARDED", "QUARANTINED"}),
     "POSTCHECKED": frozenset({"COMMITTED", "DISCARDED", "QUARANTINED"}),
     "COMMITTED": frozenset({"JOINED", "RECONCILING"}),
+    "JOINED": frozenset({"RECONCILING"}),
     "QUARANTINED": frozenset({"RECONCILING"}),
 }
 _M4_TERMINAL = frozenset({"JOINED", "DISCARDED", "RECONCILING"})
@@ -617,6 +618,8 @@ class DurableResult:
     d2_frontier_digest: str | None = None
     record_digest: str | None = None
     m4_state: str | None = None
+    m4_iteration: int | None = None
+    frontier_record_digest: str | None = None
     m4_recovery: tuple[M4Recovery, ...] = ()
 
     @property
@@ -4446,6 +4449,8 @@ class DurableStore:
                 contract_digest=capability["contract_digest"],
                 d2_frontier_digest=raw["d2_frontier_digest"],
                 m4_state="DISPATCHED",
+                m4_iteration=frontier["iteration"],
+                frontier_record_digest=frontier["frontier_record_digest"],
             )
         except _StoreCorrupt:
             if connection is not None:
@@ -4672,6 +4677,7 @@ class DurableStore:
             frontier_row, frontier = loaded_frontier
             expected_intent_state = {
                 "COMMITTED": "SPENT",
+                "JOINED": "SPENT",
                 "QUARANTINED": "QUARANTINED_ESCROW",
             }.get(transaction["state"], "PENDING")
             if (

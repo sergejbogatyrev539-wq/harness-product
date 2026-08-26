@@ -9,7 +9,7 @@ workers can propose bounded work but cannot bypass the control path.
 `specification=SPECIFIED; implementation=NOT_IMPLEMENTED; runtime_attestation=NOT_ATTESTED; overall=NOT_READY`.
 The copied `spec/` corpus is normative; it is not a runnable security product.
 Here `NOT_IMPLEMENTED` means that no complete current non-bypassable deployment
-implements the full specification; it does not mean that M1-M3 source modules
+implements the full specification; it does not mean that M1-M4 source modules
 are absent.
 
 ## Start here
@@ -53,8 +53,8 @@ or perform an effect. The returned digest is a deterministic binding, not a
 signature or attestation.
 
 M2 adds one direct, non-root-exported `harness_product.durable` stdlib SQLite
-store. Its format version remains 1 and its M3-extended schema is v3 (with
-audited atomic migrations from exact v1 through v2). It uses `STRICT` tables,
+store. Its format version remains 1 and its M4-extended schema is v4 (with
+audited atomic migrations from exact v1 through v3). It uses `STRICT` tables,
 foreign keys, `BEGIN IMMEDIATE`,
 rollback-journal (`DELETE`) mode, and `synchronous=FULL`. Issue reruns the exact
 M1 decision and stores the complete canonical M1 inputs/bindings and complete
@@ -67,7 +67,7 @@ The M3 extension can atomically claim one already committed intent after
 rechecking its complete stored capability/verifier bindings, expiry, revocation
 epoch, and fence through a second external-verifier boundary. The claim and its
 mandatory event/outbox record persist before an executor can receive an
-envelope; reopen exposes only `ATTEMPT_CLAIMED`, never an automatic retry. A v3
+envelope; reopen exposes only `ATTEMPT_CLAIMED`, never an automatic retry. An M3
 transition can then durably record the exact prospective runtime object
 inventory as `PREPARED` before untrusted exec and terminally record `STOPPED`,
 `TIMED_OUT`, or `QUARANTINED`. Only independently verified no-effect cleanup can
@@ -123,6 +123,26 @@ effect API can replace one already-existing file beneath a pre-opened 0700
 disposable staging root only after an exact M2 claim, external claim-verifier
 recheck, M1 selector/material match, and immutable descriptor/root/mount/epoch/
 object match. Unknown post-write outcome is quarantined and never retried.
+
+M4 adds one direct, non-root-exported `harness_product.m4` coordinator for that
+same local stageable-file profile. It reuses M1 admission, M2 claim/frontier
+state, and M3 `stage_committed_intent`; external and non-stageable requests are
+deny-only. The v4 durable schema stores the active contract, complete D2
+frontier, and fenced canonical records for `STAGED → QUIESCED → SEALED →
+POSTCHECKED → COMMITTED → JOINED`, plus discard/quarantine/reconciliation.
+Budget escrow becomes `SPENT` only at verified commit, and recovery never
+resumes or retries an incomplete M4 transaction.
+
+Before sealing, the coordinator re-resolves the canonical path through its
+trusted root and acquires a Linux `F_RDLCK` lease on the exact read-only staged
+inode. The lease has no weaker fallback and remains checked through JOIN;
+existing writers, a break request, lease loss, unsupported filesystems, or
+identity mismatch quarantine the transaction. The immutable snapshot is a
+real sealed memfd with `F_SEAL_GROW|F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_WRITE`.
+A distinct observer process/session receives only a read-only view of that
+sealed snapshot and independently checks identity, bytes, seals, and kernel
+write/truncate denial before commit. This is current code and local regression
+evidence, not a new physical-runtime qualification or production attestation.
 
 Run the non-skipping exact-profile availability gate separately:
 

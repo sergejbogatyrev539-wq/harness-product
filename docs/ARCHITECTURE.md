@@ -3,7 +3,7 @@
 This document describes the intended implementation boundary. It does not attest
 that a runtime exists.
 
-## Implemented M1/M2 and M3 exact-profile code boundary
+## Implemented M1-M4 exact-profile code boundary
 
 The M1 portion of the current implementation is one pure in-memory pipeline:
 
@@ -28,8 +28,8 @@ shell adapter in M1. Trusted facts are model inputs; M1 does not attest their
 provenance. Decision digests are deterministic bindings, not signatures.
 
 M2 is one direct `harness_product.durable` stdlib SQLite module, deliberately
-outside the package-root API. Format version 1/schema version 3 (with exact
-audited v1-to-v2-to-v3 migrations) uses `STRICT` tables and foreign keys;
+outside the package-root API. Format version 1/schema version 4 (with exact
+audited v1-to-v2-to-v3-to-v4 migrations) uses `STRICT` tables and foreign keys;
 each competing mutation uses `BEGIN IMMEDIATE`, rollback-journal (`DELETE`) mode,
 and `synchronous=FULL`. Capability issue reruns M1 and stores its full canonical
 inputs, exact bindings, canonical decision digest, and full verifier record.
@@ -108,6 +108,26 @@ and produced a retained signed bundle. This is exact historical test-profile
 evidence, not a reusable claim about later commits and not production
 attestation.
 
+M4 keeps the same deep-module shape. `harness_product.m4` is one direct
+Controller/PEP coordinator which reruns M1 admission, uses only an existing M2
+dispatch claim plus trusted active-contract/D2 state, and invokes the existing
+M3 stage operation. Schema v4 stores fenced, verified records for `STAGED`,
+`QUIESCED`, `SEALED`, `POSTCHECKED`, `COMMITTED`, `JOINED`, `DISCARDED`,
+`QUARANTINED`, and `RECONCILING`. Every record preserves the exact four-part
+budget key; only COMMITTED spends escrow, while uncertainty and recovery never
+resume or retry.
+
+The exact staged inode is rechecked by descriptor and canonical path before the
+root descriptor is revoked. The controller then holds a Linux read lease with
+no fallback and rechecks its break flag, lease state, owner, device/inode,
+mount, and content through JOIN. It copies that inode into a memfd and applies
+all four immutable seals. A distinct observer process/session sees only a
+read-only sealed-snapshot descriptor and independently checks its identity,
+digest, seal mask, and kernel write/truncate denial. Existing writers, new
+writer races, lease loss, unsupported filesystems, path/inode substitution,
+crashes, or record mutations prohibit JOIN and preserve quarantine/no-retry
+semantics. The external branch remains explicitly disabled.
+
 The boundaries above implement the powerless proposal/claim/session/staging
 edges. The following physical principal topology remains unattested on this
 host; a compiled role record is not proof that the processes were separated.
@@ -124,6 +144,8 @@ requires the non-skipping conformance environment.
 | `ATK-002`, `ATK-020`, `ATK-021`, `ATK-034` | `test_l0.py` and `test_l0_lifecycle.py` closed network/FD/secret/IPC/process plans | UNIT; syscall/TCB attack evidence ABSENT |
 | `ATK-007`, `ATK-010`, `ATK-022` | exact Q-56 compiler rows, lifecycle cgroup/RLIMIT/watchdog plan, durable budget conservation | UNIT; physical limit receipts ABSENT |
 | `ATK-011`, `ATK-012`, `ATK-026` | no checkout/`.git`/home/staging visibility, disposable-root stage tests, durable cleanup/quarantine state | UNIT; cross-session cleanup proof ABSENT |
+| `T-Q40-*`, `T-Q44-*`, `T-Q49-*`, `T-Q50-*` | `test_m4_durable.py` complete D2, contract/lineage, typed evidence and four-part budget mutation matrices | UNIT; production external anchor ABSENT |
+| `T-Q45-STAGEABLE-CRASH-QUARANTINES`, `T-Q48-POLICY-SCOPE-KIND-CROSS-MATRIX` | `test_m4.py` process/fault recovery, no-retry escrow, endpoint deny and exact inode lease races | UNIT; current physical M4 qualification ABSENT |
 
 ```text
 untrusted worker ── powerless proposal ──> Controller / PEP
@@ -160,9 +182,9 @@ cannot be proved are quarantined rather than retried. Recovery preserves durable
 lineage, fences stale processes, and requires fresh admission where specified.
 
 M1 remains pure and returns only powerless proposals. The durable store persists
-intent and one-attempt claims, not effects: it supplies no executor, connector, gateway, effect
-adapter, external cryptography/trust root/attestation, OS enforcement, or
-non-bypassable path. The local hash chain cannot detect a coherent whole-database
+intent, one-attempt claims, and M4 lifecycle records; it supplies no connector,
+gateway, external cryptography/trust root/attestation, production executor, or
+non-bypassable deployment. The local hash chain cannot detect a coherent whole-database
 rollback without an independent external anchor. `synchronous=FULL` depends on
 filesystem/device flush and ordering behavior and is not proof of power-loss
 durability. The M3 compiler/preflight, supply, lifecycle and local staging tests

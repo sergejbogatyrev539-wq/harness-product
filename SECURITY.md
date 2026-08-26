@@ -38,8 +38,8 @@ The detailed threat model and residual-risk requirements are normative in
 ## Implemented M2 durable-intent boundary
 
 `harness_product.durable` is a direct stdlib SQLite store, not an executor or
-effect route. Format version 1/schema version 3, including exact audited
-v1-to-v2-to-v3 migrations, uses `STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
+effect route. Format version 1/schema version 4, including exact audited
+v1-to-v2-to-v3-to-v4 migrations, uses `STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
 rollback-journal (`DELETE`) mode, and `synchronous=FULL`. At issue and consume
 it reruns/rechecks the exact M1 result, full canonical bindings, and full
 verifier record. Its one durable consume transaction records capability use,
@@ -122,3 +122,36 @@ evidence remain absent.
 Consequently the disposable-VM qualification does not establish production
 isolation, production non-bypassability, production supply attestation, or
 readiness.
+
+## M4 exact local stage/seal boundary
+
+`harness_product.m4` is one direct Controller/PEP coordinator for the existing
+local stageable-file profile. It cannot dispatch from a bare decision or
+caller digest: it reruns M1 admission, rechecks the committed M2 claim/current
+fence, consumes the trusted active contract and complete D2 frontier, then uses
+the existing M3 staging API. ENDPOINT and other non-stageable work is rejected
+before M4 dispatch; no connector, external receipt, compensation, or retry path
+exists.
+
+Quiescence is fail-closed Linux inode enforcement. The controller re-resolves
+the canonical path while the trusted root is still open, then holds and checks
+an `F_RDLCK` lease on the exact read-only staged inode until JOIN. Existing or
+new writers, a lease-break request, forced lease loss, unsupported filesystem,
+or device/inode/mount/content mismatch prevents COMMIT/JOIN and leaves escrow
+quarantined. A file lease protects that exact inode, not arbitrary directory
+names; after root revocation, all authoritative records follow the bound inode
+into the sealed snapshot rather than reinterpreting a path string.
+
+The snapshot is a memfd carrying all four Linux write/grow/shrink/seal locks.
+The postcheck runs in a distinct process/session with only a read-only snapshot
+descriptor and verifies the same device, inode, size, digest and seal mask plus
+kernel denial of writes and truncation. Durable typed records are externally
+verified at each transition. A missing, stale, substituted, or unverifiable
+contract/frontier/object/seal/postcheck/observer/fence record is a denial.
+Unknown state after staging is `QUARANTINED_ESCROW`; a crash does not authorize
+resume, retry, a second commit, or a second JOIN.
+
+These are local code and regression properties for the current tree. They do
+not requalify the historical M3 VM candidate, establish a production observer
+principal/trust root, prove whole-database rollback resistance, or make the
+product implemented, attested, or ready.
