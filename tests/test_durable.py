@@ -546,6 +546,10 @@ class DurableStoreIssueTests(unittest.TestCase):
                     "dispatch_intents",
                     "dispatch_attempt_claims",
                     "execution_sessions",
+                    "active_contracts",
+                    "d2_frontiers",
+                    "m4_transactions",
+                    "m4_transition_records",
                     "budget_reservations",
                     "journal_entries",
                     "outbox_events",
@@ -561,7 +565,7 @@ class DurableStoreIssueTests(unittest.TestCase):
             self.assertTrue(strict)
             self.assertTrue(all(strict.values()))
             version = connection.execute("SELECT schema_version FROM store_meta").fetchone()
-            self.assertEqual(version, (3,))
+            self.assertEqual(version, (4,))
 
         reopened = self.store()
         self.assert_result(reopened.health(), committed=False)
@@ -1732,6 +1736,13 @@ class DurableClaimDispatchTests(unittest.TestCase):
                 original = self.store(executor=ExactVerifier())
                 self.prepared(original)
                 with sqlite3.connect(self.db_path) as connection:
+                    for table in (
+                        "m4_transition_records",
+                        "m4_transactions",
+                        "d2_frontiers",
+                        "active_contracts",
+                    ):
+                        connection.execute(f"DROP TABLE {table}")
                     connection.execute("DROP TABLE execution_sessions")
                     connection.execute("DROP TABLE dispatch_attempt_claims")
                     connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v2")
@@ -1765,10 +1776,10 @@ class DurableClaimDispatchTests(unittest.TestCase):
                     self.assertEqual(reopened.health().reason, DurableReason.READY)
                     self.assertEqual(reopened.recover().recovery_intents[0].state, "PENDING")
                     with sqlite3.connect(self.db_path) as connection:
-                        self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (3,))
+                        self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (4,))
                         self.assertEqual(
                             connection.execute("SELECT schema_version FROM store_meta").fetchone(),
-                            (3,),
+                            (4,),
                         )
 
 

@@ -41,7 +41,7 @@ from .model import (
 
 
 FORMAT_VERSION = 1
-STORE_SCHEMA_VERSION = 3
+STORE_SCHEMA_VERSION = 4
 _APPLICATION_ID = 0x48524E53
 _MAX_INTEGER = (1 << 63) - 1
 _MAX_VECTOR = 256
@@ -49,7 +49,7 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _BUDGET_NAME = re.compile(r"^[a-z][a-z0-9._/-]{0,127}$")
 _UTC_TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
-_TABLES = frozenset(
+_TABLES_V3 = frozenset(
     {
         "budget_reservations",
         "budgets",
@@ -60,6 +60,242 @@ _TABLES = frozenset(
         "journal_entries",
         "outbox_events",
         "store_meta",
+    }
+)
+_TABLES = _TABLES_V3 | frozenset(
+    {"active_contracts", "d2_frontiers", "m4_transactions", "m4_transition_records"}
+)
+_D2_CLASSES = (
+    "PLAN",
+    "PROMPT",
+    "CONTEXT",
+    "CANDIDATE",
+    "REUSABLE_BRANCH",
+    "TOOL_BINDING",
+    "CAPABILITY",
+    "BUDGET_RESERVATION",
+    "LOCK",
+    "TARGET_BINDING",
+    "DISPATCH_INTENT",
+    "EXTERNAL_AUTHORIZATION",
+    "STAGED_OUTPUT",
+    "PERSISTED_STATE",
+    "CONTROLLER_TOKEN",
+)
+_M4_STATES = (
+    "DISPATCHED",
+    "STAGED",
+    "QUIESCED",
+    "SEALED",
+    "POSTCHECKED",
+    "COMMITTED",
+    "JOINED",
+    "DISCARDED",
+    "QUARANTINED",
+    "RECONCILING",
+)
+_M4_NEXT = {
+    "DISPATCHED": frozenset({"STAGED", "QUARANTINED"}),
+    "STAGED": frozenset({"QUIESCED", "QUARANTINED"}),
+    "QUIESCED": frozenset({"SEALED", "QUARANTINED"}),
+    "SEALED": frozenset({"POSTCHECKED", "DISCARDED", "QUARANTINED"}),
+    "POSTCHECKED": frozenset({"COMMITTED", "DISCARDED", "QUARANTINED"}),
+    "COMMITTED": frozenset({"JOINED", "RECONCILING"}),
+    "QUARANTINED": frozenset({"RECONCILING"}),
+}
+_M4_TERMINAL = frozenset({"JOINED", "DISCARDED", "RECONCILING"})
+_M4_VERIFICATION_SOURCE_KEYS = frozenset({"verifier_id", "issuer_id", "key_id", "proof"})
+_ACTIVE_CONTRACT_KEYS = frozenset(
+    {
+        "contract_version",
+        "authority_domain_id",
+        "journal_lineage_id",
+        "root_contract_digest",
+        "parent_contract_digest",
+        "contract_digest",
+        "lineage_root",
+        "authority_digest",
+        "profile_digest",
+        "operation_kind",
+        "external_branch",
+        "max_iterations",
+        "joined_iteration",
+        "postcheck_required",
+        "independent_observer_required",
+        "budget_vector",
+        "issued_at",
+        "expires_at",
+        "revocation_epoch",
+        "fencing_epoch",
+    }
+)
+_D2_ARTIFACT_KEYS = frozenset({"artifact_id", "artifact_digest", "iteration"})
+_D2_FRONTIER_KEYS = frozenset(
+    {
+        "frontier_version",
+        "contract_digest",
+        "contract_version",
+        "authority_domain_id",
+        "journal_lineage_id",
+        "root_contract_digest",
+        "parent_contract_digest",
+        "journal_sequence",
+        "joined_iteration",
+        "iteration",
+        "fencing_epoch",
+        "issued_at",
+        "expires_at",
+        "inventory",
+        "frontier_record_digest",
+    }
+)
+_PATH_BINDING_KEYS = frozenset(
+    {
+        "canonical_path",
+        "descriptor_id",
+        "root_id",
+        "root_identity",
+        "mount_id",
+        "mount_identity",
+        "resolution_epoch",
+        "final_device",
+        "final_inode",
+        "final_type",
+        "final_digest",
+        "composite_binding_digest",
+    }
+)
+_STAGE_RECORD_KEYS = frozenset(
+    {
+        "transaction_id",
+        "claim_digest",
+        "binding_digest",
+        "before_digest",
+        "after_digest",
+        "bytes_written",
+        "record_digest",
+    }
+)
+_M4_EVIDENCE_KEYS = {
+    "STAGED": frozenset(
+        {"evidence_version", "stage_record", "source_object_binding", "staged_object_binding"}
+    ),
+    "QUIESCED": frozenset(
+        {
+            "evidence_version",
+            "process_tree_id",
+            "session_id",
+            "writer_fencing_epoch",
+            "revoked_writer_fds",
+            "remaining_writer_fds",
+            "writer_leases_revoked",
+            "process_tree_quiesced",
+            "evidence_digest",
+        }
+    ),
+    "SEALED": frozenset(
+        {
+            "evidence_version",
+            "seal_type",
+            "source_object_binding",
+            "snapshot_id",
+            "snapshot_device",
+            "snapshot_inode",
+            "snapshot_size",
+            "snapshot_digest",
+            "kernel_seals",
+            "sealer_principal",
+            "sealer_session",
+            "evidence_digest",
+        }
+    ),
+    "POSTCHECKED": frozenset(
+        {
+            "evidence_version",
+            "seal_record_digest",
+            "snapshot_id",
+            "snapshot_device",
+            "snapshot_inode",
+            "snapshot_size",
+            "snapshot_digest",
+            "observer_principal",
+            "observer_session",
+            "observer_uid",
+            "observer_gid",
+            "observer_writer_fds",
+            "outcome",
+            "postcheck_digest",
+            "evidence_digest",
+        }
+    ),
+    "COMMITTED": frozenset(
+        {
+            "evidence_version",
+            "seal_record_digest",
+            "postcheck_record_digest",
+            "snapshot_id",
+            "snapshot_device",
+            "snapshot_inode",
+            "snapshot_size",
+            "snapshot_digest",
+            "object_binding",
+            "committer_principal",
+            "committer_session",
+            "evidence_digest",
+        }
+    ),
+    "JOINED": frozenset(
+        {
+            "evidence_version",
+            "commit_record_digest",
+            "joined_iteration",
+            "frontier_record_digest",
+            "controller_principal",
+            "controller_session",
+            "evidence_digest",
+        }
+    ),
+    "DISCARDED": frozenset(
+        {"evidence_version", "seal_record_digest", "disposition", "evidence_digest"}
+    ),
+    "QUARANTINED": frozenset(
+        {"evidence_version", "uncertainty", "evidence_digest"}
+    ),
+    "RECONCILING": frozenset(
+        {"evidence_version", "quarantine_record_digest", "evidence_digest"}
+    ),
+}
+_M4_RECORD_KEYS = frozenset(
+    {
+        "record_version",
+        "record_type",
+        "state",
+        "transaction_id",
+        "transition_index",
+        "contract_digest",
+        "d2_frontier_digest",
+        "iteration",
+        "capability_id",
+        "claim_digest",
+        "intent_digest",
+        "decision_digest",
+        "authorized_envelope_digest",
+        "lineage_root",
+        "object_binding_digest",
+        "budget_vector",
+        "budget_vector_digest",
+        "revocation_epoch",
+        "fencing_epoch",
+        "previous_record_digest",
+        "observed_at",
+        "contract",
+        "frontier",
+        "capability",
+        "capability_verification",
+        "claim",
+        "claim_verification",
+        "intent",
+        "evidence",
     }
 )
 _CAPABILITY_PAYLOAD_KEYS = frozenset(
@@ -188,6 +424,18 @@ class DurableReason(str, Enum):
     RUNTIME_SESSION_STOPPED = "RUNTIME_SESSION_STOPPED"
     RUNTIME_SESSION_TIMED_OUT = "RUNTIME_SESSION_TIMED_OUT"
     RUNTIME_SESSION_QUARANTINED = "RUNTIME_SESSION_QUARANTINED"
+    ACTIVE_CONTRACT_BOUND = "ACTIVE_CONTRACT_BOUND"
+    D2_FRONTIER_BOUND = "D2_FRONTIER_BOUND"
+    M4_DISPATCH_BOUND = "M4_DISPATCH_BOUND"
+    M4_STAGED = "M4_STAGED"
+    M4_QUIESCED = "M4_QUIESCED"
+    M4_SEALED = "M4_SEALED"
+    M4_POSTCHECKED = "M4_POSTCHECKED"
+    M4_COMMITTED = "M4_COMMITTED"
+    M4_JOINED = "M4_JOINED"
+    M4_DISCARDED = "M4_DISCARDED"
+    M4_QUARANTINED = "M4_QUARANTINED"
+    M4_RECONCILING = "M4_RECONCILING"
     REVOKED = "REVOKED"
     FENCE_ADVANCED = "FENCE_ADVANCED"
     SPENT = "SPENT"
@@ -217,6 +465,11 @@ class DurableReason(str, Enum):
     ACKNOWLEDGEMENT_UNKNOWN = "ACKNOWLEDGEMENT_UNKNOWN"
     EXECUTOR_VERIFIER_ABSENT = "EXECUTOR_VERIFIER_ABSENT"
     RUNTIME_VERIFIER_ABSENT = "RUNTIME_VERIFIER_ABSENT"
+    M4_VERIFIER_ABSENT = "M4_VERIFIER_ABSENT"
+    CONTRACT_BINDING_MISMATCH = "CONTRACT_BINDING_MISMATCH"
+    D2_INVENTORY_INVALID = "D2_INVENTORY_INVALID"
+    M4_EVIDENCE_INVALID = "M4_EVIDENCE_INVALID"
+    OBJECT_BINDING_MISMATCH = "OBJECT_BINDING_MISMATCH"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -253,6 +506,17 @@ class ExecutorClaimVerifier(Protocol):
 
 class RuntimeSessionVerifier(Protocol):
     """External verifier boundary for an exact pre-exec runtime placement."""
+
+    def verify(
+        self,
+        payload: bytes,
+        record: bytes,
+        observed_at: str,
+    ) -> VerificationResult: ...
+
+
+class M4Verifier(Protocol):
+    """Shared external verifier boundary for contract, D2 and M4 records."""
 
     def verify(
         self,
@@ -328,6 +592,17 @@ class RecoverySession:
 
 
 @dataclass(frozen=True, slots=True)
+class M4Recovery:
+    transaction_id: str
+    state: str
+    contract_digest: str
+    d2_frontier_digest: str
+    fencing_epoch: int
+    resume_allowed: bool = False
+    retry_allowed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class DurableResult:
     outcome: DurableOutcome
     reason: DurableReason
@@ -338,6 +613,11 @@ class DurableResult:
     dispatch_claim: DispatchClaim | None = None
     runtime_session: RuntimeSession | None = None
     recovery_sessions: tuple[RecoverySession, ...] = ()
+    contract_digest: str | None = None
+    d2_frontier_digest: str | None = None
+    record_digest: str | None = None
+    m4_state: str | None = None
+    m4_recovery: tuple[M4Recovery, ...] = ()
 
     @property
     def committed(self) -> bool:
@@ -847,7 +1127,337 @@ def _parse_budget_vector(
     return ordered
 
 
-_SCHEMA = (
+def _valid_verification_source(value: object) -> bool:
+    return (
+        _closed_dict(value, _M4_VERIFICATION_SOURCE_KEYS)
+        and all(_valid_identifier(value[field]) for field in ("verifier_id", "issuer_id", "key_id"))
+        and _valid_proof(value["proof"])
+    )
+
+
+def _verification_for(
+    payload: dict[str, object], source: dict[str, object]
+) -> tuple[str, str, dict[str, object], str, str]:
+    payload_text = _canonical_text(payload)
+    payload_digest = canonical_digest(payload)
+    verification = {
+        "verification_version": FORMAT_VERSION,
+        "verifier_id": source["verifier_id"],
+        "issuer_id": source["issuer_id"],
+        "key_id": source["key_id"],
+        "payload_digest": payload_digest,
+        "bindings": payload,
+        "proof": source["proof"],
+    }
+    verification_text = _canonical_text(verification)
+    return (
+        payload_text,
+        payload_digest,
+        verification,
+        verification_text,
+        canonical_digest(verification),
+    )
+
+
+def _parse_active_contract(raw: object, observed_at: str) -> tuple[dict[str, object], tuple[_BudgetRow, ...]]:
+    if not _closed_dict(raw, _ACTIVE_CONTRACT_KEYS):
+        raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+    if raw["contract_version"] != "1.0.0":
+        raise _Rejected(DurableOutcome.STOP, DurableReason.UNKNOWN_INPUT)
+    if not all(
+        _valid_identifier(raw[field])
+        for field in ("authority_domain_id", "journal_lineage_id")
+    ):
+        raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+    if not all(
+        _valid_digest(raw[field])
+        for field in (
+            "root_contract_digest",
+            "contract_digest",
+            "lineage_root",
+            "authority_digest",
+            "profile_digest",
+        )
+    ):
+        raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+    if raw["parent_contract_digest"] is not None and not _valid_digest(raw["parent_contract_digest"]):
+        raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+    if raw["operation_kind"] != "STAGEABLE_FILESYSTEM" or raw["external_branch"] != "DENY":
+        raise _Rejected(DurableOutcome.DENY, DurableReason.CONTRACT_BINDING_MISMATCH)
+    if raw["postcheck_required"] is not True or raw["independent_observer_required"] is not True:
+        raise _Rejected(DurableOutcome.DENY, DurableReason.CONTRACT_BINDING_MISMATCH)
+    if (
+        not _bounded_integer(raw["max_iterations"], 1)
+        or raw["joined_iteration"] != 0
+    ):
+        raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+    issued = _parse_time(raw["issued_at"])
+    expires = _parse_time(raw["expires_at"])
+    observed = _parse_time(observed_at)
+    if issued is None or expires is None or observed is None:
+        raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+    if not (issued <= observed < expires):
+        raise _Rejected(DurableOutcome.DENY, DurableReason.EXPIRED)
+    if not _bounded_integer(raw["revocation_epoch"]) or not _bounded_integer(raw["fencing_epoch"]):
+        raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+    budgets = _parse_budget_vector(
+        raw["budget_vector"], amount_name="limit", expected_lineage=raw["lineage_root"]
+    )
+    if raw["budget_vector"] != [row.data("limit") for row in budgets]:
+        raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+    body = {key: raw[key] for key in raw if key != "contract_digest"}
+    if canonical_digest(body) != raw["contract_digest"]:
+        raise _Rejected(DurableOutcome.DENY, DurableReason.CONTRACT_BINDING_MISMATCH)
+    return raw, budgets
+
+
+def _valid_path_binding(value: object) -> bool:
+    if not _closed_dict(value, _PATH_BINDING_KEYS):
+        return False
+    path = value["canonical_path"]
+    if (
+        type(path) is not str
+        or not path.startswith("/")
+        or path == "/"
+        or "\x00" in path
+        or "\\" in path
+        or "//" in path
+        or any(part in {"", ".", ".."} for part in path.split("/")[1:])
+    ):
+        return False
+    if not all(_valid_identifier(value[field]) for field in ("descriptor_id", "root_id", "mount_id")):
+        return False
+    if not all(
+        _valid_digest(value[field])
+        for field in ("root_identity", "mount_identity", "final_digest", "composite_binding_digest")
+    ):
+        return False
+    if (
+        not _bounded_integer(value["resolution_epoch"], 1)
+        or not _bounded_integer(value["final_device"])
+        or not _bounded_integer(value["final_inode"], 1)
+        or value["final_type"] != "REGULAR_FILE"
+    ):
+        return False
+    body = {key: value[key] for key in value if key != "composite_binding_digest"}
+    return canonical_digest(body) == value["composite_binding_digest"]
+
+
+def _valid_stage_record(
+    value: object,
+    transaction_id: str,
+    claim_digest: str,
+    source: dict[str, object],
+    staged: dict[str, object],
+) -> bool:
+    if not _closed_dict(value, _STAGE_RECORD_KEYS):
+        return False
+    if (
+        value["transaction_id"] != transaction_id
+        or value["claim_digest"] != claim_digest
+        or value["binding_digest"] != source["composite_binding_digest"]
+        or value["before_digest"] != source["final_digest"]
+        or value["after_digest"] != staged["final_digest"]
+        or not _bounded_integer(value["bytes_written"])
+        or not _valid_digest(value["record_digest"])
+    ):
+        return False
+    if any(
+        source[field] != staged[field]
+        for field in _PATH_BINDING_KEYS
+        if field not in {"final_digest", "composite_binding_digest"}
+    ):
+        return False
+    body = {key: value[key] for key in value if key != "record_digest"}
+    return canonical_digest(body) == value["record_digest"]
+
+
+def _same_snapshot(left: object, right: object) -> bool:
+    fields = (
+        "snapshot_id",
+        "snapshot_device",
+        "snapshot_inode",
+        "snapshot_size",
+        "snapshot_digest",
+    )
+    return type(left) is dict and type(right) is dict and all(left.get(key) == right.get(key) for key in fields)
+
+
+def _m4_evidence_object_digest(
+    state: str,
+    evidence: object,
+    transaction: sqlite3.Row,
+    capability: dict[str, object],
+    intent: dict[str, object],
+    frontier: dict[str, object],
+    prior: dict[str, tuple[str, dict[str, object]]],
+) -> str | None:
+    """Validate one closed stage record and return its continuing object binding."""
+
+    if state not in _M4_EVIDENCE_KEYS or not _closed_dict(evidence, _M4_EVIDENCE_KEYS[state]):
+        raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+    if evidence["evidence_version"] != FORMAT_VERSION:
+        raise _Rejected(DurableOutcome.STOP, DurableReason.UNKNOWN_INPUT)
+    current = transaction["object_binding_digest"]
+    if state == "STAGED":
+        source = evidence["source_object_binding"]
+        staged = evidence["staged_object_binding"]
+        stage_record = evidence["stage_record"]
+        if (
+            not _valid_path_binding(source)
+            or not _valid_path_binding(staged)
+            or not _valid_stage_record(
+                stage_record,
+                transaction["transaction_id"],
+                transaction["claim_digest"],
+                source,
+                staged,
+            )
+            or stage_record["after_digest"] != intent["material_digest"]
+            or canonical_digest(
+                {"kind": "PATH_EXACT", "value": staged["canonical_path"]}
+            )
+            != intent["target_scope_digest"]
+        ):
+            raise _Rejected(DurableOutcome.DENY, DurableReason.OBJECT_BINDING_MISMATCH)
+        return staged["composite_binding_digest"]
+    if state == "QUIESCED":
+        if (
+            current is None
+            or not all(
+                _valid_identifier(evidence[field])
+                for field in ("process_tree_id", "session_id")
+            )
+            or evidence["session_id"] != capability["session_id"]
+            or evidence["writer_fencing_epoch"] != transaction["fencing_epoch"]
+            or type(evidence["revoked_writer_fds"]) is not list
+            or not evidence["revoked_writer_fds"]
+            or len(set(evidence["revoked_writer_fds"])) != len(evidence["revoked_writer_fds"])
+            or not all(_bounded_integer(item) for item in evidence["revoked_writer_fds"])
+            or evidence["remaining_writer_fds"] != []
+            or evidence["writer_leases_revoked"] is not True
+            or evidence["process_tree_quiesced"] is not True
+            or not _valid_digest(evidence["evidence_digest"])
+        ):
+            raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+        return current
+    if state == "SEALED":
+        staged = evidence["source_object_binding"]
+        if (
+            current is None
+            or not _valid_path_binding(staged)
+            or staged["composite_binding_digest"] != current
+            or evidence["seal_type"] != "LINUX_MEMFD"
+            or not _valid_identifier(evidence["snapshot_id"])
+            or not _bounded_integer(evidence["snapshot_device"])
+            or not _bounded_integer(evidence["snapshot_inode"], 1)
+            or not _bounded_integer(evidence["snapshot_size"])
+            or evidence["snapshot_size"] != prior["STAGED"][1]["evidence"]["stage_record"]["bytes_written"]
+            or evidence["snapshot_digest"] != staged["final_digest"]
+            or evidence["kernel_seals"]
+            != ["F_SEAL_GROW", "F_SEAL_SEAL", "F_SEAL_SHRINK", "F_SEAL_WRITE"]
+            or not all(
+                _valid_identifier(evidence[field])
+                for field in ("sealer_principal", "sealer_session")
+            )
+            or evidence["sealer_principal"] in {capability["principal_id"], capability["audience_id"]}
+            or evidence["sealer_session"] == capability["session_id"]
+            or not _valid_digest(evidence["evidence_digest"])
+        ):
+            raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+        return current
+    if state == "POSTCHECKED":
+        sealed_digest, sealed = prior["SEALED"]
+        sealed_evidence = sealed["evidence"]
+        if (
+            current is None
+            or evidence["seal_record_digest"] != sealed_digest
+            or not _same_snapshot(evidence, sealed_evidence)
+            or not all(
+                _valid_identifier(evidence[field])
+                for field in ("observer_principal", "observer_session")
+            )
+            or evidence["observer_principal"]
+            in {
+                capability["principal_id"],
+                capability["audience_id"],
+                sealed_evidence["sealer_principal"],
+            }
+            or evidence["observer_session"]
+            in {capability["session_id"], sealed_evidence["sealer_session"]}
+            or not _bounded_integer(evidence["observer_uid"], 1)
+            or not _bounded_integer(evidence["observer_gid"], 1)
+            or evidence["observer_writer_fds"] != []
+            or evidence["outcome"] != "PASS"
+            or not _valid_digest(evidence["postcheck_digest"])
+            or not _valid_digest(evidence["evidence_digest"])
+        ):
+            raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+        return current
+    if state == "COMMITTED":
+        seal_digest, sealed = prior["SEALED"]
+        postcheck_digest, postchecked = prior["POSTCHECKED"]
+        binding = evidence["object_binding"]
+        if (
+            current is None
+            or evidence["seal_record_digest"] != seal_digest
+            or evidence["postcheck_record_digest"] != postcheck_digest
+            or not _same_snapshot(evidence, sealed["evidence"])
+            or not _same_snapshot(evidence, postchecked["evidence"])
+            or not _valid_path_binding(binding)
+            or binding["composite_binding_digest"] != current
+            or binding["final_digest"] != evidence["snapshot_digest"]
+            or not all(
+                _valid_identifier(evidence[field])
+                for field in ("committer_principal", "committer_session")
+            )
+            or evidence["committer_principal"] in {capability["principal_id"], capability["audience_id"]}
+            or evidence["committer_session"] == capability["session_id"]
+            or not _valid_digest(evidence["evidence_digest"])
+        ):
+            raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+        return current
+    if state == "JOINED":
+        commit_digest, _ = prior["COMMITTED"]
+        if (
+            current is None
+            or evidence["commit_record_digest"] != commit_digest
+            or evidence["joined_iteration"] != transaction["iteration"]
+            or evidence["frontier_record_digest"] != frontier["frontier_record_digest"]
+            or not all(
+                _valid_identifier(evidence[field])
+                for field in ("controller_principal", "controller_session")
+            )
+            or evidence["controller_principal"] in {capability["principal_id"], capability["audience_id"]}
+            or evidence["controller_session"] == capability["session_id"]
+            or not _valid_digest(evidence["evidence_digest"])
+        ):
+            raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+        return current
+    if state == "DISCARDED":
+        if (
+            "SEALED" not in prior
+            or evidence["seal_record_digest"] != prior["SEALED"][0]
+            or evidence["disposition"] != "NO_EFFECT_VERIFIED"
+            or not _valid_digest(evidence["evidence_digest"])
+        ):
+            raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+        return current
+    if state == "QUARANTINED":
+        if not _valid_identifier(evidence["uncertainty"]) or not _valid_digest(evidence["evidence_digest"]):
+            raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+        return current
+    if state == "RECONCILING":
+        if (
+            evidence["quarantine_record_digest"] != transaction["current_record_digest"]
+            or not _valid_digest(evidence["evidence_digest"])
+        ):
+            raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+        return current
+    raise _Rejected(DurableOutcome.STOP, DurableReason.UNKNOWN_INPUT)
+
+
+_SCHEMA_V3 = (
     """
     CREATE TABLE store_meta (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1041,11 +1651,116 @@ _SCHEMA = (
     "CREATE INDEX reservations_disposition ON budget_reservations(disposition)",
 )
 
-_TABLES_V2 = _TABLES - {"execution_sessions"}
+_M4_SCHEMA = (
+    """
+    CREATE TABLE active_contracts (
+        contract_digest TEXT PRIMARY KEY,
+        authority_domain_id TEXT NOT NULL,
+        journal_lineage_id TEXT NOT NULL,
+        root_contract_digest TEXT NOT NULL,
+        parent_contract_digest TEXT,
+        lineage_root TEXT NOT NULL,
+        max_iterations INTEGER NOT NULL CHECK (max_iterations > 0),
+        joined_iteration INTEGER NOT NULL CHECK (joined_iteration >= 0),
+        contract_json TEXT NOT NULL,
+        resolver_verification_json TEXT NOT NULL,
+        resolver_verification_digest TEXT NOT NULL,
+        activated_at TEXT NOT NULL,
+        revocation_epoch INTEGER NOT NULL CHECK (revocation_epoch >= 0),
+        fencing_epoch INTEGER NOT NULL CHECK (fencing_epoch >= 0),
+        journal_sequence INTEGER NOT NULL UNIQUE REFERENCES journal_entries(sequence)
+            DEFERRABLE INITIALLY DEFERRED,
+        UNIQUE (authority_domain_id, root_contract_digest, journal_lineage_id),
+        CHECK (joined_iteration <= max_iterations)
+    ) STRICT
+    """,
+    """
+    CREATE TABLE d2_frontiers (
+        d2_frontier_digest TEXT PRIMARY KEY,
+        transaction_id TEXT NOT NULL UNIQUE REFERENCES dispatch_attempt_claims(transaction_id),
+        contract_digest TEXT NOT NULL REFERENCES active_contracts(contract_digest),
+        iteration INTEGER NOT NULL CHECK (iteration > 0),
+        joined_iteration INTEGER NOT NULL CHECK (joined_iteration >= 0),
+        source_journal_sequence INTEGER NOT NULL CHECK (source_journal_sequence > 0),
+        fencing_epoch INTEGER NOT NULL CHECK (fencing_epoch >= 0),
+        inventory_json TEXT NOT NULL,
+        frontier_json TEXT NOT NULL,
+        verification_json TEXT NOT NULL,
+        verification_digest TEXT NOT NULL,
+        bound_at TEXT NOT NULL,
+        event_journal_sequence INTEGER NOT NULL UNIQUE REFERENCES journal_entries(sequence)
+            DEFERRABLE INITIALLY DEFERRED,
+        UNIQUE (contract_digest, iteration),
+        CHECK (iteration = joined_iteration + 1)
+    ) STRICT
+    """,
+    """
+    CREATE TABLE m4_transactions (
+        transaction_id TEXT PRIMARY KEY REFERENCES dispatch_attempt_claims(transaction_id),
+        state TEXT NOT NULL CHECK (state IN (
+            'DISPATCHED', 'STAGED', 'QUIESCED', 'SEALED', 'POSTCHECKED',
+            'COMMITTED', 'JOINED', 'DISCARDED', 'QUARANTINED', 'RECONCILING'
+        )),
+        contract_digest TEXT NOT NULL REFERENCES active_contracts(contract_digest),
+        d2_frontier_digest TEXT NOT NULL UNIQUE REFERENCES d2_frontiers(d2_frontier_digest),
+        iteration INTEGER NOT NULL CHECK (iteration > 0),
+        capability_id TEXT NOT NULL UNIQUE REFERENCES capabilities(capability_id),
+        claim_digest TEXT NOT NULL UNIQUE,
+        intent_digest TEXT NOT NULL UNIQUE,
+        decision_digest TEXT NOT NULL,
+        authorized_envelope_digest TEXT NOT NULL,
+        lineage_root TEXT NOT NULL,
+        object_binding_digest TEXT,
+        revocation_epoch INTEGER NOT NULL CHECK (revocation_epoch >= 0),
+        fencing_epoch INTEGER NOT NULL CHECK (fencing_epoch >= 0),
+        budget_vector_json TEXT NOT NULL,
+        budget_vector_digest TEXT NOT NULL,
+        current_record_digest TEXT,
+        started_at TEXT NOT NULL,
+        started_journal_sequence INTEGER NOT NULL UNIQUE REFERENCES journal_entries(sequence)
+            DEFERRABLE INITIALLY DEFERRED,
+        CHECK ((state = 'DISPATCHED' AND object_binding_digest IS NULL
+                AND current_record_digest IS NULL)
+            OR state IN ('QUARANTINED', 'RECONCILING')
+            OR (object_binding_digest IS NOT NULL AND current_record_digest IS NOT NULL))
+    ) STRICT
+    """,
+    """
+    CREATE TABLE m4_transition_records (
+        transaction_id TEXT NOT NULL REFERENCES m4_transactions(transaction_id),
+        transition_index INTEGER NOT NULL CHECK (transition_index > 0),
+        state TEXT NOT NULL CHECK (state IN (
+            'STAGED', 'QUIESCED', 'SEALED', 'POSTCHECKED', 'COMMITTED',
+            'JOINED', 'DISCARDED', 'QUARANTINED', 'RECONCILING'
+        )),
+        previous_record_digest TEXT,
+        record_digest TEXT NOT NULL UNIQUE,
+        record_json TEXT NOT NULL,
+        verification_json TEXT NOT NULL,
+        verification_digest TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        journal_sequence INTEGER NOT NULL UNIQUE REFERENCES journal_entries(sequence)
+            DEFERRABLE INITIALLY DEFERRED,
+        PRIMARY KEY (transaction_id, transition_index),
+        UNIQUE (transaction_id, state),
+        CHECK ((transition_index = 1 AND previous_record_digest IS NULL)
+            OR (transition_index > 1 AND previous_record_digest IS NOT NULL))
+    ) STRICT
+    """,
+    "CREATE INDEX m4_transactions_state ON m4_transactions(state)",
+    "CREATE INDEX m4_frontiers_contract_iteration ON d2_frontiers(contract_digest, iteration)",
+)
+
+_SCHEMA = tuple(
+    statement.replace("schema_version = 3", "schema_version = 4")
+    for statement in _SCHEMA_V3
+) + _M4_SCHEMA
+
+_TABLES_V2 = _TABLES_V3 - {"execution_sessions"}
 _TABLES_V1 = _TABLES_V2 - {"dispatch_attempt_claims"}
 _SCHEMA_V2 = tuple(
     statement.replace("schema_version = 3", "schema_version = 2")
-    for statement in _SCHEMA
+    for statement in _SCHEMA_V3
     if "execution_sessions" not in statement
 )
 _SCHEMA_V1 = tuple(
@@ -1066,6 +1781,7 @@ class DurableStore:
         no_effect_verifier: object | None = None,
         executor_claim_verifier: ExecutorClaimVerifier | None = None,
         runtime_session_verifier: RuntimeSessionVerifier | None = None,
+        m4_verifier: M4Verifier | None = None,
         _fault: object | None = None,
     ) -> None:
         self._path = path if type(path) is str else ""
@@ -1073,6 +1789,7 @@ class DurableStore:
         self._no_effect_verifier = no_effect_verifier
         self._executor_claim_verifier = executor_claim_verifier
         self._runtime_session_verifier = runtime_session_verifier
+        self._m4_verifier = m4_verifier
         self._fault = _fault
         self._usable = False
         self._stopped_reason = DurableReason.MALFORMED_INPUT
@@ -1137,9 +1854,14 @@ class DurableStore:
         if version == 1 and application_id == _APPLICATION_ID and tables == _TABLES_V1:
             self._migrate_v1_to_v2(connection)
             self._migrate_v2_to_v3(connection)
+            self._migrate_v3_to_v4(connection)
             return
         if version == 2 and application_id == _APPLICATION_ID and tables == _TABLES_V2:
             self._migrate_v2_to_v3(connection)
+            self._migrate_v3_to_v4(connection)
+            return
+        if version == 3 and application_id == _APPLICATION_ID and tables == _TABLES_V3:
+            self._migrate_v3_to_v4(connection)
             return
         if version != STORE_SCHEMA_VERSION or application_id != _APPLICATION_ID or tables != _TABLES:
             raise _StoreCorrupt("unknown durable store schema")
@@ -1178,7 +1900,7 @@ class DurableStore:
         try:
             self._audit_legacy_v2(connection)
             connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v2")
-            connection.execute(_SCHEMA[0])
+            connection.execute(_SCHEMA_V3[0])
             connection.execute(
                 """
                 INSERT INTO store_meta
@@ -1187,11 +1909,39 @@ class DurableStore:
                        outbox_head_sequence, outbox_head_digest
                 FROM store_meta_v2
                 """,
-                (STORE_SCHEMA_VERSION,),
+                (3,),
             )
             connection.execute("DROP TABLE store_meta_v2")
-            session_schema = next(statement for statement in _SCHEMA if "execution_sessions" in statement)
+            session_schema = next(statement for statement in _SCHEMA_V3 if "execution_sessions" in statement)
             connection.execute(session_schema)
+            connection.execute("PRAGMA user_version=3")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def _migrate_v3_to_v4(self, connection: sqlite3.Connection) -> None:
+        """Add the M4 contract/frontier/lifecycle tables after a full v3 audit."""
+
+        self._audit_legacy_v3(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._audit_legacy_v3(connection)
+            connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v3")
+            connection.execute(_SCHEMA[0])
+            connection.execute(
+                """
+                INSERT INTO store_meta
+                SELECT id, ?, lineage_root, revocation_epoch, fencing_epoch,
+                       dispatch_counter, journal_head_sequence, journal_head_digest,
+                       outbox_head_sequence, outbox_head_digest
+                FROM store_meta_v3
+                """,
+                (STORE_SCHEMA_VERSION,),
+            )
+            connection.execute("DROP TABLE store_meta_v3")
+            for statement in _M4_SCHEMA:
+                connection.execute(statement)
             connection.execute(f"PRAGMA user_version={STORE_SCHEMA_VERSION}")
             connection.commit()
         except Exception:
@@ -1260,6 +2010,37 @@ class DurableStore:
         self._audit_dispatch(connection, meta)
         self._audit_claims(connection, meta)
 
+    def _audit_legacy_v3(self, connection: sqlite3.Connection) -> None:
+        if connection.execute("PRAGMA user_version").fetchone()[0] != 3:
+            raise _StoreCorrupt("legacy v3 schema version mismatch")
+        if connection.execute("PRAGMA application_id").fetchone()[0] != _APPLICATION_ID:
+            raise _StoreCorrupt("legacy v3 application id mismatch")
+        self._audit_schema(connection, schema=_SCHEMA_V3, tables=_TABLES_V3)
+        if tuple(connection.execute("PRAGMA quick_check").fetchone()) != ("ok",):
+            raise _StoreCorrupt("legacy v3 SQLite quick check failed")
+        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise _StoreCorrupt("legacy v3 foreign key mismatch")
+        meta_rows = connection.execute("SELECT * FROM store_meta").fetchall()
+        if len(meta_rows) != 1 or meta_rows[0]["id"] != 1 or meta_rows[0]["schema_version"] != 3:
+            raise _StoreCorrupt("invalid legacy v3 metadata")
+        meta = meta_rows[0]
+        lineage = meta["lineage_root"]
+        if lineage is not None and not _valid_digest(lineage):
+            raise _StoreCorrupt("invalid legacy v3 lineage")
+        for field in (
+            "revocation_epoch", "fencing_epoch", "dispatch_counter",
+            "journal_head_sequence", "outbox_head_sequence",
+        ):
+            if not _bounded_integer(meta[field]):
+                raise _StoreCorrupt("invalid legacy v3 monotonic metadata")
+        self._audit_budgets(connection, lineage)
+        self._audit_chains(connection, meta)
+        self._audit_history(connection, meta)
+        self._audit_capabilities(connection, lineage)
+        self._audit_dispatch(connection, meta)
+        self._audit_claims(connection, meta)
+        self._audit_sessions(connection, meta)
+
     def _audit(self, connection: sqlite3.Connection) -> None:
         if connection.execute("PRAGMA user_version").fetchone()[0] != STORE_SCHEMA_VERSION:
             raise _StoreCorrupt("schema version mismatch")
@@ -1305,6 +2086,7 @@ class DurableStore:
         self._audit_dispatch(connection, meta)
         self._audit_claims(connection, meta)
         self._audit_sessions(connection, meta)
+        self._audit_m4(connection, meta)
 
     def _audit_schema(
         self,
@@ -1463,6 +2245,18 @@ class DurableStore:
             "BUDGET_TERMINAL_SPENT",
             "BUDGET_TERMINAL_RELEASED",
             "BUDGET_TERMINAL_QUARANTINED_ESCROW",
+            "ACTIVE_CONTRACT_BOUND",
+            "D2_FRONTIER_BOUND",
+            "M4_DISPATCH_BOUND",
+            "M4_STAGED",
+            "M4_QUIESCED",
+            "M4_SEALED",
+            "M4_POSTCHECKED",
+            "M4_COMMITTED",
+            "M4_JOINED",
+            "M4_DISCARDED",
+            "M4_QUARANTINED",
+            "M4_RECONCILING",
         }
         for entry in entries[1:]:
             event_type = entry["event_type"]
@@ -1524,6 +2318,18 @@ class DurableStore:
                 "CAPABILITY_CONSUMED_WITH_INTENT",
                 "DISPATCH_ATTEMPT_CLAIMED",
                 "RUNTIME_SESSION_PREPARED",
+                "ACTIVE_CONTRACT_BOUND",
+                "D2_FRONTIER_BOUND",
+                "M4_DISPATCH_BOUND",
+                "M4_STAGED",
+                "M4_QUIESCED",
+                "M4_SEALED",
+                "M4_POSTCHECKED",
+                "M4_COMMITTED",
+                "M4_JOINED",
+                "M4_DISCARDED",
+                "M4_QUARANTINED",
+                "M4_RECONCILING",
             }:
                 if payload.get("revocation_epoch", revocation_epoch) != revocation_epoch:
                     raise _StoreCorrupt("event revocation history mismatch")
@@ -1746,10 +2552,9 @@ class DurableStore:
                 "evidence_digest",
             }
         )
-        if disposition == "SPENT":
+        if disposition in {"SPENT", "RELEASED"} and _closed_dict(record, evidence_keys):
             return (
-                _closed_dict(record, evidence_keys)
-                and record["record_type"] == disposition
+                record["record_type"] == disposition
                 and _valid_digest(record["evidence_digest"])
             )
         if disposition == "QUARANTINED_ESCROW":
@@ -2289,6 +3094,378 @@ class DurableStore:
         if len(rows) > meta["dispatch_counter"]:
             raise _StoreCorrupt("runtime session cardinality mismatch")
 
+    def _audit_m4(self, connection: sqlite3.Connection, meta: sqlite3.Row) -> None:
+        contracts = connection.execute("SELECT * FROM active_contracts").fetchall()
+        for row in contracts:
+            contract = _json_value(row["contract_json"])
+            verification = _json_value(row["resolver_verification_json"])
+            if type(contract) is not dict or type(verification) is not dict:
+                raise _StoreCorrupt("invalid M4 contract value")
+            try:
+                parsed, budgets = _parse_active_contract(contract, row["activated_at"])
+            except _Rejected as error:
+                raise _StoreCorrupt("invalid M4 contract") from error
+            payload = {"record_type": "ACTIVE_CONTRACT", "contract": parsed}
+            event = connection.execute(
+                "SELECT event_type, subject_id, payload_json FROM journal_entries WHERE sequence=?",
+                (row["journal_sequence"],),
+            ).fetchone()
+            expected_event = {
+                "contract": contract,
+                "resolver_verification_digest": row["resolver_verification_digest"],
+                "observed_at": row["activated_at"],
+                "revocation_epoch": row["revocation_epoch"],
+                "fencing_epoch": row["fencing_epoch"],
+            }
+            if (
+                not _closed_dict(verification, _VERIFICATION_RECORD_KEYS)
+                or verification.get("verification_version") != FORMAT_VERSION
+                or verification.get("bindings") != payload
+                or verification.get("payload_digest") != canonical_digest(payload)
+                or canonical_digest(verification) != row["resolver_verification_digest"]
+                or contract["contract_digest"] != row["contract_digest"]
+                or contract["authority_domain_id"] != row["authority_domain_id"]
+                or contract["journal_lineage_id"] != row["journal_lineage_id"]
+                or contract["root_contract_digest"] != row["root_contract_digest"]
+                or contract["parent_contract_digest"] != row["parent_contract_digest"]
+                or contract["lineage_root"] != row["lineage_root"]
+                or contract["max_iterations"] != row["max_iterations"]
+                or row["joined_iteration"] < contract["joined_iteration"]
+                or row["joined_iteration"] > row["max_iterations"]
+                or contract["revocation_epoch"] != row["revocation_epoch"]
+                or contract["fencing_epoch"] != row["fencing_epoch"]
+                or contract["budget_vector"] != [item.data("limit") for item in budgets]
+                or event is None
+                or tuple(event[:2]) != ("ACTIVE_CONTRACT_BOUND", row["contract_digest"])
+                or _json_value(event["payload_json"]) != expected_event
+            ):
+                raise _StoreCorrupt("M4 contract binding mismatch")
+        if connection.execute(
+            "SELECT COUNT(*) FROM journal_entries WHERE event_type='ACTIVE_CONTRACT_BOUND'"
+        ).fetchone()[0] != len(contracts):
+            raise _StoreCorrupt("M4 contract event cardinality mismatch")
+        frontiers = connection.execute("SELECT * FROM d2_frontiers").fetchall()
+        for row in frontiers:
+            frontier = _json_value(row["frontier_json"])
+            inventory = _json_value(row["inventory_json"])
+            verification = _json_value(row["verification_json"])
+            if type(frontier) is not dict or type(inventory) is not dict or type(verification) is not dict:
+                raise _StoreCorrupt("invalid M4 frontier value")
+            contract = connection.execute(
+                "SELECT * FROM active_contracts WHERE contract_digest=?", (row["contract_digest"],)
+            ).fetchone()
+            claim = connection.execute(
+                "SELECT * FROM dispatch_attempt_claims WHERE transaction_id=?", (row["transaction_id"],)
+            ).fetchone()
+            if contract is None or claim is None:
+                raise _StoreCorrupt("missing M4 frontier source")
+            capability = connection.execute(
+                "SELECT * FROM capabilities WHERE capability_id=?", (claim["capability_id"],)
+            ).fetchone()
+            if capability is None:
+                raise _StoreCorrupt("missing M4 frontier capability")
+            try:
+                authoritative = self._authoritative_d2_inventory(
+                    connection, row["transaction_id"], row["iteration"]
+                )
+            except _Rejected as error:
+                raise _StoreCorrupt("invalid M4 frontier inventory") from error
+            payload = self._d2_payload(connection, row["transaction_id"], frontier)
+            preimage = {key: frontier[key] for key in frontier if key != "frontier_record_digest"}
+            event = connection.execute(
+                "SELECT event_type, subject_id, payload_json FROM journal_entries WHERE sequence=?",
+                (row["event_journal_sequence"],),
+            ).fetchone()
+            expected_event = {
+                "transaction_id": row["transaction_id"],
+                "contract_digest": row["contract_digest"],
+                "d2_frontier_digest": row["d2_frontier_digest"],
+                "frontier_record_digest": frontier.get("frontier_record_digest"),
+                "source_journal_sequence": row["source_journal_sequence"],
+                "iteration": row["iteration"],
+                "revocation_epoch": capability["revocation_epoch"],
+                "fencing_epoch": row["fencing_epoch"],
+                "verification_digest": row["verification_digest"],
+                "observed_at": row["bound_at"],
+            }
+            if (
+                not _closed_dict(frontier, _D2_FRONTIER_KEYS)
+                or frontier["frontier_version"] != "1.0.0"
+                or frontier["inventory"] != inventory
+                or inventory != authoritative
+                or canonical_digest(preimage) != frontier["frontier_record_digest"]
+                or canonical_digest(frontier) != row["d2_frontier_digest"]
+                or frontier["contract_digest"] != row["contract_digest"]
+                or frontier["iteration"] != row["iteration"]
+                or frontier["joined_iteration"] != row["joined_iteration"]
+                or frontier["journal_sequence"] != row["source_journal_sequence"]
+                or frontier["fencing_epoch"] != row["fencing_epoch"]
+                or row["source_journal_sequence"] >= row["event_journal_sequence"]
+                or not _closed_dict(verification, _VERIFICATION_RECORD_KEYS)
+                or verification.get("bindings") != payload
+                or verification.get("payload_digest") != canonical_digest(payload)
+                or canonical_digest(verification) != row["verification_digest"]
+                or event is None
+                or tuple(event[:2]) != ("D2_FRONTIER_BOUND", row["transaction_id"])
+                or _json_value(event["payload_json"]) != expected_event
+            ):
+                raise _StoreCorrupt("M4 frontier binding mismatch")
+        if connection.execute(
+            "SELECT COUNT(*) FROM journal_entries WHERE event_type='D2_FRONTIER_BOUND'"
+        ).fetchone()[0] != len(frontiers):
+            raise _StoreCorrupt("M4 frontier event cardinality mismatch")
+        transactions = connection.execute("SELECT * FROM m4_transactions").fetchall()
+        for row in transactions:
+            frontier = connection.execute(
+                "SELECT * FROM d2_frontiers WHERE d2_frontier_digest=?",
+                (row["d2_frontier_digest"],),
+            ).fetchone()
+            claim = connection.execute(
+                "SELECT * FROM dispatch_attempt_claims WHERE transaction_id=?",
+                (row["transaction_id"],),
+            ).fetchone()
+            intent = connection.execute(
+                "SELECT * FROM dispatch_intents WHERE transaction_id=?",
+                (row["transaction_id"],),
+            ).fetchone()
+            capability = connection.execute(
+                "SELECT * FROM capabilities WHERE capability_id=?", (row["capability_id"],)
+            ).fetchone()
+            if frontier is None or claim is None or intent is None or capability is None:
+                raise _StoreCorrupt("missing M4 transaction source")
+            budget_vector = _json_value(row["budget_vector_json"])
+            reservations = [
+                {
+                    "name": item["name"],
+                    "unit": item["unit"],
+                    "scope_digest": item["scope_digest"],
+                    "lineage_root": item["lineage_root"],
+                    "amount": item["amount"],
+                }
+                for item in connection.execute(
+                    "SELECT name, unit, scope_digest, lineage_root, amount FROM budget_reservations "
+                    "WHERE transaction_id=? ORDER BY name, unit, scope_digest, lineage_root",
+                    (row["transaction_id"],),
+                )
+            ]
+            event = connection.execute(
+                "SELECT event_type, subject_id, payload_json FROM journal_entries WHERE sequence=?",
+                (row["started_journal_sequence"],),
+            ).fetchone()
+            expected_event = {
+                "transaction_id": row["transaction_id"],
+                "contract_digest": row["contract_digest"],
+                "d2_frontier_digest": row["d2_frontier_digest"],
+                "capability_id": row["capability_id"],
+                "claim_digest": row["claim_digest"],
+                "intent_digest": row["intent_digest"],
+                "decision_digest": row["decision_digest"],
+                "authorized_envelope_digest": row["authorized_envelope_digest"],
+                "lineage_root": row["lineage_root"],
+                "iteration": row["iteration"],
+                "budget_vector": budget_vector,
+                "budget_vector_digest": row["budget_vector_digest"],
+                "revocation_epoch": row["revocation_epoch"],
+                "fencing_epoch": row["fencing_epoch"],
+                "observed_at": row["started_at"],
+            }
+            if (
+                row["state"] not in _M4_STATES
+                or row["contract_digest"] != frontier["contract_digest"]
+                or row["iteration"] != frontier["iteration"]
+                or row["capability_id"] != capability["capability_id"]
+                or row["claim_digest"] != claim["claim_digest"]
+                or row["intent_digest"] != intent["intent_digest"]
+                or row["decision_digest"] != capability["decision_digest"]
+                or row["authorized_envelope_digest"] != capability["authorized_envelope_digest"]
+                or row["lineage_root"] != capability["lineage_root"]
+                or row["revocation_epoch"] != capability["revocation_epoch"]
+                or row["fencing_epoch"] != capability["fencing_epoch"]
+                or budget_vector != reservations
+                or canonical_digest(budget_vector) != row["budget_vector_digest"]
+                or event is None
+                or tuple(event[:2]) != ("M4_DISPATCH_BOUND", row["transaction_id"])
+                or _json_value(event["payload_json"]) != expected_event
+            ):
+                raise _StoreCorrupt("M4 transaction binding mismatch")
+            transitions = connection.execute(
+                "SELECT * FROM m4_transition_records WHERE transaction_id=? ORDER BY transition_index",
+                (row["transaction_id"],),
+            ).fetchall()
+            if row["state"] == "DISPATCHED":
+                if transitions or row["object_binding_digest"] is not None or row["current_record_digest"] is not None:
+                    raise _StoreCorrupt("M4 dispatched state mismatch")
+                continue
+            if not transitions:
+                raise _StoreCorrupt("missing M4 transition")
+            frontier_value = _json_value(frontier["frontier_json"])
+            capability_value = _json_value(capability["payload_json"])
+            capability_verification = _json_value(capability["verification_json"])
+            claim_value = _json_value(claim["claim_json"])
+            claim_verification = _json_value(claim["executor_verification_json"])
+            intent_value = _json_value(intent["intent_json"])
+            contract_row = connection.execute(
+                "SELECT * FROM active_contracts WHERE contract_digest=?", (row["contract_digest"],)
+            ).fetchone()
+            if contract_row is None:
+                raise _StoreCorrupt("missing M4 transaction contract")
+            contract_value = _json_value(contract_row["contract_json"])
+            if not all(
+                type(value) is dict
+                for value in (
+                    frontier_value,
+                    capability_value,
+                    capability_verification,
+                    claim_value,
+                    claim_verification,
+                    intent_value,
+                    contract_value,
+                )
+            ):
+                raise _StoreCorrupt("invalid M4 transaction source value")
+            previous_state = "DISPATCHED"
+            previous_digest: str | None = None
+            previous_time = _parse_time(row["started_at"])
+            current_object: str | None = None
+            prior: dict[str, tuple[str, dict[str, object]]] = {}
+            if previous_time is None:
+                raise _StoreCorrupt("invalid M4 transaction start time")
+            for expected_index, transition_row in enumerate(transitions, 1):
+                record = _json_value(transition_row["record_json"])
+                verification = _json_value(transition_row["verification_json"])
+                observed = _parse_time(transition_row["observed_at"])
+                state = transition_row["state"]
+                event = connection.execute(
+                    "SELECT event_type, subject_id, payload_json FROM journal_entries WHERE sequence=?",
+                    (transition_row["journal_sequence"],),
+                ).fetchone()
+                audit_transaction = dict(row)
+                audit_transaction["object_binding_digest"] = current_object
+                audit_transaction["current_record_digest"] = previous_digest
+                try:
+                    expected_object = _m4_evidence_object_digest(
+                        state,
+                        record.get("evidence") if type(record) is dict else None,
+                        audit_transaction,
+                        capability_value,
+                        intent_value,
+                        frontier_value,
+                        prior,
+                    )
+                except (KeyError, _Rejected) as error:
+                    raise _StoreCorrupt("invalid M4 transition evidence") from error
+                expected_event = {
+                    "transaction_id": row["transaction_id"],
+                    "state": state,
+                    "record_digest": transition_row["record_digest"],
+                    "verification_digest": transition_row["verification_digest"],
+                    "object_binding_digest": expected_object,
+                    "contract_digest": row["contract_digest"],
+                    "d2_frontier_digest": row["d2_frontier_digest"],
+                    "budget_vector_digest": row["budget_vector_digest"],
+                    "revocation_epoch": row["revocation_epoch"],
+                    "fencing_epoch": row["fencing_epoch"],
+                    "observed_at": transition_row["observed_at"],
+                }
+                if (
+                    not _closed_dict(record, _M4_RECORD_KEYS)
+                    or record["record_version"] != FORMAT_VERSION
+                    or record["record_type"] != "M4_TRANSITION"
+                    or record["state"] != state
+                    or state not in _M4_NEXT.get(previous_state, frozenset())
+                    or transition_row["transition_index"] != expected_index
+                    or record["transition_index"] != expected_index
+                    or transition_row["previous_record_digest"] != previous_digest
+                    or record["previous_record_digest"] != previous_digest
+                    or observed is None
+                    or observed < previous_time
+                    or record["observed_at"] != transition_row["observed_at"]
+                    or canonical_digest(record) != transition_row["record_digest"]
+                    or not _closed_dict(verification, _VERIFICATION_RECORD_KEYS)
+                    or verification.get("verification_version") != FORMAT_VERSION
+                    or verification.get("bindings") != record
+                    or verification.get("payload_digest") != transition_row["record_digest"]
+                    or canonical_digest(verification) != transition_row["verification_digest"]
+                    or record["transaction_id"] != row["transaction_id"]
+                    or record["contract_digest"] != row["contract_digest"]
+                    or record["d2_frontier_digest"] != row["d2_frontier_digest"]
+                    or record["iteration"] != row["iteration"]
+                    or record["capability_id"] != row["capability_id"]
+                    or record["claim_digest"] != row["claim_digest"]
+                    or record["intent_digest"] != row["intent_digest"]
+                    or record["decision_digest"] != row["decision_digest"]
+                    or record["authorized_envelope_digest"] != row["authorized_envelope_digest"]
+                    or record["lineage_root"] != row["lineage_root"]
+                    or record["object_binding_digest"] != expected_object
+                    or record["budget_vector"] != budget_vector
+                    or record["budget_vector_digest"] != row["budget_vector_digest"]
+                    or record["revocation_epoch"] != row["revocation_epoch"]
+                    or record["fencing_epoch"] != row["fencing_epoch"]
+                    or record["contract"] != contract_value
+                    or record["frontier"] != frontier_value
+                    or record["capability"] != capability_value
+                    or record["capability_verification"] != capability_verification
+                    or record["claim"] != claim_value
+                    or record["claim_verification"] != claim_verification
+                    or record["intent"] != intent_value
+                    or event is None
+                    or tuple(event[:2]) != ("M4_" + state, row["transaction_id"])
+                    or _json_value(event["payload_json"]) != expected_event
+                ):
+                    raise _StoreCorrupt("M4 transition binding mismatch")
+                prior[state] = (transition_row["record_digest"], record)
+                previous_state = state
+                previous_digest = transition_row["record_digest"]
+                previous_time = observed
+                current_object = expected_object
+            if (
+                previous_state != row["state"]
+                or previous_digest != row["current_record_digest"]
+                or current_object != row["object_binding_digest"]
+            ):
+                raise _StoreCorrupt("M4 transaction head mismatch")
+            state_event_count = connection.execute(
+                "SELECT COUNT(*) FROM journal_entries WHERE subject_id=? AND event_type IN "
+                "('M4_STAGED','M4_QUIESCED','M4_SEALED','M4_POSTCHECKED','M4_COMMITTED',"
+                "'M4_JOINED','M4_DISCARDED','M4_QUARANTINED','M4_RECONCILING')",
+                (row["transaction_id"],),
+            ).fetchone()[0]
+            if state_event_count != len(transitions):
+                raise _StoreCorrupt("M4 transition event cardinality mismatch")
+            dispositions = {
+                item["disposition"]
+                for item in connection.execute(
+                    "SELECT disposition FROM budget_reservations WHERE transaction_id=?",
+                    (row["transaction_id"],),
+                )
+            }
+            expected_disposition = None
+            if "COMMITTED" in prior:
+                expected_disposition = "SPENT"
+            elif "DISCARDED" in prior:
+                expected_disposition = "RELEASED"
+            elif "QUARANTINED" in prior:
+                expected_disposition = "QUARANTINED_ESCROW"
+            if expected_disposition is None:
+                if dispositions != {None} or intent["state"] != "PENDING":
+                    raise _StoreCorrupt("M4 pending budget mismatch")
+            elif dispositions != {expected_disposition} or intent["state"] != expected_disposition:
+                raise _StoreCorrupt("M4 terminal budget mismatch")
+            if "JOINED" in prior and contract_row["joined_iteration"] != row["iteration"]:
+                raise _StoreCorrupt("M4 JOIN contract mismatch")
+        if connection.execute(
+            "SELECT COUNT(*) FROM journal_entries WHERE event_type='M4_DISPATCH_BOUND'"
+        ).fetchone()[0] != len(transactions):
+            raise _StoreCorrupt("M4 dispatch event cardinality mismatch")
+        transition_count = connection.execute("SELECT COUNT(*) FROM m4_transition_records").fetchone()[0]
+        if transition_count != sum(
+            connection.execute(
+                "SELECT COUNT(*) FROM m4_transition_records WHERE transaction_id=?", (row["transaction_id"],)
+            ).fetchone()[0]
+            for row in transactions
+        ):
+            raise _StoreCorrupt("orphan M4 transition")
+
     def _append_event(
         self,
         connection: sqlite3.Connection,
@@ -2435,6 +3612,1284 @@ class DurableStore:
                 DurableReason.BOOTSTRAPPED,
                 journal_sequence=sequence,
             )
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _m4_verification_is_valid(
+        self,
+        payload_text: str,
+        payload_digest: str,
+        verification: dict[str, object],
+        verification_text: str,
+        verification_digest: str,
+        observed_at: str,
+    ) -> bool:
+        try:
+            if self._m4_verifier is None:
+                return False
+            result = self._m4_verifier.verify(
+                payload_text.encode("utf-8"), verification_text.encode("utf-8"), observed_at
+            )
+            return (
+                type(result) is VerificationResult
+                and result.status is VerificationStatus.VERIFIED
+                and result.verifier_id == verification["verifier_id"]
+                and result.payload_digest == payload_digest
+                and result.record_digest == verification_digest
+            )
+        except Exception:
+            return False
+
+    def _load_verified_contract(
+        self,
+        connection: sqlite3.Connection,
+        contract_digest: str,
+        observed_at: str,
+        capability_payload: dict[str, object] | None = None,
+    ) -> tuple[sqlite3.Row, dict[str, object]] | None:
+        row = connection.execute(
+            "SELECT * FROM active_contracts WHERE contract_digest=?", (contract_digest,)
+        ).fetchone()
+        if row is None:
+            return None
+        contract = _json_value(row["contract_json"])
+        verification = _json_value(row["resolver_verification_json"])
+        if type(contract) is not dict or type(verification) is not dict:
+            raise _StoreCorrupt("invalid active contract value")
+        try:
+            parsed, budget_rows = _parse_active_contract(contract, observed_at)
+        except _Rejected:
+            return None
+        payload = {"record_type": "ACTIVE_CONTRACT", "contract": parsed}
+        payload_text = _canonical_text(payload)
+        payload_digest = canonical_digest(payload)
+        if (
+            not _closed_dict(verification, _VERIFICATION_RECORD_KEYS)
+            or canonical_digest(verification) != row["resolver_verification_digest"]
+            or verification.get("payload_digest") != payload_digest
+            or verification.get("bindings") != payload
+            or not self._m4_verification_is_valid(
+                payload_text,
+                payload_digest,
+                verification,
+                row["resolver_verification_json"],
+                row["resolver_verification_digest"],
+                observed_at,
+            )
+        ):
+            return None
+        meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+        if meta is None:
+            raise _StoreCorrupt("missing metadata")
+        durable_budgets = [
+            {
+                "name": item["name"],
+                "unit": item["unit"],
+                "scope_digest": item["scope_digest"],
+                "lineage_root": item["lineage_root"],
+                "limit": item["limit_amount"],
+            }
+            for item in connection.execute(
+                "SELECT * FROM budgets ORDER BY name, unit, scope_digest, lineage_root"
+            )
+        ]
+        if (
+            contract["contract_digest"] != row["contract_digest"]
+            or contract["authority_domain_id"] != row["authority_domain_id"]
+            or contract["journal_lineage_id"] != row["journal_lineage_id"]
+            or contract["root_contract_digest"] != row["root_contract_digest"]
+            or contract["parent_contract_digest"] != row["parent_contract_digest"]
+            or contract["lineage_root"] != row["lineage_root"]
+            or contract["max_iterations"] != row["max_iterations"]
+            or row["joined_iteration"] < contract["joined_iteration"]
+            or row["joined_iteration"] > row["max_iterations"]
+            or contract["revocation_epoch"] != row["revocation_epoch"]
+            or contract["fencing_epoch"] != row["fencing_epoch"]
+            or contract["lineage_root"] != meta["lineage_root"]
+            or contract["revocation_epoch"] != meta["revocation_epoch"]
+            or contract["fencing_epoch"] != meta["fencing_epoch"]
+            or contract["budget_vector"] != durable_budgets
+            or contract["budget_vector"] != [item.data("limit") for item in budget_rows]
+        ):
+            return None
+        if capability_payload is not None:
+            request = capability_payload.get("request")
+            proposal = request.get("proposal") if type(request) is dict else None
+            authority = proposal.get("authority") if type(proposal) is dict else None
+            capability_budget = capability_payload.get("budget_vector")
+            if type(capability_budget) is not list:
+                return None
+            try:
+                demanded = _parse_budget_vector(
+                    capability_budget,
+                    amount_name="amount",
+                    expected_lineage=contract["lineage_root"],
+                )
+            except _Rejected:
+                return None
+            limits = {item.key: item.amount for item in budget_rows}
+            if (
+                capability_payload.get("contract_digest") != contract["contract_digest"]
+                or capability_payload.get("lineage_root") != contract["lineage_root"]
+                or capability_payload.get("profile_digest") != contract["profile_digest"]
+                or capability_payload.get("revocation_epoch") != contract["revocation_epoch"]
+                or capability_payload.get("fencing_epoch") != contract["fencing_epoch"]
+                or type(authority) is not dict
+                or canonical_digest(authority) != contract["authority_digest"]
+                or set(item.key for item in demanded) != set(limits)
+                or any(item.amount > limits[item.key] for item in demanded)
+            ):
+                return None
+        return row, contract
+
+    def activate_m4_contract(self, raw: object) -> DurableResult:
+        """Atomically resolve one externally verified stageable-only loop contract."""
+
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        if self._m4_verifier is None:
+            return _result(DurableOutcome.STOP, DurableReason.M4_VERIFIER_ABSENT)
+        if not _closed_dict(raw, frozenset({"contract", "observed_at", "resolver_verification"})):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if _parse_time(raw["observed_at"]) is None or not _valid_verification_source(raw["resolver_verification"]):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        try:
+            contract, budget_rows = _parse_active_contract(raw["contract"], raw["observed_at"])
+            payload = {"record_type": "ACTIVE_CONTRACT", "contract": contract}
+            payload_text, payload_digest, verification, verification_text, verification_digest = _verification_for(
+                payload, raw["resolver_verification"]
+            )
+        except _Rejected as rejection:
+            return _result(rejection.outcome, rejection.reason)
+        except Exception:
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        connection: sqlite3.Connection | None = None
+        try:
+            self._hit("m4_contract_before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("m4_contract_after_begin")
+            self._audit(connection)
+            meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+            if meta is None or meta["lineage_root"] is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.NOT_BOOTSTRAPPED)
+            if connection.execute(
+                "SELECT 1 FROM active_contracts WHERE contract_digest=? OR "
+                "(authority_domain_id=? AND root_contract_digest=? AND journal_lineage_id=?)",
+                (
+                    contract["contract_digest"],
+                    contract["authority_domain_id"],
+                    contract["root_contract_digest"],
+                    contract["journal_lineage_id"],
+                ),
+            ).fetchone() is not None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.REPLAY)
+            durable_budgets = [
+                {
+                    "name": row["name"],
+                    "unit": row["unit"],
+                    "scope_digest": row["scope_digest"],
+                    "lineage_root": row["lineage_root"],
+                    "limit": row["limit_amount"],
+                }
+                for row in connection.execute(
+                    "SELECT * FROM budgets ORDER BY name, unit, scope_digest, lineage_root"
+                )
+            ]
+            if (
+                contract["lineage_root"] != meta["lineage_root"]
+                or contract["revocation_epoch"] != meta["revocation_epoch"]
+                or contract["fencing_epoch"] != meta["fencing_epoch"]
+                or contract["budget_vector"] != durable_budgets
+                or contract["budget_vector"] != [row.data("limit") for row in budget_rows]
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.CONTRACT_BINDING_MISMATCH)
+            if not self._m4_verification_is_valid(
+                payload_text,
+                payload_digest,
+                verification,
+                verification_text,
+                verification_digest,
+                raw["observed_at"],
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.CONTRACT_BINDING_MISMATCH)
+            sequence = self._append_event(
+                connection,
+                "ACTIVE_CONTRACT_BOUND",
+                contract["contract_digest"],
+                {
+                    "contract": contract,
+                    "resolver_verification_digest": verification_digest,
+                    "observed_at": raw["observed_at"],
+                    "revocation_epoch": contract["revocation_epoch"],
+                    "fencing_epoch": contract["fencing_epoch"],
+                },
+            )
+            connection.execute(
+                """INSERT INTO active_contracts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    contract["contract_digest"],
+                    contract["authority_domain_id"],
+                    contract["journal_lineage_id"],
+                    contract["root_contract_digest"],
+                    contract["parent_contract_digest"],
+                    contract["lineage_root"],
+                    contract["max_iterations"],
+                    contract["joined_iteration"],
+                    _canonical_text(contract),
+                    verification_text,
+                    verification_digest,
+                    raw["observed_at"],
+                    contract["revocation_epoch"],
+                    contract["fencing_epoch"],
+                    sequence,
+                ),
+            )
+            self._hit("m4_contract_after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("m4_contract_after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            return DurableResult(
+                DurableOutcome.COMMITTED,
+                DurableReason.ACTIVE_CONTRACT_BOUND,
+                journal_sequence=sequence,
+                contract_digest=contract["contract_digest"],
+            )
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _authoritative_d2_inventory(
+        self,
+        connection: sqlite3.Connection,
+        transaction_id: str,
+        iteration: int,
+    ) -> dict[str, list[dict[str, object]]]:
+        intent_row = connection.execute(
+            "SELECT * FROM dispatch_intents WHERE transaction_id=?", (transaction_id,)
+        ).fetchone()
+        claim_row = connection.execute(
+            "SELECT * FROM dispatch_attempt_claims WHERE transaction_id=?", (transaction_id,)
+        ).fetchone()
+        if intent_row is None or claim_row is None:
+            raise _Rejected(DurableOutcome.DENY, DurableReason.UNKNOWN_INTENT)
+        capability = connection.execute(
+            "SELECT * FROM capabilities WHERE capability_id=?", (intent_row["capability_id"],)
+        ).fetchone()
+        if capability is None:
+            raise _StoreCorrupt("missing D2 capability")
+        intent = _json_value(intent_row["intent_json"])
+        payload = _json_value(capability["payload_json"])
+        if type(intent) is not dict or type(payload) is not dict:
+            raise _StoreCorrupt("invalid D2 source")
+        reservations = connection.execute(
+            "SELECT name, unit, scope_digest, lineage_root, amount FROM budget_reservations "
+            "WHERE transaction_id=? ORDER BY name, unit, scope_digest, lineage_root",
+            (transaction_id,),
+        ).fetchall()
+        values: dict[str, list[dict[str, object]]] = {name: [] for name in _D2_CLASSES}
+
+        def artifact(artifact_id: str, artifact_digest: str) -> dict[str, object]:
+            return {
+                "artifact_id": artifact_id,
+                "artifact_digest": artifact_digest,
+                "iteration": iteration,
+            }
+
+        values["CAPABILITY"] = [artifact(capability["capability_id"], capability["capability_id"])]
+        for reservation in reservations:
+            row = {
+                "name": reservation["name"],
+                "unit": reservation["unit"],
+                "scope_digest": reservation["scope_digest"],
+                "lineage_root": reservation["lineage_root"],
+                "amount": reservation["amount"],
+            }
+            digest = canonical_digest(row)
+            values["BUDGET_RESERVATION"].append(artifact(digest, digest))
+        values["TARGET_BINDING"] = [
+            artifact("target/" + transaction_id, intent["target_scope_digest"])
+        ]
+        values["DISPATCH_INTENT"] = [artifact(transaction_id, intent_row["intent_digest"])]
+        values["STAGED_OUTPUT"] = [
+            artifact("staged-output/" + transaction_id, intent["material_digest"])
+        ]
+        frame = {
+            "record_type": "M4_TRANSACTION_FRAME",
+            "transaction_id": transaction_id,
+            "contract_digest": capability["contract_digest"],
+            "claim_digest": claim_row["claim_digest"],
+            "fencing_epoch": capability["fencing_epoch"],
+            "iteration": iteration,
+        }
+        values["PERSISTED_STATE"] = [
+            artifact("m4-frame/" + transaction_id, canonical_digest(frame))
+        ]
+        values["CONTROLLER_TOKEN"] = [
+            artifact("claim/" + transaction_id, claim_row["claim_digest"])
+        ]
+        return values
+
+    def _d2_payload(
+        self,
+        connection: sqlite3.Connection,
+        transaction_id: str,
+        frontier: dict[str, object],
+    ) -> dict[str, object]:
+        intent_row = connection.execute(
+            "SELECT * FROM dispatch_intents WHERE transaction_id=?", (transaction_id,)
+        ).fetchone()
+        claim_row = connection.execute(
+            "SELECT * FROM dispatch_attempt_claims WHERE transaction_id=?", (transaction_id,)
+        ).fetchone()
+        contract_row = connection.execute(
+            "SELECT * FROM active_contracts WHERE contract_digest=?", (frontier["contract_digest"],)
+        ).fetchone()
+        if intent_row is None or claim_row is None or contract_row is None:
+            raise _StoreCorrupt("missing D2 payload source")
+        capability = connection.execute(
+            "SELECT * FROM capabilities WHERE capability_id=?", (intent_row["capability_id"],)
+        ).fetchone()
+        if capability is None:
+            raise _StoreCorrupt("missing D2 payload capability")
+        return {
+            "record_type": "D2_FRONTIER",
+            "contract": _json_value(contract_row["contract_json"]),
+            "contract_resolver_verification": _json_value(contract_row["resolver_verification_json"]),
+            "frontier": frontier,
+            "capability": _json_value(capability["payload_json"]),
+            "capability_verification": _json_value(capability["verification_json"]),
+            "claim": _json_value(claim_row["claim_json"]),
+            "claim_verification": _json_value(claim_row["executor_verification_json"]),
+            "intent": _json_value(intent_row["intent_json"]),
+        }
+
+    def _load_verified_frontier(
+        self,
+        connection: sqlite3.Connection,
+        d2_frontier_digest: str,
+        observed_at: str,
+    ) -> tuple[sqlite3.Row, dict[str, object]] | None:
+        row = connection.execute(
+            "SELECT * FROM d2_frontiers WHERE d2_frontier_digest=?", (d2_frontier_digest,)
+        ).fetchone()
+        if row is None:
+            return None
+        frontier = _json_value(row["frontier_json"])
+        verification = _json_value(row["verification_json"])
+        if type(frontier) is not dict or type(verification) is not dict:
+            raise _StoreCorrupt("invalid D2 record")
+        payload = self._d2_payload(connection, row["transaction_id"], frontier)
+        payload_text = _canonical_text(payload)
+        payload_digest = canonical_digest(payload)
+        if (
+            canonical_digest(frontier) != row["d2_frontier_digest"]
+            or not _closed_dict(verification, _VERIFICATION_RECORD_KEYS)
+            or verification.get("bindings") != payload
+            or verification.get("payload_digest") != payload_digest
+            or canonical_digest(verification) != row["verification_digest"]
+            or not self._m4_verification_is_valid(
+                payload_text,
+                payload_digest,
+                verification,
+                row["verification_json"],
+                row["verification_digest"],
+                observed_at,
+            )
+        ):
+            return None
+        return row, frontier
+
+    def bind_m4_frontier(self, raw: object) -> DurableResult:
+        """Bind one complete controller-derived D2 frontier without creating an effect."""
+
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        if self._m4_verifier is None:
+            return _result(DurableOutcome.STOP, DurableReason.M4_VERIFIER_ABSENT)
+        keys = frozenset({"transaction_id", "observed_at", "frontier", "frontier_verification"})
+        if not _closed_dict(raw, keys):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if (
+            not _valid_identifier(raw["transaction_id"])
+            or _parse_time(raw["observed_at"]) is None
+            or not _valid_verification_source(raw["frontier_verification"])
+            or not _closed_dict(raw["frontier"], _D2_FRONTIER_KEYS)
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        frontier = raw["frontier"]
+        if (
+            frontier["frontier_version"] != "1.0.0"
+            or not all(
+                _valid_identifier(frontier[field])
+                for field in ("authority_domain_id", "journal_lineage_id")
+            )
+            or not all(
+                _valid_digest(frontier[field])
+                for field in ("contract_digest", "root_contract_digest", "frontier_record_digest")
+            )
+            or (frontier["parent_contract_digest"] is not None and not _valid_digest(frontier["parent_contract_digest"]))
+            or not all(
+                _bounded_integer(frontier[field])
+                for field in ("journal_sequence", "joined_iteration", "fencing_epoch")
+            )
+            or not _bounded_integer(frontier["iteration"], 1)
+            or _parse_time(frontier["issued_at"]) is None
+            or _parse_time(frontier["expires_at"]) is None
+            or type(frontier["inventory"]) is not dict
+            or frozenset(frontier["inventory"]) != frozenset(_D2_CLASSES)
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        try:
+            preimage = {key: frontier[key] for key in frontier if key != "frontier_record_digest"}
+            if canonical_digest(preimage) != frontier["frontier_record_digest"]:
+                return _result(DurableOutcome.DENY, DurableReason.D2_INVENTORY_INVALID)
+            for name in _D2_CLASSES:
+                rows = frontier["inventory"][name]
+                if type(rows) is not list or len(rows) > _MAX_VECTOR:
+                    return _result(DurableOutcome.STOP, DurableReason.UNBOUNDED_INPUT)
+                for item in rows:
+                    if (
+                        not _closed_dict(item, _D2_ARTIFACT_KEYS)
+                        or not _valid_identifier(item["artifact_id"])
+                        or not _valid_digest(item["artifact_digest"])
+                        or not _bounded_integer(item["iteration"], 1)
+                    ):
+                        return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+                if rows != sorted(rows, key=lambda item: (item["artifact_id"], item["artifact_digest"])):
+                    return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+                if len({item["artifact_id"] for item in rows}) != len(rows):
+                    return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        except Exception:
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        connection: sqlite3.Connection | None = None
+        try:
+            self._hit("m4_frontier_before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("m4_frontier_after_begin")
+            self._audit(connection)
+            meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+            claim_row = connection.execute(
+                "SELECT * FROM dispatch_attempt_claims WHERE transaction_id=?", (raw["transaction_id"],)
+            ).fetchone()
+            if meta is None:
+                raise _StoreCorrupt("missing metadata")
+            if claim_row is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.UNKNOWN_INTENT)
+            if connection.execute(
+                "SELECT 1 FROM d2_frontiers WHERE transaction_id=? OR d2_frontier_digest=?",
+                (raw["transaction_id"], canonical_digest(frontier)),
+            ).fetchone() is not None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.REPLAY)
+            intent_row = connection.execute(
+                "SELECT * FROM dispatch_intents WHERE transaction_id=?", (raw["transaction_id"],)
+            ).fetchone()
+            capability = connection.execute(
+                "SELECT * FROM capabilities WHERE capability_id=?",
+                (claim_row["capability_id"],),
+            ).fetchone()
+            if intent_row is None or capability is None or intent_row["state"] != "PENDING":
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            capability_payload = _json_value(capability["payload_json"])
+            if type(capability_payload) is not dict:
+                raise _StoreCorrupt("invalid D2 capability payload")
+            contract_payload = dict(capability_payload)
+            contract_payload["request"] = _json_value(capability["request_json"])
+            loaded = self._load_verified_contract(
+                connection, frontier["contract_digest"], raw["observed_at"], contract_payload
+            )
+            if loaded is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.CONTRACT_BINDING_MISMATCH)
+            contract_row, contract = loaded
+            issued = _parse_time(frontier["issued_at"])
+            expires = _parse_time(frontier["expires_at"])
+            observed = _parse_time(raw["observed_at"])
+            if issued is None or expires is None or observed is None or not (issued <= observed < expires):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.EXPIRED)
+            expected_inventory = self._authoritative_d2_inventory(
+                connection, raw["transaction_id"], frontier["iteration"]
+            )
+            if (
+                frontier["contract_version"] != contract["contract_version"]
+                or frontier["authority_domain_id"] != contract["authority_domain_id"]
+                or frontier["journal_lineage_id"] != contract["journal_lineage_id"]
+                or frontier["root_contract_digest"] != contract["root_contract_digest"]
+                or frontier["parent_contract_digest"] != contract["parent_contract_digest"]
+                or frontier["journal_sequence"] != meta["journal_head_sequence"]
+                or frontier["joined_iteration"] != contract_row["joined_iteration"]
+                or frontier["iteration"] != contract_row["joined_iteration"] + 1
+                or frontier["iteration"] > contract_row["max_iterations"]
+                or frontier["fencing_epoch"] != meta["fencing_epoch"]
+                or frontier["fencing_epoch"] != contract["fencing_epoch"]
+                or frontier["inventory"] != expected_inventory
+                or any(
+                    item["iteration"] != frontier["iteration"]
+                    for rows in frontier["inventory"].values()
+                    for item in rows
+                )
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.D2_INVENTORY_INVALID)
+            payload = self._d2_payload(connection, raw["transaction_id"], frontier)
+            payload_text, payload_digest, verification, verification_text, verification_digest = _verification_for(
+                payload, raw["frontier_verification"]
+            )
+            if not self._m4_verification_is_valid(
+                payload_text,
+                payload_digest,
+                verification,
+                verification_text,
+                verification_digest,
+                raw["observed_at"],
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.D2_INVENTORY_INVALID)
+            d2_digest = canonical_digest(frontier)
+            sequence = self._append_event(
+                connection,
+                "D2_FRONTIER_BOUND",
+                raw["transaction_id"],
+                {
+                    "transaction_id": raw["transaction_id"],
+                    "contract_digest": frontier["contract_digest"],
+                    "d2_frontier_digest": d2_digest,
+                    "frontier_record_digest": frontier["frontier_record_digest"],
+                    "source_journal_sequence": frontier["journal_sequence"],
+                    "iteration": frontier["iteration"],
+                    "revocation_epoch": capability["revocation_epoch"],
+                    "fencing_epoch": frontier["fencing_epoch"],
+                    "verification_digest": verification_digest,
+                    "observed_at": raw["observed_at"],
+                },
+            )
+            connection.execute(
+                """INSERT INTO d2_frontiers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    d2_digest,
+                    raw["transaction_id"],
+                    frontier["contract_digest"],
+                    frontier["iteration"],
+                    frontier["joined_iteration"],
+                    frontier["journal_sequence"],
+                    frontier["fencing_epoch"],
+                    _canonical_text(frontier["inventory"]),
+                    _canonical_text(frontier),
+                    verification_text,
+                    verification_digest,
+                    raw["observed_at"],
+                    sequence,
+                ),
+            )
+            self._hit("m4_frontier_after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("m4_frontier_after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            return DurableResult(
+                DurableOutcome.COMMITTED,
+                DurableReason.D2_FRONTIER_BOUND,
+                transaction_id=raw["transaction_id"],
+                journal_sequence=sequence,
+                contract_digest=frontier["contract_digest"],
+                d2_frontier_digest=d2_digest,
+            )
+        except _Rejected as rejection:
+            if connection is not None:
+                connection.rollback()
+            return _result(rejection.outcome, rejection.reason)
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def begin_m4_transaction(self, raw: object) -> DurableResult:
+        """Durably bind one claimed dispatch to its contract and D2 frontier."""
+
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        if self._m4_verifier is None:
+            return _result(DurableOutcome.STOP, DurableReason.M4_VERIFIER_ABSENT)
+        if not _closed_dict(
+            raw, frozenset({"transaction_id", "d2_frontier_digest", "observed_at"})
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if (
+            not _valid_identifier(raw["transaction_id"])
+            or not _valid_digest(raw["d2_frontier_digest"])
+            or _parse_time(raw["observed_at"]) is None
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        connection: sqlite3.Connection | None = None
+        try:
+            self._hit("m4_begin_before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("m4_begin_after_begin")
+            self._audit(connection)
+            meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+            if meta is None:
+                raise _StoreCorrupt("missing metadata")
+            if connection.execute(
+                "SELECT 1 FROM m4_transactions WHERE transaction_id=?", (raw["transaction_id"],)
+            ).fetchone() is not None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.REPLAY)
+            loaded = self._load_verified_frontier(
+                connection, raw["d2_frontier_digest"], raw["observed_at"]
+            )
+            if loaded is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.D2_INVENTORY_INVALID)
+            frontier_row, frontier = loaded
+            if frontier_row["transaction_id"] != raw["transaction_id"]:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.D2_INVENTORY_INVALID)
+            intent = connection.execute(
+                "SELECT * FROM dispatch_intents WHERE transaction_id=?", (raw["transaction_id"],)
+            ).fetchone()
+            claim = connection.execute(
+                "SELECT * FROM dispatch_attempt_claims WHERE transaction_id=?", (raw["transaction_id"],)
+            ).fetchone()
+            if intent is None or claim is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.UNKNOWN_INTENT)
+            capability = connection.execute(
+                "SELECT * FROM capabilities WHERE capability_id=?", (intent["capability_id"],)
+            ).fetchone()
+            if (
+                capability is None
+                or capability["state"] != "CONSUMED"
+                or capability["consumed_transaction_id"] != raw["transaction_id"]
+                or intent["state"] != "PENDING"
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            observed = _parse_time(raw["observed_at"])
+            not_before = _parse_time(capability["not_before"])
+            expires = _parse_time(capability["expires_at"])
+            if observed is None or not_before is None or expires is None or not (not_before <= observed < expires):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.EXPIRED)
+            claim_value = _json_value(claim["claim_json"])
+            claim_verification = _json_value(claim["executor_verification_json"])
+            capability_payload = _json_value(capability["payload_json"])
+            if not all(type(value) is dict for value in (claim_value, claim_verification, capability_payload)):
+                raise _StoreCorrupt("invalid M4 dispatch source")
+            contract_payload = dict(capability_payload)
+            contract_payload["request"] = _json_value(capability["request_json"])
+            if (
+                capability["revocation_epoch"] != meta["revocation_epoch"]
+                or any(
+                    item != meta["fencing_epoch"]
+                    for item in (capability["fencing_epoch"], intent["fencing_epoch"], claim["fencing_epoch"])
+                )
+                or frontier["fencing_epoch"] != meta["fencing_epoch"]
+                or frontier["contract_digest"] != capability["contract_digest"]
+                or self._load_verified_contract(
+                    connection,
+                    capability["contract_digest"],
+                    raw["observed_at"],
+                    contract_payload,
+                ) is None
+                or not self._stored_verification_is_valid(capability, raw["observed_at"])
+                or not self._executor_claim_verification_is_valid(
+                    claim["claim_json"],
+                    claim["claim_digest"],
+                    claim_verification,
+                    claim["executor_verification_json"],
+                    claim["executor_verification_digest"],
+                    raw["observed_at"],
+                )
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+            reservations = connection.execute(
+                "SELECT name, unit, scope_digest, lineage_root, amount FROM budget_reservations "
+                "WHERE transaction_id=? ORDER BY name, unit, scope_digest, lineage_root",
+                (raw["transaction_id"],),
+            ).fetchall()
+            if not reservations:
+                raise _StoreCorrupt("missing M4 reservation")
+            budget_vector = [
+                {
+                    "name": row["name"],
+                    "unit": row["unit"],
+                    "scope_digest": row["scope_digest"],
+                    "lineage_root": row["lineage_root"],
+                    "amount": row["amount"],
+                }
+                for row in reservations
+            ]
+            if budget_vector != _json_value(capability["budget_vector_json"]):
+                raise _StoreCorrupt("M4 budget vector mismatch")
+            budget_digest = canonical_digest(budget_vector)
+            event_payload = {
+                "transaction_id": raw["transaction_id"],
+                "contract_digest": capability["contract_digest"],
+                "d2_frontier_digest": raw["d2_frontier_digest"],
+                "capability_id": capability["capability_id"],
+                "claim_digest": claim["claim_digest"],
+                "intent_digest": intent["intent_digest"],
+                "decision_digest": capability["decision_digest"],
+                "authorized_envelope_digest": capability["authorized_envelope_digest"],
+                "lineage_root": capability["lineage_root"],
+                "iteration": frontier["iteration"],
+                "budget_vector": budget_vector,
+                "budget_vector_digest": budget_digest,
+                "revocation_epoch": capability["revocation_epoch"],
+                "fencing_epoch": capability["fencing_epoch"],
+                "observed_at": raw["observed_at"],
+            }
+            sequence = self._append_event(
+                connection, "M4_DISPATCH_BOUND", raw["transaction_id"], event_payload
+            )
+            connection.execute(
+                """INSERT INTO m4_transactions (
+                       transaction_id, state, contract_digest, d2_frontier_digest,
+                       iteration, capability_id, claim_digest, intent_digest,
+                       decision_digest, authorized_envelope_digest, lineage_root,
+                       object_binding_digest, revocation_epoch, fencing_epoch,
+                       budget_vector_json, budget_vector_digest, current_record_digest,
+                       started_at, started_journal_sequence
+                   ) VALUES (?, 'DISPATCHED', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, ?)""",
+                (
+                    raw["transaction_id"],
+                    capability["contract_digest"],
+                    raw["d2_frontier_digest"],
+                    frontier["iteration"],
+                    capability["capability_id"],
+                    claim["claim_digest"],
+                    intent["intent_digest"],
+                    capability["decision_digest"],
+                    capability["authorized_envelope_digest"],
+                    capability["lineage_root"],
+                    capability["revocation_epoch"],
+                    capability["fencing_epoch"],
+                    _canonical_text(budget_vector),
+                    budget_digest,
+                    raw["observed_at"],
+                    sequence,
+                ),
+            )
+            self._hit("m4_begin_after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("m4_begin_after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            return DurableResult(
+                DurableOutcome.COMMITTED,
+                DurableReason.M4_DISPATCH_BOUND,
+                transaction_id=raw["transaction_id"],
+                journal_sequence=sequence,
+                contract_digest=capability["contract_digest"],
+                d2_frontier_digest=raw["d2_frontier_digest"],
+                m4_state="DISPATCHED",
+            )
+        except _StoreCorrupt:
+            if connection is not None:
+                connection.rollback()
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if connection is not None:
+                connection.rollback()
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _terminalize_m4_budget(
+        self,
+        connection: sqlite3.Connection,
+        transaction: sqlite3.Row,
+        state: str,
+        observed_at: str,
+        record_digest: str,
+    ) -> int | None:
+        disposition = {
+            "COMMITTED": "SPENT",
+            "DISCARDED": "RELEASED",
+            "QUARANTINED": "QUARANTINED_ESCROW",
+        }.get(state)
+        if disposition is None:
+            return None
+        intent = connection.execute(
+            "SELECT * FROM dispatch_intents WHERE transaction_id=?",
+            (transaction["transaction_id"],),
+        ).fetchone()
+        reservations = connection.execute(
+            "SELECT * FROM budget_reservations WHERE transaction_id=? "
+            "ORDER BY name, unit, scope_digest, lineage_root",
+            (transaction["transaction_id"],),
+        ).fetchall()
+        if (
+            intent is None
+            or intent["state"] != "PENDING"
+            or not reservations
+            or any(row["disposition"] is not None for row in reservations)
+        ):
+            raise _StoreCorrupt("M4 terminal budget source mismatch")
+        for reservation in reservations:
+            key = (
+                reservation["name"],
+                reservation["unit"],
+                reservation["scope_digest"],
+                reservation["lineage_root"],
+            )
+            if disposition == "SPENT":
+                cursor = connection.execute(
+                    "UPDATE budgets SET reserved=reserved-?, spent=spent+? "
+                    "WHERE name=? AND unit=? AND scope_digest=? AND lineage_root=? "
+                    "AND reserved>=? AND spent<=?",
+                    (
+                        reservation["amount"],
+                        reservation["amount"],
+                        *key,
+                        reservation["amount"],
+                        _MAX_INTEGER - reservation["amount"],
+                    ),
+                )
+            elif disposition == "RELEASED":
+                cursor = connection.execute(
+                    "UPDATE budgets SET reserved=reserved-?, remaining=remaining+? "
+                    "WHERE name=? AND unit=? AND scope_digest=? AND lineage_root=? "
+                    "AND reserved>=? AND remaining<=?",
+                    (
+                        reservation["amount"],
+                        reservation["amount"],
+                        *key,
+                        reservation["amount"],
+                        _MAX_INTEGER - reservation["amount"],
+                    ),
+                )
+            else:
+                cursor = None
+            if cursor is not None and cursor.rowcount != 1:
+                raise _StoreCorrupt("M4 terminal budget conservation failure")
+        terminal_record = {
+            "record_type": disposition,
+            "transaction_id": transaction["transaction_id"],
+            "intent_digest": transaction["intent_digest"],
+            "fencing_epoch": transaction["fencing_epoch"],
+            "observed_at": observed_at,
+            "evidence_digest": record_digest,
+        }
+        terminal_text = _canonical_text(terminal_record)
+        terminal_digest = canonical_digest(terminal_record)
+        changed = connection.execute(
+            "UPDATE budget_reservations SET disposition=?, terminal_record_json=?, "
+            "terminal_record_digest=? WHERE transaction_id=? AND disposition IS NULL",
+            (
+                disposition,
+                terminal_text,
+                terminal_digest,
+                transaction["transaction_id"],
+            ),
+        )
+        if changed.rowcount != len(reservations):
+            raise _StoreCorrupt("M4 terminal reservation update mismatch")
+        changed = connection.execute(
+            "UPDATE dispatch_intents SET state=? WHERE transaction_id=? AND state='PENDING'",
+            (disposition, transaction["transaction_id"]),
+        )
+        if changed.rowcount != 1:
+            raise _StoreCorrupt("M4 terminal intent update mismatch")
+        return self._append_event(
+            connection,
+            "BUDGET_TERMINAL_" + disposition,
+            transaction["transaction_id"],
+            {
+                "transaction_id": transaction["transaction_id"],
+                "intent_digest": transaction["intent_digest"],
+                "disposition": disposition,
+                "terminal_record_digest": terminal_digest,
+                "fencing_epoch": transaction["fencing_epoch"],
+            },
+        )
+
+    def advance_m4(self, raw: object) -> DurableResult:
+        """Atomically verify and append one exact M4 stage transition."""
+
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        if self._m4_verifier is None:
+            return _result(DurableOutcome.STOP, DurableReason.M4_VERIFIER_ABSENT)
+        keys = frozenset(
+            {"transaction_id", "expected_state", "state", "observed_at", "evidence", "verification"}
+        )
+        if not _closed_dict(raw, keys):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if (
+            not _valid_identifier(raw["transaction_id"])
+            or type(raw["expected_state"]) is not str
+            or type(raw["state"]) is not str
+            or raw["expected_state"] not in _M4_STATES
+            or raw["state"] not in _M4_STATES
+            or _parse_time(raw["observed_at"]) is None
+            or not _valid_verification_source(raw["verification"])
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        connection: sqlite3.Connection | None = None
+        try:
+            state = raw["state"]
+            self._hit("m4_" + state.lower() + "_before_transaction")
+            connection = self._connect()
+            connection.execute("BEGIN IMMEDIATE")
+            self._hit("m4_" + state.lower() + "_after_begin")
+            self._audit(connection)
+            meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+            transaction = connection.execute(
+                "SELECT * FROM m4_transactions WHERE transaction_id=?",
+                (raw["transaction_id"],),
+            ).fetchone()
+            if meta is None:
+                raise _StoreCorrupt("missing M4 metadata")
+            if transaction is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.UNKNOWN_INTENT)
+            if transaction["state"] != raw["expected_state"]:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            if state not in _M4_NEXT.get(transaction["state"], frozenset()):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+            capability_row = connection.execute(
+                "SELECT * FROM capabilities WHERE capability_id=?",
+                (transaction["capability_id"],),
+            ).fetchone()
+            claim_row = connection.execute(
+                "SELECT * FROM dispatch_attempt_claims WHERE transaction_id=?",
+                (raw["transaction_id"],),
+            ).fetchone()
+            intent_row = connection.execute(
+                "SELECT * FROM dispatch_intents WHERE transaction_id=?",
+                (raw["transaction_id"],),
+            ).fetchone()
+            if capability_row is None or claim_row is None or intent_row is None:
+                raise _StoreCorrupt("missing M4 transition source")
+            capability = _json_value(capability_row["payload_json"])
+            capability_verification = _json_value(capability_row["verification_json"])
+            claim = _json_value(claim_row["claim_json"])
+            claim_verification = _json_value(claim_row["executor_verification_json"])
+            intent = _json_value(intent_row["intent_json"])
+            if not all(
+                type(value) is dict
+                for value in (capability, capability_verification, claim, claim_verification, intent)
+            ):
+                raise _StoreCorrupt("invalid M4 transition source")
+            observed = _parse_time(raw["observed_at"])
+            started = _parse_time(transaction["started_at"])
+            not_before = _parse_time(capability_row["not_before"])
+            expires = _parse_time(capability_row["expires_at"])
+            if (
+                observed is None
+                or started is None
+                or not_before is None
+                or expires is None
+                or not (not_before <= started <= observed < expires)
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.EXPIRED)
+            contract_payload = dict(capability)
+            contract_payload["request"] = _json_value(capability_row["request_json"])
+            loaded_contract = self._load_verified_contract(
+                connection, transaction["contract_digest"], raw["observed_at"], contract_payload
+            )
+            loaded_frontier = self._load_verified_frontier(
+                connection, transaction["d2_frontier_digest"], raw["observed_at"]
+            )
+            if loaded_contract is None or loaded_frontier is None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+            contract_row, contract = loaded_contract
+            frontier_row, frontier = loaded_frontier
+            expected_intent_state = {
+                "COMMITTED": "SPENT",
+                "QUARANTINED": "QUARANTINED_ESCROW",
+            }.get(transaction["state"], "PENDING")
+            if (
+                capability_row["state"] != "CONSUMED"
+                or capability_row["consumed_transaction_id"] != raw["transaction_id"]
+                or intent_row["state"] != expected_intent_state
+                or frontier_row["transaction_id"] != raw["transaction_id"]
+                or any(
+                    value != meta["fencing_epoch"]
+                    for value in (
+                        transaction["fencing_epoch"],
+                        capability_row["fencing_epoch"],
+                        claim_row["fencing_epoch"],
+                        intent_row["fencing_epoch"],
+                        frontier["fencing_epoch"],
+                    )
+                )
+                or any(
+                    value != meta["revocation_epoch"]
+                    for value in (
+                        transaction["revocation_epoch"],
+                        capability_row["revocation_epoch"],
+                        claim_row["revocation_epoch"],
+                        contract["revocation_epoch"],
+                    )
+                )
+                or transaction["contract_digest"] != contract_row["contract_digest"]
+                or transaction["iteration"] != frontier["iteration"]
+                or canonical_digest(capability) != capability_row["payload_digest"]
+                or canonical_digest(claim) != claim_row["claim_digest"]
+                or canonical_digest(intent) != intent_row["intent_digest"]
+                or not self._stored_verification_is_valid(capability_row, raw["observed_at"])
+                or not self._executor_claim_verification_is_valid(
+                    claim_row["claim_json"],
+                    claim_row["claim_digest"],
+                    claim_verification,
+                    claim_row["executor_verification_json"],
+                    claim_row["executor_verification_digest"],
+                    raw["observed_at"],
+                )
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+            transition_rows = connection.execute(
+                "SELECT * FROM m4_transition_records WHERE transaction_id=? ORDER BY transition_index",
+                (raw["transaction_id"],),
+            ).fetchall()
+            prior: dict[str, tuple[str, dict[str, object]]] = {}
+            previous_digest: str | None = None
+            previous_time = started
+            for index, row in enumerate(transition_rows, 1):
+                record = _json_value(row["record_json"])
+                verification = _json_value(row["verification_json"])
+                record_time = _parse_time(row["observed_at"])
+                if (
+                    type(record) is not dict
+                    or type(verification) is not dict
+                    or row["transition_index"] != index
+                    or row["previous_record_digest"] != previous_digest
+                    or record.get("previous_record_digest") != previous_digest
+                    or canonical_digest(record) != row["record_digest"]
+                    or verification.get("bindings") != record
+                    or verification.get("payload_digest") != row["record_digest"]
+                    or canonical_digest(verification) != row["verification_digest"]
+                    or record_time is None
+                    or record_time < previous_time
+                    or not self._m4_verification_is_valid(
+                        row["record_json"],
+                        row["record_digest"],
+                        verification,
+                        row["verification_json"],
+                        row["verification_digest"],
+                        raw["observed_at"],
+                    )
+                ):
+                    connection.rollback()
+                    return _result(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+                prior[row["state"]] = (row["record_digest"], record)
+                previous_digest = row["record_digest"]
+                previous_time = record_time
+            if observed < previous_time:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.EXPIRED)
+            object_binding_digest = _m4_evidence_object_digest(
+                state, raw["evidence"], transaction, capability, intent, frontier, prior
+            )
+            budget_vector = _json_value(transaction["budget_vector_json"])
+            if type(budget_vector) is not list or canonical_digest(budget_vector) != transaction["budget_vector_digest"]:
+                raise _StoreCorrupt("invalid M4 budget vector")
+            transition_index = len(transition_rows) + 1
+            record = {
+                "record_version": FORMAT_VERSION,
+                "record_type": "M4_TRANSITION",
+                "state": state,
+                "transaction_id": raw["transaction_id"],
+                "transition_index": transition_index,
+                "contract_digest": transaction["contract_digest"],
+                "d2_frontier_digest": transaction["d2_frontier_digest"],
+                "iteration": transaction["iteration"],
+                "capability_id": transaction["capability_id"],
+                "claim_digest": transaction["claim_digest"],
+                "intent_digest": transaction["intent_digest"],
+                "decision_digest": transaction["decision_digest"],
+                "authorized_envelope_digest": transaction["authorized_envelope_digest"],
+                "lineage_root": transaction["lineage_root"],
+                "object_binding_digest": object_binding_digest,
+                "budget_vector": budget_vector,
+                "budget_vector_digest": transaction["budget_vector_digest"],
+                "revocation_epoch": transaction["revocation_epoch"],
+                "fencing_epoch": transaction["fencing_epoch"],
+                "previous_record_digest": previous_digest,
+                "observed_at": raw["observed_at"],
+                "contract": contract,
+                "frontier": frontier,
+                "capability": capability,
+                "capability_verification": capability_verification,
+                "claim": claim,
+                "claim_verification": claim_verification,
+                "intent": intent,
+                "evidence": raw["evidence"],
+            }
+            record_text, record_digest, verification, verification_text, verification_digest = _verification_for(
+                record, raw["verification"]
+            )
+            if not self._m4_verification_is_valid(
+                record_text,
+                record_digest,
+                verification,
+                verification_text,
+                verification_digest,
+                raw["observed_at"],
+            ):
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
+            self._hit("m4_" + state.lower() + "_after_verification")
+            event_payload = {
+                "transaction_id": raw["transaction_id"],
+                "state": state,
+                "record_digest": record_digest,
+                "verification_digest": verification_digest,
+                "object_binding_digest": object_binding_digest,
+                "contract_digest": transaction["contract_digest"],
+                "d2_frontier_digest": transaction["d2_frontier_digest"],
+                "budget_vector_digest": transaction["budget_vector_digest"],
+                "revocation_epoch": transaction["revocation_epoch"],
+                "fencing_epoch": transaction["fencing_epoch"],
+                "observed_at": raw["observed_at"],
+            }
+            sequence = self._append_event(
+                connection, "M4_" + state, raw["transaction_id"], event_payload
+            )
+            connection.execute(
+                "INSERT INTO m4_transition_records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    raw["transaction_id"],
+                    transition_index,
+                    state,
+                    previous_digest,
+                    record_digest,
+                    record_text,
+                    verification_text,
+                    verification_digest,
+                    raw["observed_at"],
+                    sequence,
+                ),
+            )
+            if state == "JOINED":
+                changed = connection.execute(
+                    "UPDATE active_contracts SET joined_iteration=? WHERE contract_digest=? "
+                    "AND joined_iteration=? AND max_iterations>=?",
+                    (
+                        transaction["iteration"],
+                        transaction["contract_digest"],
+                        transaction["iteration"] - 1,
+                        transaction["iteration"],
+                    ),
+                )
+                if changed.rowcount != 1:
+                    raise _StoreCorrupt("M4 JOIN iteration mismatch")
+            terminal_sequence = self._terminalize_m4_budget(
+                connection, transaction, state, raw["observed_at"], record_digest
+            )
+            self._hit("m4_" + state.lower() + "_after_budget")
+            changed = connection.execute(
+                "UPDATE m4_transactions SET state=?, object_binding_digest=?, "
+                "current_record_digest=? WHERE transaction_id=? AND state=?",
+                (
+                    state,
+                    object_binding_digest,
+                    record_digest,
+                    raw["transaction_id"],
+                    raw["expected_state"],
+                ),
+            )
+            if changed.rowcount != 1:
+                raise _StoreCorrupt("M4 state update mismatch")
+            self._hit("m4_" + state.lower() + "_after_event")
+            connection.commit()
+            connection.close()
+            connection = None
+            try:
+                self._hit("m4_" + state.lower() + "_after_commit_before_ack")
+            except Exception:
+                return _result(DurableOutcome.STOP, DurableReason.ACKNOWLEDGEMENT_UNKNOWN)
+            return DurableResult(
+                DurableOutcome.COMMITTED,
+                DurableReason["M4_" + state],
+                transaction_id=raw["transaction_id"],
+                journal_sequence=terminal_sequence or sequence,
+                contract_digest=transaction["contract_digest"],
+                d2_frontier_digest=transaction["d2_frontier_digest"],
+                record_digest=record_digest,
+                m4_state=state,
+            )
+        except _Rejected as rejection:
+            if connection is not None:
+                connection.rollback()
+            return _result(rejection.outcome, rejection.reason)
         except _StoreCorrupt:
             if connection is not None:
                 connection.rollback()
@@ -2691,6 +5146,17 @@ class DurableStore:
             if prepared.payload["fencing_epoch"] != meta["fencing_epoch"]:
                 connection.rollback()
                 return _result(DurableOutcome.DENY, DurableReason.STALE_FENCE)
+            if self._m4_verifier is not None:
+                contract_payload = dict(prepared.payload)
+                contract_payload["request"] = _json_value(prepared.request_text)
+                if self._load_verified_contract(
+                    connection,
+                    prepared.payload["contract_digest"],
+                    prepared.payload["issued_at"],
+                    contract_payload,
+                ) is None:
+                    connection.rollback()
+                    return _result(DurableOutcome.DENY, DurableReason.CONTRACT_BINDING_MISMATCH)
             if connection.execute(
                 "SELECT 1 FROM capabilities WHERE nonce=? OR capability_id=? OR idempotency_key_digest=?",
                 (
@@ -3003,6 +5469,20 @@ class DurableStore:
             if not (not_before <= prepared.observed_at < expires_at):
                 connection.rollback()
                 return _result(DurableOutcome.DENY, DurableReason.EXPIRED)
+            if self._m4_verifier is not None:
+                contract_payload = _json_value(capability["payload_json"])
+                if type(contract_payload) is not dict:
+                    raise _StoreCorrupt("invalid capability payload")
+                contract_payload = dict(contract_payload)
+                contract_payload["request"] = _json_value(capability["request_json"])
+                if self._load_verified_contract(
+                    connection,
+                    capability["contract_digest"],
+                    prepared.raw["observed_at"],
+                    contract_payload,
+                ) is None:
+                    connection.rollback()
+                    return _result(DurableOutcome.DENY, DurableReason.CONTRACT_BINDING_MISMATCH)
             if prepared.budget_text != capability["budget_vector_json"]:
                 connection.rollback()
                 return _result(DurableOutcome.DENY, DurableReason.BUDGET_MISMATCH)
@@ -3265,6 +5745,19 @@ class DurableStore:
             decision = _json_value(capability["decision_json"])
             envelope = _json_value(capability["authorized_envelope_json"])
             capability_verification = _json_value(capability["verification_json"])
+            if type(payload) is not dict or type(request) is not dict:
+                raise _StoreCorrupt("invalid claim capability payload")
+            if self._m4_verifier is not None:
+                contract_payload = dict(payload)
+                contract_payload["request"] = request
+                if self._load_verified_contract(
+                    connection,
+                    capability["contract_digest"],
+                    raw["observed_at"],
+                    contract_payload,
+                ) is None:
+                    connection.rollback()
+                    return _result(DurableOutcome.DENY, DurableReason.CONTRACT_BINDING_MISMATCH)
             if payload.get("principal_id") == payload.get("audience_id"):
                 raise _StoreCorrupt("self-audience capability")
             claim = {
@@ -4222,6 +6715,12 @@ class DurableStore:
             connection.execute("BEGIN IMMEDIATE")
             self._hit("after_begin")
             self._audit(connection)
+            if connection.execute(
+                "SELECT 1 FROM m4_transactions WHERE transaction_id=?",
+                (raw["transaction_id"],),
+            ).fetchone() is not None:
+                connection.rollback()
+                return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
             intent = connection.execute(
                 "SELECT * FROM dispatch_intents WHERE transaction_id=?",
                 (raw["transaction_id"],),
@@ -4422,6 +6921,20 @@ class DurableStore:
                     )
                     for row in session_rows
                 )
+                m4_rows = connection.execute(
+                    "SELECT transaction_id, state, contract_digest, d2_frontier_digest, fencing_epoch "
+                    "FROM m4_transactions ORDER BY started_journal_sequence"
+                ).fetchall()
+                m4_recovery = tuple(
+                    M4Recovery(
+                        row["transaction_id"],
+                        row["state"],
+                        row["contract_digest"],
+                        row["d2_frontier_digest"],
+                        row["fencing_epoch"],
+                    )
+                    for row in m4_rows
+                )
             finally:
                 connection.close()
             return DurableResult(
@@ -4429,6 +6942,7 @@ class DurableStore:
                 DurableReason.RECOVERED,
                 recovery_intents=intents,
                 recovery_sessions=sessions,
+                m4_recovery=m4_recovery,
             )
         except sqlite3.OperationalError as error:
             if "locked" in str(error).lower() or "busy" in str(error).lower():

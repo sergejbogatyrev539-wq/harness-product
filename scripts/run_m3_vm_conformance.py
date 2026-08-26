@@ -898,7 +898,17 @@ _DURABLE_RESULT_KEYS = frozenset(
 
 
 def _durable_result_data(result: object) -> dict[str, object]:
+    if (
+        result.contract_digest is not None
+        or result.d2_frontier_digest is not None
+        or result.record_digest is not None
+        or result.m4_state is not None
+        or result.m4_recovery
+    ):
+        _stop("CONTROLLER_RESULT_MALFORMED")
     data = asdict(result)
+    for key in ("contract_digest", "d2_frontier_digest", "record_digest", "m4_state", "m4_recovery"):
+        del data[key]
     data["outcome"] = result.outcome.value
     data["reason"] = result.reason.value
     data["recovery_intents"] = [asdict(item) for item in result.recovery_intents]

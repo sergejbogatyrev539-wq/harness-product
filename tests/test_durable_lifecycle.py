@@ -372,8 +372,12 @@ class DurableLifecycleTests(unittest.TestCase):
             )
         self.assertEqual(self.store().health().reason, DurableReason.CORRUPT_STORE)
 
-    def test_empty_exact_v1_and_v2_schema_migrate_to_v3_without_intermediate_state(self) -> None:
-        for version, schema in ((1, durable_module._SCHEMA_V1), (2, durable_module._SCHEMA_V2)):
+    def test_empty_exact_v1_v2_and_v3_schema_migrate_to_v4_without_intermediate_state(self) -> None:
+        for version, schema in (
+            (1, durable_module._SCHEMA_V1),
+            (2, durable_module._SCHEMA_V2),
+            (3, durable_module._SCHEMA_V3),
+        ):
             with self.subTest(version=version):
                 self.path = Path(self.temporary.name) / f"migration-{version}.sqlite3"
                 with sqlite3.connect(self.path) as connection:
@@ -388,9 +392,16 @@ class DurableLifecycleTests(unittest.TestCase):
                 migrated = self.store()
                 self.assertEqual(migrated.health().reason, DurableReason.READY)
                 with sqlite3.connect(self.path) as connection:
-                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (3,))
-                    self.assertEqual(connection.execute("SELECT schema_version FROM store_meta").fetchone(), (3,))
+                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (4,))
+                    self.assertEqual(connection.execute("SELECT schema_version FROM store_meta").fetchone(), (4,))
                     self.assertEqual(connection.execute("SELECT COUNT(*) FROM execution_sessions").fetchone(), (0,))
+                    for table in (
+                        "active_contracts",
+                        "d2_frontiers",
+                        "m4_transactions",
+                        "m4_transition_records",
+                    ):
+                        self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone(), (0,))
 
 
 if __name__ == "__main__":

@@ -188,6 +188,17 @@ class VMRunnerBoundaryTests(unittest.TestCase):
         )
         data = RUNNER._durable_result_data(result)
         self.assertEqual(RUNNER._durable_result_from_data(durable, data), result)
+        with self.assertRaisesRegex(
+            RUNNER.QualificationStop, "CONTROLLER_RESULT_MALFORMED"
+        ):
+            RUNNER._durable_result_data(
+                durable.DurableResult(
+                    durable.DurableOutcome.COMMITTED,
+                    durable.DurableReason.M4_DISPATCH_BOUND,
+                    transaction_id="transaction-1",
+                    m4_state="DISPATCHED",
+                )
+            )
         mutations = []
         missing = dict(data)
         missing.pop("reason")
