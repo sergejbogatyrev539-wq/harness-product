@@ -18,5 +18,10 @@
   },
   "signer_id": "harness-m3-attestor",
   "trust_root_id": "harness-m3-disposable-test-root-20260826",
-  "trust_version": "1.0.0"
+  "trust_version": "1.0.0",
+  "verifier_openssl": {
+    "digest": "sha256:30cc7c491903d6d8bca54406889c0334a167777397458214b5bd498c51b6fd97",
+    "path": "/usr/bin/openssl",
+    "version": "OpenSSL 3.0.13 30 Jan 2024 (Library: OpenSSL 3.0.13 30 Jan 2024)"
+  }
 }

@@ -1,0 +1,6 @@
+{
+  "additional_syscalls": [47, 55],
+  "base_profile_digest": "sha256:9cb79c8d1e8326a12f027bfdc05fae396be20c4cc84ca6dd62b84a569867e1ed",
+  "format_version": "1.0.0",
+  "role": "BROKER"
+}

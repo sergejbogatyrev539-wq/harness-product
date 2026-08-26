@@ -200,15 +200,17 @@
     "network": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["worker_default", "loopback", "ipv4", "ipv6", "dns", "unix_sockets", "metadata_service", "inherited_fds_closed"],
+      "required": ["worker_default", "loopback", "ipv4", "ipv6", "dns", "unix_sockets", "metadata_service", "connected_fd_policy", "external_sink_fds", "inherited_fds_closed"],
       "properties": {
         "worker_default": {"const": "DISCONNECTED"},
         "loopback": {"const": "DISABLED"},
         "ipv4": {"const": "DISABLED"},
         "ipv6": {"const": "DISABLED"},
         "dns": {"const": "DISABLED"},
-        "unix_sockets": {"const": "NONE"},
+        "unix_sockets": {"const": "BROKER_CONNECTED_PAIR_ONLY"},
         "metadata_service": {"const": "BLOCKED"},
+        "connected_fd_policy": {"const": "EXACT_OPERATION_SCOPED_PAIR_ONLY"},
+        "external_sink_fds": {"const": "NONE"},
         "inherited_fds_closed": {"const": true}
       }
     },
@@ -233,14 +235,16 @@
     "brokerIpcBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["worker_principal", "broker_principal", "worker_endpoint", "broker_endpoint", "transport", "peer_credentials_verified", "worker_network_namespace", "broker_network_namespace", "binding_digest"],
+      "required": ["worker_principal", "broker_principal", "worker_endpoint", "broker_endpoint", "transport", "endpoint_mode", "fd_delivery", "sender_authentication", "worker_network_namespace", "broker_network_namespace", "binding_digest"],
       "properties": {
         "worker_principal": {"$ref": "#/$defs/id"},
         "broker_principal": {"$ref": "#/$defs/id"},
         "worker_endpoint": {"$ref": "#/$defs/id"},
         "broker_endpoint": {"$ref": "#/$defs/id"},
         "transport": {"const": "UNIX_SEQPACKET"},
-        "peer_credentials_verified": {"const": true},
+        "endpoint_mode": {"const": "UNIX_CONNECTED_PAIR"},
+        "fd_delivery": {"const": "SUPERVISOR_TYPED_ALLOWLIST"},
+        "sender_authentication": {"const": "SCM_CREDENTIALS_PLUS_ENDPOINT_HOLDER_ATTESTATION"},
         "worker_network_namespace": {"$ref": "#/$defs/id"},
         "broker_network_namespace": {"$ref": "#/$defs/id"},
         "binding_digest": {"$ref": "#/$defs/digest"}

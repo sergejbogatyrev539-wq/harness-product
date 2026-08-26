@@ -36,6 +36,27 @@ ENVIRONMENT = "DEV_STAGEABLE_LOCAL"
 RUNTIME_PATH = "/usr/bin/bwrap"
 RUNTIME_VERSION = "bubblewrap 0.9.0"
 RUNTIME_DIGEST = "sha256:52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
+AA_EXEC_PATH = "/usr/bin/aa-exec"
+AA_EXEC_DIGEST = "sha256:f28cbce3c8664cab5154492fdbc55ecb937a3e7ce1a9478c881a5f5965d7ce3e"
+
+_APPARMOR_PROFILES = frozenset(
+    {
+        "harness-l0-lx-a.attestor",
+        "harness-l0-lx-a.controller",
+        "harness-l0-lx-a.worker",
+        "harness-l0-lx-a.broker",
+        "harness-l0-lx-a.executor",
+    }
+)
+_SECCOMP_ALLOWED_SYSCALLS = (
+    0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+    21, 23, 24, 25, 28, 32, 33, 35, 39, 59, 60, 61, 62, 63, 72, 74,
+    79, 80, 81, 89, 95, 96, 97, 99,
+    102, 104, 107, 108, 109, 110, 124, 125, 130, 131, 137, 157, 158,
+    160, 186, 201, 202, 204, 217, 218, 219, 228, 229, 230, 231, 232,
+    233, 234, 247, 257, 262, 267, 269, 270, 271, 273, 281, 291, 292,
+    302, 309, 318, 324, 332, 334, 436, 439, 449,
+)
 
 _MAX_INTEGER = (1 << 63) - 1
 _MAX_MESSAGE_BYTES = 1 << 20
@@ -52,6 +73,11 @@ _ROLES = (
 )
 _ACTIVE_ROLES = frozenset({"AGENT_WORKER", "BROKER", "EXECUTOR"})
 _DISABLED_ROLES = frozenset({"MODEL_GATEWAY", "OBSERVER"})
+_ROLE_APPARMOR_LABELS = {
+    "AGENT_WORKER": "harness-l0-lx-a.worker",
+    "BROKER": "harness-l0-lx-a.broker",
+    "EXECUTOR": "harness-l0-lx-a.executor",
+}
 _ROLE_EFFECTS = {
     "AGENT_WORKER": frozenset({"COMPUTE", "OBSERVE"}),
     "BROKER": frozenset({"COMMUNICATE"}),
@@ -116,7 +142,7 @@ _DENIED_SURFACES = frozenset(
         "DURABLE_DB",
         "EBPF",
         "HOST_HOME",
-        "INHERITED_CONNECTED_FD",
+        "CONNECTED_EXTERNAL_SINK_FD",
         "IPV4",
         "IPV6",
         "LOOPBACK",
@@ -128,6 +154,7 @@ _DENIED_SURFACES = frozenset(
         "RUNTIME_SOCKET",
         "SECRETS",
         "SHARED_MEMORY",
+        "UNDECLARED_CONNECTED_FD",
         "WORKER_DIRECT_MUTATE",
     }
 )
@@ -229,7 +256,8 @@ _NETWORK_KEYS = frozenset(
         "raw_socket",
         "packet_socket",
         "broad_unix_socket",
-        "inherited_connected_fds",
+        "connected_external_sink_fds",
+        "operation_scoped_connected_pair",
         "credentials",
         "secret_bytes",
         "broker_ipc_only",
@@ -242,7 +270,9 @@ _BROKER_KEYS = frozenset(
         "worker_endpoint",
         "broker_endpoint",
         "transport",
-        "peer_credentials",
+        "endpoint_mode",
+        "fd_delivery",
+        "sender_authentication",
         "operation_scoped",
         "max_message_bytes",
         "message_schema_digest",
@@ -256,6 +286,9 @@ _MEASUREMENT_KEYS = frozenset(
         "lsm_policy_name",
         "lsm_policy_digest",
         "broker_message_schema_digest",
+        "verifier_code_digest",
+        "verifier_public_key_digest",
+        "verifier_libcrypto_digest",
     }
 )
 _PATH_REQUEST_KEYS = frozenset({"canonical_path", "descriptor_id", "root_id", "resolution_epoch"})
@@ -353,7 +386,17 @@ _SUPPLY_REGISTRY_KEYS = frozenset(
     {"snapshot_digest", "reference", "generation", "rollback_floor", "issued_at", "expires_at"}
 )
 _SUPPLY_SIGNER_KEYS = frozenset(
-    {"trust_root_id", "signer_id", "key_id", "algorithm", "revocation_epoch", "rollback_floor"}
+    {
+        "trust_root_id",
+        "signer_id",
+        "key_id",
+        "algorithm",
+        "revocation_epoch",
+        "rollback_floor",
+        "verifier_code_digest",
+        "verifier_public_key_digest",
+        "verifier_libcrypto_digest",
+    }
 )
 _SUPPLY_PLACEMENT_KEYS = frozenset(
     {
@@ -438,6 +481,7 @@ _SESSION_KEYS = frozenset(
         "subject_instance_id",
         "process_tree_id",
         "namespace_ids",
+        "user_namespace",
         "rootfs",
         "inputs",
         "broker_ipc",
@@ -450,16 +494,30 @@ _SESSION_KEYS = frozenset(
     }
 )
 _SESSION_NAMESPACE_KEYS = frozenset({"user", "mount", "pid", "ipc", "uts", "network", "cgroup"})
+_SESSION_USER_NAMESPACE_KEYS = frozenset(
+    {
+        "descriptor", "descriptor_id", "identity", "uid_map", "gid_map",
+        "setgroups", "max_user_namespaces",
+    }
+)
 _SESSION_ROOTFS_KEYS = frozenset({"descriptor", "descriptor_id"})
 _SESSION_INPUT_KEYS = frozenset({"descriptor", "descriptor_id", "mount_path", "expected_bytes_digest"})
 _SESSION_BROKER_KEYS = frozenset(
     {
-        "descriptor",
-        "descriptor_id",
-        "socket_name",
+        "worker_descriptor",
+        "worker_descriptor_id",
+        "broker_descriptor",
+        "broker_descriptor_id",
         "worker_endpoint",
         "broker_endpoint",
         "transport",
+        "endpoint_mode",
+        "operation_id",
+        "nonce",
+        "fencing_epoch",
+        "revocation_epoch",
+        "issued_at",
+        "expires_at",
     }
 )
 _SESSION_SECCOMP_KEYS = frozenset({"descriptor", "descriptor_id", "expected_bytes_digest"})
@@ -478,13 +536,20 @@ _SESSION_STAGING_KEYS = frozenset(
         "bytes",
     }
 )
-_SESSION_SUPERVISOR_FD_KEYS = frozenset({"gate_read", "gate_write", "status_read", "status_write"})
+_SESSION_SUPERVISOR_FD_KEYS = frozenset(
+    {
+        "gate_read", "gate_write", "worker_start_read", "worker_start_write",
+        "status_read", "status_write",
+    }
+)
 _SESSION_CLEANUP_KEYS = frozenset(
     {"cleanup_id", "staging_root_id", "reuse_forbidden", "require_cgroup_empty", "quarantine_on_failure"}
 )
-_ROOTFS_TOP_LEVEL = frozenset({"inputs", "proc", "run", "usr", "workspace"})
+_ROOTFS_TOP_LEVEL = frozenset({"inputs", "lib", "lib64", "proc", "run", "usr", "workspace"})
 _WORKER_TOOL_PATH = "/usr/lib/harness/worker-tool"
-_BROKER_MOUNT = "/run/harness"
+_PYTHON_PATH = "/usr/bin/python3.12"
+_WORKER_BROKER_FD = 1
+_SO_COOKIE = 57
 
 _RESOLVE_NO_XDEV = 0x01
 _RESOLVE_NO_MAGICLINKS = 0x02
@@ -615,6 +680,8 @@ class HostMeasurement:
     backend_path: str
     backend_version: str
     backend_digest: str
+    aa_exec_path: str
+    aa_exec_digest: str
     architecture: str
     kernel_release: str
     kernel_features: tuple[str, ...]
@@ -622,6 +689,7 @@ class HostMeasurement:
     cgroup_controllers: tuple[str, ...]
     lsm_stack: tuple[str, ...]
     lsm_policy_name: str
+    apparmor_profiles: tuple[str, ...]
     openat2: bool
     user_namespaces: bool
     measurement_digest: str
@@ -815,13 +883,17 @@ class SessionPlan:
     executor_principal: str
     subject_instance_id: str
     namespace_ids: tuple[tuple[str, str], ...]
+    user_namespace_fd: int
     read_only_mounts: tuple[tuple[int, str], ...]
-    broker_root_mount: tuple[int, str]
-    broker_socket_path: str
+    worker_broker_fd: int
+    broker_peer_fd: int
+    broker_pair_binding_digest: str
     seccomp_fd: int
     tool_fd: int
     gate_read_fd: int
     gate_write_fd: int
+    worker_start_read_fd: int
+    worker_start_write_fd: int
     status_read_fd: int
     status_write_fd: int
     pass_fds: tuple[int, ...]
@@ -882,6 +954,12 @@ class _HostObservation:
     backend_gid: int
     backend_mode: int
     backend_options: tuple[str, ...]
+    aa_exec_path: str
+    aa_exec_digest: str
+    aa_exec_uid: int
+    aa_exec_gid: int
+    aa_exec_mode: int
+    aa_exec_profile_option: bool
     linux: bool
     architecture: str
     kernel_release: str
@@ -911,6 +989,35 @@ def _canonical(value: object) -> str:
 
 def _hash_text(value: str) -> str:
     return "sha256:" + sha256(value.encode("utf-8")).hexdigest()
+
+
+def _compile_seccomp_bpf(raw: object) -> bytes:
+    """Compile the one pinned x86-64 deny-default classic-BPF policy."""
+
+    value = _closed_dict(
+        raw,
+        frozenset({"architecture", "default_action", "format_version", "syscalls"}),
+    )
+    _exact(value["architecture"], "AUDIT_ARCH_X86_64")
+    _exact(value["default_action"], "ERRNO_EPERM")
+    _exact(value["format_version"], "1.0.0")
+    rows = _list(value["syscalls"], minimum=1, maximum=256)
+    if any(type(item) is not int or item < 0 or item > (1 << 31) - 1 for item in rows):
+        raise _Stop(L0Reason.MALFORMED_INPUT)
+    if tuple(rows) != _SECCOMP_ALLOWED_SYSCALLS:
+        raise _Stop(L0Reason.MISMATCHED_PROFILE)
+    instructions: list[tuple[int, int, int, int]] = [
+        (0x20, 0, 0, 4),
+        (0x15, 1, 0, 0xC000003E),
+        (0x06, 0, 0, 0x80000000),
+        (0x20, 0, 0, 0),
+    ]
+    for syscall_number in rows:
+        instructions.extend(
+            ((0x15, 0, 1, syscall_number), (0x06, 0, 0, 0x7FFF0000))
+        )
+    instructions.append((0x06, 0, 0, 0x00050000 | errno.EPERM))
+    return b"".join(struct.pack("=HBBI", *item) for item in instructions)
 
 
 def _closed_dict(value: object, keys: frozenset[str]) -> dict[str, object]:
@@ -1033,6 +1140,9 @@ def _parse_principal(raw: object) -> PrincipalPlan:
             fd_allowlist=fds,
         )
     _exact(enabled, True)
+    security_label = _identifier(value["security_label"])
+    if security_label != _ROLE_APPARMOR_LABELS[role]:
+        raise _Stop(L0Reason.MISMATCHED_PROFILE)
     return PrincipalPlan(
         role=role,
         principal_id=principal_id,
@@ -1046,7 +1156,7 @@ def _parse_principal(raw: object) -> PrincipalPlan:
         uts_namespace=_identifier(value["uts_namespace"]),
         network_namespace=_identifier(value["network_namespace"]),
         cgroup_namespace=_identifier(value["cgroup_namespace"]),
-        security_label=_identifier(value["security_label"]),
+        security_label=security_label,
         credential_namespace=_identifier(value["credential_namespace"]),
         session_id=_identifier(value["session_id"]),
         network_mode=_ROLE_NETWORK[role],
@@ -1160,9 +1270,10 @@ def _parse_worker_controls(raw: object) -> dict[str, object]:
 
 def _parse_network(raw: object) -> dict[str, object]:
     value = _closed_dict(raw, _NETWORK_KEYS)
-    for key in _NETWORK_KEYS - {"broker_ipc_only"}:
+    for key in _NETWORK_KEYS - {"broker_ipc_only", "operation_scoped_connected_pair"}:
         _exact(_boolean(value[key]), False)
     _exact(_boolean(value["broker_ipc_only"]), True)
+    _exact(_boolean(value["operation_scoped_connected_pair"]), True)
     return dict(value)
 
 
@@ -1178,7 +1289,9 @@ def _parse_broker(raw: object, principals: tuple[PrincipalPlan, ...]) -> tuple[d
     if worker_endpoint == broker_endpoint:
         raise _Stop(L0Reason.MISMATCHED_PROFILE)
     _exact(value["transport"], "UNIX_SEQPACKET")
-    _exact(value["peer_credentials"], "SO_PEERCRED_REQUIRED")
+    _exact(value["endpoint_mode"], "UNIX_CONNECTED_PAIR")
+    _exact(value["fd_delivery"], "SUPERVISOR_TYPED_ALLOWLIST")
+    _exact(value["sender_authentication"], "SCM_CREDENTIALS_PLUS_ENDPOINT_HOLDER_ATTESTATION")
     _exact(_boolean(value["operation_scoped"]), True)
     _integer(value["max_message_bytes"], minimum=1, maximum=_MAX_MESSAGE_BYTES)
     _digest(value["message_schema_digest"])
@@ -1561,10 +1674,10 @@ def _active_principal(profile: CompiledL0Profile, role: str) -> PrincipalPlan:
 def _parse_peer(raw: object) -> BrokerPeer:
     value = _closed_dict(raw, _PEER_KEYS)
     return BrokerPeer(
-        pid=_integer(value["pid"], minimum=1),
+        pid=_integer(value["pid"]),
         uid=_integer(value["uid"]),
         gid=_integer(value["gid"]),
-        process_session=_integer(value["process_session"], minimum=1),
+        process_session=_integer(value["process_session"]),
     )
 
 
@@ -1645,7 +1758,13 @@ def receive_broker_message(
     connection_descriptor: object,
     raw_expected: object,
 ) -> BrokerResult:
-    """Receive one bounded exact UNIX_SEQPACKET message and verify its peer."""
+    """Receive one bounded exact pair message and verify message credentials.
+
+    Static ``SO_PEERCRED`` describes the process that created a socketpair and
+    is deliberately non-authoritative here.  The broker requires
+    ``SO_PASSCRED`` to have been bound before launch and authenticates the one
+    packet's ``SCM_CREDENTIALS`` against externally attested holder facts.
+    """
 
     duplicate = -1
     connection: socket.socket | None = None
@@ -1660,15 +1779,32 @@ def receive_broker_message(
         duplicate = -1
         if connection.family != socket.AF_UNIX or connection.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
             raise _Stop(L0Reason.BROKER_BINDING_MISMATCH)
-        credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
-        pid, uid, gid = struct.unpack("3i", credentials)
-        observed_peer = BrokerPeer(pid, uid, gid, os.getsid(pid))
+        if connection.getsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED) != 1:
+            raise _Stop(L0Reason.BROKER_BINDING_MISMATCH)
+        maximum = _integer(json.loads(profile.canonical_profile_json)["broker_ipc"]["max_message_bytes"], minimum=1)
+        packet, ancillary, flags, _ = connection.recvmsg(
+            maximum + 1,
+            socket.CMSG_SPACE(struct.calcsize("3i")),
+        )
+        if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(packet) > maximum:
+            raise _Stop(L0Reason.MESSAGE_TOO_LARGE)
+        if (
+            len(ancillary) != 1
+            or ancillary[0][0] != socket.SOL_SOCKET
+            or ancillary[0][1] != socket.SCM_CREDENTIALS
+            or len(ancillary[0][2]) != struct.calcsize("3i")
+        ):
+            raise _Stop(L0Reason.BROKER_BINDING_MISMATCH)
+        pid, uid, gid = struct.unpack("3i", ancillary[0][2])
+        process_session = 0
+        if pid > 0:
+            try:
+                process_session = os.getsid(pid)
+            except OSError:
+                process_session = 0
+        observed_peer = BrokerPeer(pid, uid, gid, process_session)
         if observed_peer != expected[-1]:
             raise _Stop(L0Reason.PEER_MISMATCH)
-        maximum = _integer(json.loads(profile.canonical_profile_json)["broker_ipc"]["max_message_bytes"], minimum=1)
-        packet, ancillary, flags, _ = connection.recvmsg(maximum + 1, 1)
-        if ancillary or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(packet) > maximum:
-            raise _Stop(L0Reason.MESSAGE_TOO_LARGE)
         message = _decode_broker_message(profile, packet, expected)
         return BrokerResult(L0Outcome.ACCEPTED, L0Reason.BROKER_MESSAGE_ACCEPTED, observed_peer, message)
     except _Stop as stop:
@@ -1691,6 +1827,8 @@ def _measurement_is_valid(profile: CompiledL0Profile, measurement: object) -> bo
         "backend_path": measurement.backend_path,
         "backend_version": measurement.backend_version,
         "backend_digest": measurement.backend_digest,
+        "aa_exec_path": measurement.aa_exec_path,
+        "aa_exec_digest": measurement.aa_exec_digest,
         "architecture": measurement.architecture,
         "kernel_release": measurement.kernel_release,
         "kernel_features": list(measurement.kernel_features),
@@ -1698,6 +1836,7 @@ def _measurement_is_valid(profile: CompiledL0Profile, measurement: object) -> bo
         "cgroup_controllers": list(measurement.cgroup_controllers),
         "lsm_stack": list(measurement.lsm_stack),
         "lsm_policy_name": measurement.lsm_policy_name,
+        "apparmor_profiles": list(measurement.apparmor_profiles),
         "openat2": measurement.openat2,
         "user_namespaces": measurement.user_namespaces,
         "profile_digest": profile.profile_digest,
@@ -1706,10 +1845,13 @@ def _measurement_is_valid(profile: CompiledL0Profile, measurement: object) -> bo
         measurement.backend_path == profile.backend_path
         and measurement.backend_version == profile.backend_version
         and measurement.backend_digest == profile.backend_digest
+        and measurement.aa_exec_path == AA_EXEC_PATH
+        and measurement.aa_exec_digest == AA_EXEC_DIGEST
         and measurement.architecture == "x86_64"
         and frozenset(measurement.kernel_features) == _KERNEL_FEATURES
         and measurement.openat2 is True
         and measurement.user_namespaces is True
+        and frozenset(measurement.apparmor_profiles) == _APPARMOR_PROFILES
         and _hash_text(_canonical(data)) == measurement.measurement_digest
     )
 
@@ -1828,6 +1970,12 @@ def verify_supply(
         signer = _closed_dict(value["signer"], _SUPPLY_SIGNER_KEYS)
         for field in ("trust_root_id", "signer_id", "key_id"):
             _identifier(signer[field])
+        for field in (
+            "verifier_code_digest",
+            "verifier_public_key_digest",
+            "verifier_libcrypto_digest",
+        ):
+            _digest(signer[field])
         _exact(signer["algorithm"], "ED25519")
         signer_revocation = _integer(signer["revocation_epoch"])
         signer_floor = _integer(signer["rollback_floor"])
@@ -1874,6 +2022,14 @@ def verify_supply(
             or registry["snapshot_digest"] != by_role["REGISTRY_SNAPSHOT"].actual_bytes_digest
             or bindings["seccomp_profile_digest"] != by_role["SECCOMP_PROFILE"].actual_bytes_digest
             or bindings["lsm_policy_digest"] != by_role["LSM_POLICY"].actual_bytes_digest
+            or any(
+                signer[field] != bindings[field]
+                for field in (
+                    "verifier_code_digest",
+                    "verifier_public_key_digest",
+                    "verifier_libcrypto_digest",
+                )
+            )
         ):
             raise _Stop(L0Reason.SUPPLY_MISMATCH)
         verification_source = _closed_dict(value["verification"], _SUPPLY_VERIFICATION_SOURCE_KEYS)
@@ -1987,8 +2143,9 @@ def _verified_supply(
     runtime = _closed_dict(payload["runtime"], _SUPPLY_RUNTIME_KEYS)
     _closed_dict(payload["image"], _SUPPLY_IMAGE_KEYS)
     _closed_dict(payload["registry"], _SUPPLY_REGISTRY_KEYS)
-    _closed_dict(payload["signer"], _SUPPLY_SIGNER_KEYS)
+    signer = _closed_dict(payload["signer"], _SUPPLY_SIGNER_KEYS)
     placement = _closed_dict(payload["placement"], _SUPPLY_PLACEMENT_PAYLOAD_KEYS)
+    profile_bindings = json.loads(profile.canonical_profile_json)["measurement_bindings"]
     artifacts_raw = _list(payload["artifacts"], minimum=len(_SUPPLY_ROLES), maximum=len(_SUPPLY_ROLES))
     artifacts: list[dict[str, object]] = []
     for raw_artifact in artifacts_raw:
@@ -2042,6 +2199,14 @@ def _verified_supply(
         or supply.observed_at != payload["observed_at"]
         or supply.expires_at != placement["expires_at"]
         or supply.verifier_id != verification["verifier_id"]
+        or any(
+            signer[field] != profile_bindings[field]
+            for field in (
+                "verifier_code_digest",
+                "verifier_public_key_digest",
+                "verifier_libcrypto_digest",
+            )
+        )
         or not payload_observed <= requested_observed < expires_at
     ):
         raise _Stop(L0Reason.PLACEMENT_MISMATCH)
@@ -2050,9 +2215,17 @@ def _verified_supply(
         or supply.measurement_digest != measurement.measurement_digest
     ):
         raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    # The admission verifier (measurement is present) executes the pinned
+    # backend's typed version probe before any untrusted process exists.  The
+    # executor-side recheck deliberately does not gain process-launch
+    # authority: its signed supply record already binds the exact version and
+    # it remeasures the actual backend bytes against the pinned digest.
     if (
         _binary_digest(profile.backend_path) != profile.backend_digest
-        or _runtime_output("--version") != profile.backend_version
+        or (
+            measurement is not None
+            and _runtime_output("--version") != profile.backend_version
+        )
     ):
         raise _Stop(L0Reason.SUPPLY_MISMATCH)
     source = {
@@ -2077,7 +2250,7 @@ def _verified_supply(
             source,
             supply_digest,
             verification_digest,
-            supply.observed_at,
+            observed_at,
         )
     ):
         raise _Stop(L0Reason.SUPPLY_MISMATCH)
@@ -2194,6 +2367,67 @@ def _session_descriptor(value: object, *, write_only: bool = False) -> int:
     return value
 
 
+def _id_map(value: object, namespace_id: int) -> str:
+    if type(value) is not str or len(value) > 256 or not value.endswith("\n"):
+        raise _Stop(L0Reason.MALFORMED_INPUT)
+    lines = value.splitlines()
+    if len(lines) != 2:
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    rows: list[tuple[int, int, int]] = []
+    for line in lines:
+        fields = line.split(" ")
+        if len(fields) != 3 or any(not field.isascii() or not field.isdecimal() for field in fields):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        row = tuple(int(field) for field in fields)
+        if any(item < 0 or item > _MAX_INTEGER for item in row):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        rows.append(row)
+    if (
+        rows[0][0] != 0
+        or rows[1][0] != namespace_id
+        or rows[0][1] < 1
+        or rows[1][1] < 1
+        or rows[0][1] == rows[1][1]
+        or rows[0][2] != 1
+        or rows[1][2] != 1
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    return value
+
+
+def _user_namespace_observation(value: object, worker: PrincipalPlan) -> dict[str, object]:
+    raw = _closed_dict(value, _SESSION_USER_NAMESPACE_KEYS)
+    descriptor = _session_descriptor(raw["descriptor"])
+    try:
+        info = os.fstat(descriptor)
+        identity = os.readlink(f"/proc/self/fd/{descriptor}")
+    except OSError as error:
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH) from error
+    match = re.fullmatch(r"user:\[([1-9][0-9]*)\]", identity)
+    if (
+        match is None
+        or int(match.group(1)) != info.st_ino
+        or raw["identity"] != identity
+        or raw["setgroups"] != "deny"
+        or type(raw["max_user_namespaces"]) is not int
+        or raw["max_user_namespaces"] != 0
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    return {
+        "kind": "USER_NAMESPACE",
+        "descriptor": descriptor,
+        "descriptor_id": _identifier(raw["descriptor_id"]),
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "identity": identity,
+        "uid_map": _id_map(raw["uid_map"], worker.uid),
+        "gid_map": _id_map(raw["gid_map"], worker.gid),
+        "setgroups": "deny",
+        "max_user_namespaces": 0,
+        "type": "NAMESPACE",
+    }
+
+
 def _directory_observation(descriptor: int, descriptor_id: str, kind: str) -> dict[str, object]:
     duplicate = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
     try:
@@ -2262,7 +2496,6 @@ def _require_minimal_rootfs(descriptor: int) -> None:
             "inputs",
             "proc",
             "run",
-            "run/harness",
             "usr",
             "usr/lib",
             "usr/lib/harness",
@@ -2297,6 +2530,125 @@ def _artifact_observation_matches(observed: dict[str, object], artifact: SupplyA
     )
 
 
+def _socket_peer_credentials(connection: socket.socket) -> dict[str, int]:
+    raw = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    pid, uid, gid = struct.unpack("3i", raw)
+    return {"pid": pid, "uid": uid, "gid": gid}
+
+
+def _connected_pair_endpoint(
+    descriptor: object,
+    descriptor_id: object,
+    kind: str,
+    *,
+    pass_credentials: bool,
+) -> tuple[int, dict[str, object]]:
+    if type(descriptor) is not int or descriptor < 0:
+        raise _Stop(L0Reason.MALFORMED_INPUT)
+    fd = descriptor
+    try:
+        descriptor_flags = fcntl.fcntl(fd, fcntl.F_GETFD)
+        status_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    except OSError as error:
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH) from error
+    if (
+        not descriptor_flags & fcntl.FD_CLOEXEC
+        or status_flags & os.O_ACCMODE != os.O_RDWR
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    identity = _identifier(descriptor_id)
+    info = os.fstat(fd)
+    if not stat.S_ISSOCK(info.st_mode):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    duplicate = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 3)
+    connection: socket.socket | None = None
+    try:
+        connection = socket.socket(fileno=duplicate)
+        duplicate = -1
+        if (
+            connection.family != socket.AF_UNIX
+            or connection.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET
+            or connection.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) != 0
+            or connection.getsockname() not in ("", b"")
+            or connection.getpeername() not in ("", b"")
+            or bool(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED)) is not pass_credentials
+        ):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        cookie_raw = connection.getsockopt(socket.SOL_SOCKET, _SO_COOKIE, 8)
+        if len(cookie_raw) != 8:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        cookie = struct.unpack("Q", cookie_raw)[0]
+        if cookie <= 0:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        return fd, {
+            "kind": kind,
+            "descriptor": fd,
+            "descriptor_id": identity,
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "cookie": cookie,
+            "type": "SOCKET",
+            "family": "AF_UNIX",
+            "socket_type": "SOCK_SEQPACKET",
+            "address_mode": "ANONYMOUS_CONNECTED",
+            "pass_credentials": pass_credentials,
+            "creation_peer": _socket_peer_credentials(connection),
+        }
+    finally:
+        if connection is not None:
+            connection.close()
+        elif duplicate >= 0:
+            os.close(duplicate)
+
+
+def _pair_queue_empty(connection: socket.socket) -> bool:
+    try:
+        connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+    except BlockingIOError:
+        return True
+    return False
+
+
+def _verify_connected_pair(
+    worker_descriptor: int,
+    broker_descriptor: int,
+    worker_data: dict[str, object],
+    broker_data: dict[str, object],
+) -> None:
+    """Prove the two pathless endpoints are one empty connected pair.
+
+    The bounded controller probe is drained in both directions before any
+    untrusted process can receive an endpoint.  It is not peer authentication;
+    holder identity and message-time credentials are verified separately.
+    """
+
+    worker_duplicate = fcntl.fcntl(worker_descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+    broker_duplicate = fcntl.fcntl(broker_descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+    worker = socket.socket(fileno=worker_duplicate)
+    broker = socket.socket(fileno=broker_duplicate)
+    try:
+        if not _pair_queue_empty(worker) or not _pair_queue_empty(broker):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        seed = _canonical(
+            {
+                "worker": {key: worker_data[key] for key in ("device", "inode", "cookie")},
+                "broker": {key: broker_data[key] for key in ("device", "inode", "cookie")},
+            }
+        ).encode("utf-8")
+        first = b"W" + sha256(seed).digest()[:15]
+        if worker.send(first, socket.MSG_DONTWAIT) != len(first):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        if broker.recv(len(first) + 1, socket.MSG_DONTWAIT) != first:
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+        if not _pair_queue_empty(worker) or not _pair_queue_empty(broker):
+            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    except BlockingIOError as error:
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH) from error
+    finally:
+        worker.close()
+        broker.close()
+
+
 def _session_observations(
     profile: CompiledL0Profile,
     measurement: HostMeasurement,
@@ -2305,7 +2657,7 @@ def _session_observations(
     if not _profile_is_valid(profile) or not _measurement_is_valid(profile, measurement):
         raise _Stop(L0Reason.PLACEMENT_MISMATCH)
     value = _closed_dict(raw, _SESSION_KEYS)
-    _exact(value["session_version"], "1.0.0")
+    _exact(value["session_version"], "1.1.0")
     session_record_id = _identifier(value["session_record_id"])
     session_id = _identifier(value["session_id"])
     transaction_id = _identifier(value["transaction_id"])
@@ -2340,6 +2692,8 @@ def _session_observations(
     namespace_ids = {key: _identifier(namespace_value[key]) for key in sorted(namespace_value)}
     if namespace_ids != expected_namespaces or len(set(namespace_ids.values())) != len(namespace_ids):
         raise _Stop(L0Reason.SESSION_MISMATCH)
+    user_namespace_data = _user_namespace_observation(value["user_namespace"], worker)
+    user_namespace_digest = _hash_text(_canonical(user_namespace_data))
     namespace_data = {
         "worker_principal": worker_principal,
         "worker_session": session_id,
@@ -2348,6 +2702,7 @@ def _session_observations(
         "security_label": worker.security_label,
         "credential_namespace": worker.credential_namespace,
         "namespace_ids": namespace_ids,
+        "user_namespace_binding_digest": user_namespace_digest,
     }
     namespace_digest = _hash_text(_canonical(namespace_data))
 
@@ -2381,36 +2736,73 @@ def _session_observations(
         raise _Stop(L0Reason.MALFORMED_INPUT)
 
     broker_value = _closed_dict(value["broker_ipc"], _SESSION_BROKER_KEYS)
-    broker_fd = _session_descriptor(broker_value["descriptor"])
-    broker_id = _identifier(broker_value["descriptor_id"])
-    socket_name = _identifier(broker_value["socket_name"])
     profile_source = json.loads(profile.canonical_profile_json)
     broker_profile = profile_source["broker_ipc"]
     if (
         broker_value["worker_endpoint"] != broker_profile["worker_endpoint"]
         or broker_value["broker_endpoint"] != broker_profile["broker_endpoint"]
         or broker_value["transport"] != "UNIX_SEQPACKET"
+        or broker_value["endpoint_mode"] != "UNIX_CONNECTED_PAIR"
     ):
         raise _Stop(L0Reason.PLACEMENT_MISMATCH)
-    broker_root = _directory_observation(broker_fd, broker_id, "BROKER_IPC_ROOT")
-    duplicate = fcntl.fcntl(broker_fd, fcntl.F_DUPFD_CLOEXEC, 3)
-    try:
-        if os.listdir(duplicate) != [socket_name]:
-            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
-        socket_info = os.stat(socket_name, dir_fd=duplicate, follow_symlinks=False)
-        if not stat.S_ISSOCK(socket_info.st_mode):
-            raise _Stop(L0Reason.PLACEMENT_MISMATCH)
-    finally:
-        os.close(duplicate)
-    broker_data = {
-        **broker_root,
-        "socket_name": socket_name,
-        "socket_device": socket_info.st_dev,
-        "socket_inode": socket_info.st_ino,
+    operation_id = _identifier(broker_value["operation_id"])
+    pair_nonce = _identifier(broker_value["nonce"])
+    pair_fencing_epoch = _integer(broker_value["fencing_epoch"], minimum=1)
+    pair_revocation_epoch = _integer(broker_value["revocation_epoch"])
+    pair_issued_at = _time(broker_value["issued_at"])
+    pair_expires_at = _time(broker_value["expires_at"])
+    if pair_issued_at >= pair_expires_at:
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    worker_broker_fd, worker_endpoint_data = _connected_pair_endpoint(
+        broker_value["worker_descriptor"],
+        broker_value["worker_descriptor_id"],
+        "BROKER_IPC_WORKER_END",
+        pass_credentials=False,
+    )
+    broker_peer_fd, broker_endpoint_data = _connected_pair_endpoint(
+        broker_value["broker_descriptor"],
+        broker_value["broker_descriptor_id"],
+        "BROKER_IPC_BROKER_END",
+        pass_credentials=True,
+    )
+    if (
+        worker_broker_fd == broker_peer_fd
+        or worker_endpoint_data["cookie"] == broker_endpoint_data["cookie"]
+    ):
+        raise _Stop(L0Reason.PLACEMENT_MISMATCH)
+    _verify_connected_pair(
+        worker_broker_fd,
+        broker_peer_fd,
+        worker_endpoint_data,
+        broker_endpoint_data,
+    )
+    broker_principal = _active_principal(profile, "BROKER")
+    broker_preimage = {
+        "kind": "UNIX_CONNECTED_PAIR",
+        "endpoint_mode": "UNIX_CONNECTED_PAIR",
+        "transport": "UNIX_SEQPACKET",
         "worker_endpoint": broker_value["worker_endpoint"],
         "broker_endpoint": broker_value["broker_endpoint"],
-        "transport": "UNIX_SEQPACKET",
+        "worker_principal": worker.principal_id,
+        "broker_principal": broker_principal.principal_id,
+        "worker_session": worker.session_id,
+        "broker_session": broker_principal.session_id,
+        "worker_security_label": worker.security_label,
+        "broker_security_label": broker_principal.security_label,
+        "worker_socket_identity": worker_endpoint_data,
+        "broker_socket_identity": broker_endpoint_data,
+        "operation_id": operation_id,
+        "nonce": pair_nonce,
+        "fencing_epoch": pair_fencing_epoch,
+        "revocation_epoch": pair_revocation_epoch,
+        "issued_at": broker_value["issued_at"],
+        "expires_at": broker_value["expires_at"],
+        "sender_authentication": "SCM_CREDENTIALS_PLUS_ENDPOINT_HOLDER_ATTESTATION",
         "message_binding_digest": profile.broker_binding_digest,
+    }
+    broker_data = {
+        **broker_preimage,
+        "pair_binding_digest": _hash_text(_canonical(broker_preimage)),
     }
     broker_digest = _hash_text(_canonical(broker_data))
 
@@ -2438,8 +2830,8 @@ def _session_observations(
         raise _Stop(L0Reason.MALFORMED_INPUT)
     expected_argv = (
         _WORKER_TOOL_PATH,
-        "--broker-socket",
-        f"{_BROKER_MOUNT}/{socket_name}",
+        "--broker-fd",
+        str(_WORKER_BROKER_FD),
         "--session",
         session_id,
     )
@@ -2490,16 +2882,30 @@ def _session_observations(
     supervisor_value = _closed_dict(value["supervisor_fds"], _SESSION_SUPERVISOR_FD_KEYS)
     gate_fd = _session_descriptor(supervisor_value["gate_read"])
     gate_release_fd = _session_descriptor(supervisor_value["gate_write"], write_only=True)
+    worker_start_fd = _session_descriptor(supervisor_value["worker_start_read"])
+    worker_start_release_fd = _session_descriptor(
+        supervisor_value["worker_start_write"], write_only=True
+    )
     status_source_fd = _session_descriptor(supervisor_value["status_read"])
     status_fd = _session_descriptor(supervisor_value["status_write"], write_only=True)
-    pipe_fds = (gate_fd, gate_release_fd, status_source_fd, status_fd)
+    pipe_fds = (
+        gate_fd, gate_release_fd, worker_start_fd, worker_start_release_fd,
+        status_source_fd, status_fd,
+    )
     for descriptor in pipe_fds:
         if not stat.S_ISFIFO(os.fstat(descriptor).st_mode):
             raise _Stop(L0Reason.PLACEMENT_MISMATCH)
     if (
         os.fstat(gate_fd).st_ino != os.fstat(gate_release_fd).st_ino
+        or os.fstat(worker_start_fd).st_ino != os.fstat(worker_start_release_fd).st_ino
         or os.fstat(status_source_fd).st_ino != os.fstat(status_fd).st_ino
-        or os.fstat(gate_fd).st_ino == os.fstat(status_fd).st_ino
+        or len(
+            {
+                os.fstat(gate_fd).st_ino,
+                os.fstat(worker_start_fd).st_ino,
+                os.fstat(status_fd).st_ino,
+            }
+        ) != 3
     ):
         raise _Stop(L0Reason.PLACEMENT_MISMATCH)
 
@@ -2519,14 +2925,23 @@ def _session_observations(
     ):
         raise _Stop(L0Reason.PLACEMENT_MISMATCH)
 
-    pass_descriptors = [root_fd, *(item[0] for item in input_mounts), broker_fd, seccomp_fd, tool_fd, gate_fd, status_fd]
-    descriptors = [*pass_descriptors, gate_release_fd, status_source_fd]
+    user_namespace_fd = int(user_namespace_data["descriptor"])
+    pass_descriptors = [
+        user_namespace_fd, root_fd, *(item[0] for item in input_mounts),
+        seccomp_fd, tool_fd, gate_fd, status_fd,
+    ]
+    descriptors = [
+        *pass_descriptors, worker_broker_fd, broker_peer_fd, gate_release_fd,
+        worker_start_fd, worker_start_release_fd, status_source_fd,
+    ]
     if len(set(descriptors)) != len(descriptors):
         raise _Stop(L0Reason.PLACEMENT_MISMATCH)
     fd_inventory = [
+        user_namespace_data,
         root_data,
         *input_data,
-        broker_root,
+        worker_endpoint_data,
+        broker_endpoint_data,
         seccomp_data,
         tool_data,
         {
@@ -2548,6 +2963,20 @@ def _session_observations(
             "descriptor": gate_release_fd,
             "device": os.fstat(gate_release_fd).st_dev,
             "inode": os.fstat(gate_release_fd).st_ino,
+            "type": "PIPE",
+        },
+        {
+            "kind": "WORKER_START_GATE",
+            "descriptor": worker_start_fd,
+            "device": os.fstat(worker_start_fd).st_dev,
+            "inode": os.fstat(worker_start_fd).st_ino,
+            "type": "PIPE",
+        },
+        {
+            "kind": "WORKER_START_RELEASE",
+            "descriptor": worker_start_release_fd,
+            "device": os.fstat(worker_start_release_fd).st_dev,
+            "inode": os.fstat(worker_start_release_fd).st_ino,
             "type": "PIPE",
         },
         {
@@ -2611,10 +3040,18 @@ def _session_observations(
         "subject_instance_id": subject_instance_id,
         "process_tree_id": process_tree_id,
         "namespace_ids": namespace_ids,
+        "user_namespace_fd": user_namespace_fd,
         "root_fd": root_fd,
         "input_mounts": tuple(input_mounts),
-        "broker_fd": broker_fd,
-        "socket_name": socket_name,
+        "worker_broker_fd": worker_broker_fd,
+        "broker_peer_fd": broker_peer_fd,
+        "broker_pair_binding_digest": broker_data["pair_binding_digest"],
+        "pair_operation_id": operation_id,
+        "pair_nonce": pair_nonce,
+        "pair_fencing_epoch": pair_fencing_epoch,
+        "pair_revocation_epoch": pair_revocation_epoch,
+        "pair_issued_at": broker_value["issued_at"],
+        "pair_expires_at": broker_value["expires_at"],
         "seccomp_fd": seccomp_fd,
         "seccomp_data": seccomp_data,
         "tool_fd": tool_fd,
@@ -2625,6 +3062,8 @@ def _session_observations(
         "staging_data": staging_data,
         "gate_fd": gate_fd,
         "gate_release_fd": gate_release_fd,
+        "worker_start_fd": worker_start_fd,
+        "worker_start_release_fd": worker_start_release_fd,
         "status_source_fd": status_source_fd,
         "status_fd": status_fd,
         "cleanup_data": cleanup_data,
@@ -2658,9 +3097,15 @@ def _session_cgroup_limits(profile: CompiledL0Profile, cgroup: dict[str, object]
     device = f"{cgroup['device_major']}:{cgroup['device_minor']}"
     read_iops = _resource_limit(profile, "BLOCK_IO_READ")
     write_iops = _resource_limit(profile, "BLOCK_IO_WRITE")
+    read_bytes = read_iops * 4096
+    write_bytes = write_iops * 4096
     return (
         ("cpu.max", f"{cpu_rate * 100} 100000"),
-        ("io.max", f"{device} riops={read_iops} wiops={write_iops}"),
+        (
+            "io.max",
+            f"{device} rbps={read_bytes} wbps={write_bytes} "
+            f"riops={read_iops} wiops={write_iops}",
+        ),
         ("memory.max", str(memory)),
         ("memory.swap.max", str(swap)),
         ("pids.max", str(pids)),
@@ -2705,6 +3150,9 @@ def prepare_session(
             "fd_inventory_digest": placement.fd_inventory_digest,
             "namespace_plan_digest": placement.namespace_plan_digest,
         }
+        claim_request = json.loads(durable_claim.request_json)
+        claim_capability = json.loads(durable_claim.capability_payload_json)
+        claim_operation = _closed_dict(claim_request["proposal"], _M1_PROPOSAL_KEYS)["operation_id"]
         if (
             any(supplied_placement[key] != digest for key, digest in placement_pairs.items())
             or durable_claim.transaction_id != parsed["transaction_id"]
@@ -2721,6 +3169,12 @@ def prepare_session(
             or verified_supply.process_tree_id != parsed["process_tree_id"]
             or verified_supply.fencing_epoch != parsed["fencing_epoch"]
             or verified_supply.revocation_epoch != parsed["revocation_epoch"]
+            or parsed["pair_operation_id"] != claim_operation
+            or parsed["pair_nonce"] != durable_claim.nonce
+            or parsed["pair_fencing_epoch"] != durable_claim.fencing_epoch
+            or parsed["pair_revocation_epoch"] != durable_claim.revocation_epoch
+            or parsed["pair_issued_at"] != claim_capability.get("issued_at")
+            or parsed["pair_expires_at"] != claim_capability.get("expires_at")
         ):
             raise _Stop(L0Reason.SESSION_MISMATCH)
         if not _artifact_observation_matches(parsed["seccomp_data"], _artifact_for(verified_supply, "SECCOMP_PROFILE")):
@@ -2735,17 +3189,13 @@ def prepare_session(
             str(parsed["gate_fd"]),
             "--json-status-fd",
             str(parsed["status_fd"]),
-            "--unshare-user",
-            "--uid",
-            str(worker.uid),
-            "--gid",
-            str(worker.gid),
+            "--userns",
+            str(parsed["user_namespace_fd"]),
             "--unshare-ipc",
             "--unshare-pid",
             "--unshare-net",
             "--unshare-uts",
             "--unshare-cgroup",
-            "--disable-userns",
             "--assert-userns-disabled",
             "--hostname",
             "harness-worker",
@@ -2754,8 +3204,6 @@ def prepare_session(
             "--clearenv",
             "--cap-drop",
             "ALL",
-            "--exec-label",
-            str(worker.security_label),
             "--ro-bind-fd",
             str(parsed["root_fd"]),
             "/",
@@ -2766,20 +3214,22 @@ def prepare_session(
         argv.extend(
             (
                 "--ro-bind-fd",
-                str(parsed["broker_fd"]),
-                _BROKER_MOUNT,
-                "--ro-bind-fd",
                 str(parsed["tool_fd"]),
                 _WORKER_TOOL_PATH,
                 "--proc",
-                "/proc",
-                "--remount-ro",
                 "/proc",
                 "--seccomp",
                 str(parsed["seccomp_fd"]),
                 "--chdir",
                 "/workspace",
                 "--",
+                AA_EXEC_PATH,
+                "--profile",
+                str(worker.security_label),
+                "--",
+                _PYTHON_PATH,
+                "-I",
+                "-S",
                 *parsed["tool_argv"],
             )
         )
@@ -2813,9 +3263,23 @@ def prepare_session(
             "runtime_bindings_digest": runtime_bindings_digest,
             "runtime_path": RUNTIME_PATH,
             "runtime_digest": RUNTIME_DIGEST,
+            "aa_exec_path": AA_EXEC_PATH,
+            "aa_exec_digest": AA_EXEC_DIGEST,
+            "apparmor_profile": worker.security_label,
             "argv": argv,
             "environment": [],
             "pass_fds": list(parsed["pass_descriptors"]),
+            "stdin": {
+                "kind": "WORKER_START_GATE",
+                "child_descriptor": 0,
+                "source_descriptor": parsed["worker_start_fd"],
+            },
+            "broker_ipc": {
+                "kind": "BROKER_IPC_WORKER_END",
+                "child_descriptor": _WORKER_BROKER_FD,
+                "source_descriptor": parsed["worker_broker_fd"],
+                "pair_binding_digest": parsed["broker_pair_binding_digest"],
+            },
             "cgroup_limits": dict(cgroup_limits),
             "cpu_time_ms": _resource_limit(profile, "CPU_TIME"),
             "wall_time_ms": _resource_limit(profile, "WALL_TIME"),
@@ -2839,13 +3303,17 @@ def prepare_session(
             str(parsed["executor_principal"]),
             str(parsed["subject_instance_id"]),
             tuple(parsed["namespace_ids"].items()),
+            int(parsed["user_namespace_fd"]),
             tuple(read_only_mounts),
-            (int(parsed["broker_fd"]), _BROKER_MOUNT),
-            f"{_BROKER_MOUNT}/{parsed['socket_name']}",
+            int(parsed["worker_broker_fd"]),
+            int(parsed["broker_peer_fd"]),
+            str(parsed["broker_pair_binding_digest"]),
             int(parsed["seccomp_fd"]),
             int(parsed["tool_fd"]),
             int(parsed["gate_fd"]),
             int(parsed["gate_release_fd"]),
+            int(parsed["worker_start_fd"]),
+            int(parsed["worker_start_release_fd"]),
             int(parsed["status_source_fd"]),
             int(parsed["status_fd"]),
             tuple(parsed["pass_descriptors"]),
@@ -2908,12 +3376,34 @@ def _cpu_usage_microseconds(directory: int) -> int:
     return _integer(int(usage[0][1]))
 
 
-def _close_standard_descriptors() -> None:
-    for descriptor in (0, 1, 2):
+def _revoke_broker_pair(plan: SessionPlan) -> None:
+    broker = json.loads(plan.runtime_bindings_json)["broker_ipc"]
+    for descriptor, key in (
+        (plan.worker_broker_fd, "worker_socket_identity"),
+        (plan.broker_peer_fd, "broker_socket_identity"),
+    ):
+        expected = broker[key]
+        info = os.fstat(descriptor)
+        duplicate = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+        connection = socket.socket(fileno=duplicate)
         try:
-            os.close(descriptor)
-        except OSError:
-            pass
+            cookie_raw = connection.getsockopt(socket.SOL_SOCKET, _SO_COOKIE, 8)
+            cookie = struct.unpack("Q", cookie_raw)[0]
+            if (
+                info.st_dev != expected["device"]
+                or info.st_ino != expected["inode"]
+                or cookie != expected["cookie"]
+                or connection.family != socket.AF_UNIX
+                or connection.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET
+            ):
+                raise _Stop(L0Reason.CLEANUP_FAILED)
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError as error:
+                if error.errno not in {errno.ENOTCONN, errno.EINVAL}:
+                    raise
+        finally:
+            connection.close()
 
 
 def _bounded_status_digest(descriptor: int) -> str:
@@ -2996,6 +3486,7 @@ def supervise_session(
     status_digest: str | None = None
     terminal_reason = L0Reason.RUNTIME_FAILED
     durable_prepared = False
+    pair_revoked = False
     try:
         if type(store) is not DurableStore:
             raise _Stop(L0Reason.DURABLE_PREPARE_FAILED)
@@ -3066,9 +3557,11 @@ def supervise_session(
             shell=False,
             close_fds=True,
             pass_fds=plan.pass_fds,
+            stdin=plan.worker_start_read_fd,
+            stdout=plan.worker_broker_fd,
+            stderr=subprocess.DEVNULL,
             env=dict(plan.environment),
             cwd="/",
-            preexec_fn=_close_standard_descriptors,
         )
         process_id = process.pid
         _write_cgroup_control(cgroup_fd, "cgroup.procs", str(process.pid))
@@ -3099,15 +3592,10 @@ def supervise_session(
         if return_code != 0 and not timed_out:
             raise _Stop(L0Reason.RUNTIME_FAILED)
 
-        # Revoke the only worker IPC route and prove the cgroup is empty before reuse.
+        # Revoke the sole typed pair and prove the cgroup is empty before reuse.
         runtime_value = json.loads(plan.runtime_bindings_json)
-        broker_record = runtime_value["broker_ipc"]
-        broker_fd = plan.broker_root_mount[0]
-        socket_name = PurePosixPath(plan.broker_socket_path).name
-        socket_info = os.stat(socket_name, dir_fd=broker_fd, follow_symlinks=False)
-        if socket_info.st_dev != broker_record["socket_device"] or socket_info.st_ino != broker_record["socket_inode"]:
-            raise _Stop(L0Reason.CLEANUP_FAILED)
-        os.unlink(socket_name, dir_fd=broker_fd)
+        _revoke_broker_pair(plan)
+        pair_revoked = True
         _write_cgroup_control(cgroup_fd, "cgroup.kill", "1")
         events = dict(row.split() for row in _read_cgroup_control(cgroup_fd, "cgroup.events").splitlines())
         if events.get("populated") != "0":
@@ -3166,6 +3654,12 @@ def supervise_session(
     except Exception:  # noqa: BLE001 - runtime boundary is fail-closed and total
         terminal_reason = L0Reason.RUNTIME_FAILED
     finally:
+        if plan is not None and not pair_revoked:
+            try:
+                _revoke_broker_pair(plan)
+                pair_revoked = True
+            except Exception:
+                terminal_reason = L0Reason.CLEANUP_FAILED
         if process is not None and process.poll() is None and cgroup_fd >= 0:
             try:
                 _write_cgroup_control(cgroup_fd, "cgroup.kill", "1")
@@ -3398,6 +3892,24 @@ def _runtime_output(argument: str) -> str:
     return completed.stdout.decode("utf-8").strip()
 
 
+def _aa_exec_supports_profile() -> bool:
+    completed = subprocess.run(
+        [AA_EXEC_PATH, "--help"],
+        shell=False,
+        check=False,
+        capture_output=True,
+        text=False,
+        timeout=5,
+        close_fds=True,
+        env={"LC_ALL": "C"},
+    )
+    return (
+        completed.returncode == 0
+        and completed.stderr in {b"", None}
+        and b"--profile" in completed.stdout
+    )
+
+
 def _openat2_available() -> bool:
     class OpenHow(ctypes.Structure):
         _fields_ = [("flags", ctypes.c_uint64), ("mode", ctypes.c_uint64), ("resolve", ctypes.c_uint64)]
@@ -3441,6 +3953,12 @@ def _observe_host() -> _HostObservation:
         raise _Stop(L0Reason.RUNTIME_ABSENT) from error
     if not stat.S_ISREG(info.st_mode):
         raise _Stop(L0Reason.RUNTIME_MISMATCH)
+    try:
+        aa_info = os.stat(AA_EXEC_PATH, follow_symlinks=False)
+    except FileNotFoundError as error:
+        raise _Stop(L0Reason.LSM_POLICY_ABSENT) from error
+    if not stat.S_ISREG(aa_info.st_mode):
+        raise _Stop(L0Reason.LSM_POLICY_ABSENT)
     version = _runtime_output("--version")
     help_text = _runtime_output("--help")
     options = tuple(sorted(set(re.findall(r"(?m)^\s+(--[a-z0-9-]+)", help_text))))
@@ -3473,6 +3991,12 @@ def _observe_host() -> _HostObservation:
         info.st_gid,
         stat.S_IMODE(info.st_mode),
         options,
+        AA_EXEC_PATH,
+        _binary_digest(AA_EXEC_PATH),
+        aa_info.st_uid,
+        aa_info.st_gid,
+        stat.S_IMODE(aa_info.st_mode),
+        _aa_exec_supports_profile(),
         platform.system() == "Linux",
         uname.machine,
         kernel,
@@ -3503,18 +4027,27 @@ def _verify_host(profile: CompiledL0Profile, observed: _HostObservation) -> Host
         or observed.backend_mode != 0o755
     ):
         raise _Stop(L0Reason.RUNTIME_MISMATCH)
+    if (
+        observed.aa_exec_path != AA_EXEC_PATH
+        or observed.aa_exec_digest != AA_EXEC_DIGEST
+        or observed.aa_exec_uid != 0
+        or observed.aa_exec_gid != 0
+        or observed.aa_exec_mode != 0o755
+        or not observed.aa_exec_profile_option
+    ):
+        raise _Stop(L0Reason.LSM_POLICY_ABSENT)
     required_options = {
         "--assert-userns-disabled",
         "--bind-fd",
         "--cap-drop",
         "--clearenv",
         "--die-with-parent",
-        "--disable-userns",
         "--gid",
         "--new-session",
         "--proc",
         "--ro-bind-fd",
         "--seccomp",
+        "--sync-fd",
         "--tmpfs",
         "--uid",
         "--unshare-all",
@@ -3522,7 +4055,7 @@ def _verify_host(profile: CompiledL0Profile, observed: _HostObservation) -> Host
         "--unshare-ipc",
         "--unshare-net",
         "--unshare-pid",
-        "--unshare-user",
+        "--userns",
         "--unshare-uts",
     }
     if not required_options.issubset(observed.backend_options):
@@ -3548,7 +4081,7 @@ def _verify_host(profile: CompiledL0Profile, observed: _HostObservation) -> Host
         raise _Stop(L0Reason.LSM_ABSENT)
     source = json.loads(profile.canonical_profile_json)
     policy_name = source["measurement_bindings"]["lsm_policy_name"]
-    if policy_name not in observed.loaded_apparmor_profiles:
+    if not _APPARMOR_PROFILES.issubset(observed.loaded_apparmor_profiles):
         raise _Stop(L0Reason.LSM_POLICY_ABSENT)
     if not observed.openat2:
         raise _Stop(L0Reason.OPENAT2_ABSENT)
@@ -3556,6 +4089,8 @@ def _verify_host(profile: CompiledL0Profile, observed: _HostObservation) -> Host
         "backend_path": observed.backend_path,
         "backend_version": observed.backend_version,
         "backend_digest": observed.backend_digest,
+        "aa_exec_path": observed.aa_exec_path,
+        "aa_exec_digest": observed.aa_exec_digest,
         "architecture": observed.architecture,
         "kernel_release": observed.kernel_release,
         "kernel_features": list(observed.kernel_features),
@@ -3563,6 +4098,7 @@ def _verify_host(profile: CompiledL0Profile, observed: _HostObservation) -> Host
         "cgroup_controllers": list(observed.cgroup_controllers),
         "lsm_stack": list(observed.lsm_stack),
         "lsm_policy_name": policy_name,
+        "apparmor_profiles": sorted(_APPARMOR_PROFILES),
         "openat2": observed.openat2,
         "user_namespaces": observed.user_namespaces,
         "profile_digest": profile.profile_digest,
@@ -3571,6 +4107,8 @@ def _verify_host(profile: CompiledL0Profile, observed: _HostObservation) -> Host
         observed.backend_path,
         observed.backend_version,
         observed.backend_digest,
+        observed.aa_exec_path,
+        observed.aa_exec_digest,
         observed.architecture,
         observed.kernel_release,
         observed.kernel_features,
@@ -3578,6 +4116,7 @@ def _verify_host(profile: CompiledL0Profile, observed: _HostObservation) -> Host
         observed.cgroup_controllers,
         observed.lsm_stack,
         policy_name,
+        tuple(sorted(_APPARMOR_PROFILES)),
         observed.openat2,
         observed.user_namespaces,
         _hash_text(_canonical(data)),

@@ -112,7 +112,7 @@
 | `TB-05` | Broker → executor | One-call capability + canonical args + epoch | Executor validates audience/digests/fence; mismatch → no dispatch |
 | `TB-06` | Worker sandbox → host | Только L0-profile syscalls/resources | Namespaces + capabilities/no_new_privs + seccomp + LSM + cgroups + supervisor; violation → block/kill |
 | `TB-07` | Worker → filesystem inputs/outputs | Descriptor-rooted declared flow | Read-only inputs, bounded outputs, safe path resolution, seal; escape → block/incident |
-| `TB-08` | Worker → broker IPC | Typed, bounded request/evidence channel | No inherited broad FD/UNIX socket; message schema/identity/flow policy |
+| `TB-08` | Worker → broker IPC | Typed, bounded request/evidence channel | Единственная exact operation-scoped `UNIX_CONNECTED_PAIR` proposal-FD pair; endpoint-holder attestation + per-message credentials + schema/identity/flow policy; любой другой inherited/broad/connected FD запрещён |
 | `TB-09` | Broker/model gateway → provider/network | Declared `COMMUNICATE` sink | Allowlist, labels, minimization, budget, authoritative receipt; worker network remains disconnected |
 | `TB-10` | Executor → external target | Exact operation/target/idempotency binding | Precheck, durable intent, reconciliation; unknown → quarantine/no auto-retry |
 | `TB-11` | Worker/executor → observer/postcheck | Immutable snapshot или independently observed outcome | Quiescence, seal digest, read-only independent plane; mismatch → discard/quarantine |
@@ -123,7 +123,7 @@
 
 ### 5.1. Network semantics
 
-`network_egress=false` относится к agent worker. Worker MUST NOT иметь usable IPv4/IPv6/loopback/DNS/metadata route, inherited connected FD или broad UNIX socket. Model request к внешнему provider — отдельный flow `worker → broker IPC → model_gateway → provider`, классифицируемый как `COMMUNICATE`; каждый hop имеет собственный envelope. Universal terminal/protocol gateway не являются исключением из этой модели.
+`network_egress=false` относится к agent worker. Worker MUST NOT иметь usable IPv4/IPv6/loopback/DNS/metadata route, broad UNIX socket, connected external sink FD или undeclared inherited connected FD. Единственное исключение — заранее созданная trusted supervisor-ом exact operation-scoped `AF_UNIX/SOCK_SEQPACKET` connected pair для powerless proposal `worker → broker`; worker получает только свой typed endpoint, не может создавать/reconnect-ить сокеты, а external attestor до start gate связывает оба endpoint-FD с точными worker/broker OS subjects. Broker проверяет bounded canonical message и фактические per-message credentials; creation-time `SO_PEERCRED`, caller boolean или digest сами по себе не доказывают будущих держателей pair. Model request к внешнему provider — отдельный flow `worker → broker IPC → model_gateway → provider`, классифицируемый как `COMMUNICATE`; каждый hop имеет собственный envelope. Universal terminal/protocol gateway не являются исключением из этой модели.
 
 ## 6. Attack surfaces
 
@@ -237,7 +237,7 @@ Round-4 closure rules are normative and remain implementation obligations: (Q-39
 | Класс | Минимальные positive/negative/adversarial/concurrency/fault tests | Oracle | Evidence ID / status |
 |---|---|---|---|
 | Filesystem/process L0 | Разрешённый descriptor-root read/write; deny traversal, symlink/hardlink/magic-link, mount, proc, ptrace, device, shm, inherited FD; race rename/seal | Только declared inode/resource меняется; outside immutable; violation blocked | `EV-ATTACK-L0-FS-001` / `ABSENT` |
-| Network/IPC L0 | Broker IPC positive; IPv4/IPv6/loopback/DNS/metadata/UNIX-socket negatives; FD inheritance fault | Worker не создаёт undeclared flow; gateway event принадлежит broker principal | `EV-ATTACK-L0-NET-001` / `ABSENT` |
+| Network/IPC L0 | Exact connected-pair broker IPC positive; IPv4/IPv6/loopback/DNS/metadata/pathname/abstract/socketpair/external-sink negatives; endpoint/holder/credential/FD substitution and inheritance faults | Worker передаёт только один bounded proposal exact broker endpoint-у; не создаёт undeclared flow; gateway event принадлежит broker principal | `EV-ATTACK-L0-NET-001` / `ABSENT` |
 | Resources | Bounds below/at/above each unit; fork/tree, memory/swap, IO/disk/inode/log/FD/GPU/token/spend; concurrent children; crash | Atomic conservation, deterministic denial/kill, monotonic ledger | `EV-ATTACK-RESOURCE-001` / `ABSENT` |
 | Tool/input/supply | Valid pinned tool; shell injection, polyglot, dynamic dispatch, manifest/binary/dependency mismatch, registry rollback | Derived closure never exceeds upper bound; unknown denied | `EV-ATTACK-SUPPLY-001` / `ABSENT` |
 | Capability/journal/recovery | Valid one-use; replay/transfer/stale; crash at every durable boundary; stale writer/split-brain | Не существует half-state/duplicate committed dispatch; loser fenced | `EV-ATTACK-STATE-001` / `ABSENT` |

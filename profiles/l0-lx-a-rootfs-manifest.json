@@ -1,0 +1,43 @@
+{
+  "architecture": "x86_64",
+  "files": [
+    {
+      "digest": "sha256:8db37cf3f2169f59a0f07ef1fea308c35656668c64c8ff294e1860f4121eb161",
+      "mode": 493,
+      "path": "/lib/x86_64-linux-gnu/libc.so.6"
+    },
+    {
+      "digest": "sha256:c42ff317838b4b4639e2ea801905f0317177c6df7e31b2f0d0240e3c3ac0cfde",
+      "mode": 420,
+      "path": "/lib/x86_64-linux-gnu/libexpat.so.1"
+    },
+    {
+      "digest": "sha256:e9c4b28d340e415b8137480ec442662f981e1399386c5931dae0e886e3639e91",
+      "mode": 420,
+      "path": "/lib/x86_64-linux-gnu/libm.so.6"
+    },
+    {
+      "digest": "sha256:9b64150b28505a33d6bc3ecf709c279f6de97a1c184dbda65d06ee4537f6d286",
+      "mode": 420,
+      "path": "/lib/x86_64-linux-gnu/libz.so.1"
+    },
+    {
+      "digest": "sha256:cd4df4f3c7b83673d61189bf2eaebd33ca4f2853ab9772b8a25e025ef99b1e81",
+      "mode": 493,
+      "path": "/lib64/ld-linux-x86-64.so.2"
+    },
+    {
+      "digest": "sha256:f28cbce3c8664cab5154492fdbc55ecb937a3e7ce1a9478c881a5f5965d7ce3e",
+      "mode": 493,
+      "path": "/usr/bin/aa-exec"
+    },
+    {
+      "digest": "sha256:1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
+      "mode": 493,
+      "path": "/usr/bin/python3.12"
+    }
+  ],
+  "format_version": "1.0.0",
+  "rootfs": "L0-LX-A-WORKER-MINIMAL",
+  "source_release": "Ubuntu 24.04.4 LTS / noble-updates 2026-08-26"
+}

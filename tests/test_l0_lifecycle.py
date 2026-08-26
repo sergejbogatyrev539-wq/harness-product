@@ -87,6 +87,18 @@ def _claim(
 ) -> DispatchClaim:
     worker = next(item for item in profile.principals if item.role == "AGENT_WORKER")
     executor = next(item for item in profile.principals if item.role == "EXECUTOR")
+    request = {
+        "proposal": {
+            "operation_id": "write-report-v1",
+            "principal_id": worker.principal_id,
+            "material_digest": _digest_text("material-1"),
+            "authority": {},
+        }
+    }
+    capability_payload = {
+        "issued_at": "2026-08-25T12:00:00Z",
+        "expires_at": "2026-08-25T12:10:00Z",
+    }
     bindings = {
         "claim_version": 1,
         "transaction_id": transaction_id,
@@ -106,10 +118,10 @@ def _claim(
         "observed_at": "2026-08-25T12:02:00Z",
         "target_scope_digest": _digest_text("target-1"),
         "material_digest": _digest_text("material-1"),
-        "request": {},
+        "request": request,
         "decision": {},
         "authorized_envelope": {},
-        "capability_payload": {},
+        "capability_payload": capability_payload,
         "capability_verification": {},
         "intent": {},
     }
@@ -142,10 +154,10 @@ def _claim(
         bindings["observed_at"],
         bindings["target_scope_digest"],
         bindings["material_digest"],
+        _canonical(request),
         _canonical({}),
         _canonical({}),
-        _canonical({}),
-        _canonical({}),
+        _canonical(capability_payload),
         _canonical({}),
         _canonical({}),
         claim_json,
@@ -228,9 +240,14 @@ class WorkerSessionPlanTests(unittest.TestCase):
         measurement = self._measurement(profile)
         worker = next(item for item in profile.principals if item.role == "AGENT_WORKER")
         executor = next(item for item in profile.principals if item.role == "EXECUTOR")
+        user_namespace_fd = os.open("/proc/self/ns/user", os.O_RDONLY | os.O_CLOEXEC)
+        self.descriptors.append(user_namespace_fd)
+        user_namespace_identity = os.readlink(f"/proc/self/fd/{user_namespace_fd}")
 
         rootfs = root / "rootfs"
-        for relative in ("inputs", "proc", "run/harness", "usr/lib/harness", "workspace"):
+        for relative in (
+            "inputs", "lib", "lib64", "proc", "run", "usr/lib/harness", "workspace",
+        ):
             (rootfs / relative).mkdir(parents=True, exist_ok=True, mode=0o755)
         tool_placeholder = rootfs / "usr/lib/harness/worker-tool"
         tool_placeholder.write_bytes(contents["TOOL"])
@@ -240,13 +257,9 @@ class WorkerSessionPlanTests(unittest.TestCase):
         root_fd = self._readonly_directory(rootfs)
         input_fd = self._open_readonly_file(root / "input-1", b"synthetic-input-v1\n")
 
-        broker_root = root / "broker"
-        broker_root.mkdir(mode=0o700)
-        broker_socket = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        broker_socket.bind(str(broker_root / "broker.sock"))
-        broker_socket.listen(1)
-        self.sockets.append(broker_socket)
-        broker_fd = self._readonly_directory(broker_root)
+        worker_socket, broker_socket = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        broker_socket.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        self.sockets.extend((worker_socket, broker_socket))
 
         staging = root / "staging"
         staging.mkdir(mode=0o700)
@@ -255,12 +268,15 @@ class WorkerSessionPlanTests(unittest.TestCase):
         os.close(staging_fd)
 
         gate_read, gate_write = os.pipe2(os.O_CLOEXEC)
+        worker_start_read, worker_start_write = os.pipe2(os.O_CLOEXEC)
         status_read, status_write = os.pipe2(os.O_CLOEXEC)
-        self.descriptors.extend((gate_read, gate_write, status_read, status_write))
+        self.descriptors.extend(
+            (gate_read, gate_write, worker_start_read, worker_start_write, status_read, status_write)
+        )
 
         placeholder_claim = _claim(profile, _digest_text("placement-placeholder"))
         raw = {
-            "session_version": "1.0.0",
+            "session_version": "1.1.0",
             "session_record_id": "session-record-1",
             "session_id": worker.session_id,
             "transaction_id": placeholder_claim.transaction_id,
@@ -281,16 +297,42 @@ class WorkerSessionPlanTests(unittest.TestCase):
                 "network": worker.network_namespace,
                 "cgroup": worker.cgroup_namespace,
             },
+            "user_namespace": {
+                "descriptor": user_namespace_fd,
+                "descriptor_id": "worker-userns-1",
+                "identity": user_namespace_identity,
+                "uid_map": f"0 100000 1\n{worker.uid} 3001 1\n",
+                "gid_map": f"0 200000 1\n{worker.gid} 4001 1\n",
+                "setgroups": "deny",
+                "max_user_namespaces": 0,
+            },
             "rootfs": {"descriptor": root_fd, "descriptor_id": "rootfs-1"},
             "inputs": [{"descriptor": input_fd, "descriptor_id": "input-1", "mount_path": "/inputs/input-1", "expected_bytes_digest": _digest_bytes(b"synthetic-input-v1\n")}],
-            "broker_ipc": {"descriptor": broker_fd, "descriptor_id": "broker-root-1", "socket_name": "broker.sock", "worker_endpoint": "worker-ipc-endpoint", "broker_endpoint": "broker-ipc-endpoint", "transport": "UNIX_SEQPACKET"},
+            "broker_ipc": {
+                "worker_descriptor": worker_socket.fileno(),
+                "worker_descriptor_id": "worker-pair-end-1",
+                "broker_descriptor": broker_socket.fileno(),
+                "broker_descriptor_id": "broker-pair-end-1",
+                "worker_endpoint": "worker-ipc-endpoint",
+                "broker_endpoint": "broker-ipc-endpoint",
+                "transport": "UNIX_SEQPACKET",
+                "endpoint_mode": "UNIX_CONNECTED_PAIR",
+                "operation_id": "write-report-v1",
+                "nonce": "nonce-1",
+                "fencing_epoch": 11,
+                "revocation_epoch": 7,
+                "issued_at": "2026-08-25T12:00:00Z",
+                "expires_at": "2026-08-25T12:10:00Z",
+            },
             "seccomp": {"descriptor": by_role["SECCOMP_PROFILE"], "descriptor_id": "seccomp-1", "expected_bytes_digest": _digest_bytes(contents["SECCOMP_PROFILE"])},
-            "tool": {"descriptor": by_role["TOOL"], "descriptor_id": "tool-1", "path": "/usr/lib/harness/worker-tool", "argv": ["/usr/lib/harness/worker-tool", "--broker-socket", "/run/harness/broker.sock", "--session", worker.session_id], "expected_bytes_digest": _digest_bytes(contents["TOOL"])},
+            "tool": {"descriptor": by_role["TOOL"], "descriptor_id": "tool-1", "path": "/usr/lib/harness/worker-tool", "argv": ["/usr/lib/harness/worker-tool", "--broker-fd", "1", "--session", worker.session_id], "expected_bytes_digest": _digest_bytes(contents["TOOL"])},
             "cgroup": {"path": measurement.cgroup_path.rstrip("/") + "/session-1", "controllers": ["cpu", "io", "memory", "pids"], "device_major": 259, "device_minor": 2, "delegated": True, "identity_digest": _digest_text("cgroup-session-1")},
-            "staging": {"root_id": "staging-root-1", "root_identity": staging_identity, "mount_id": f"mnt:{staging_mount}", "mount_identity": staging_mount_identity, "files": 8, "inodes": 8, "bytes": 10},
+            "staging": {"root_id": "staging-root-1", "root_identity": staging_identity, "mount_id": f"mnt:{staging_mount}", "mount_identity": staging_mount_identity, "files": 16, "inodes": 32, "bytes": 4096},
             "supervisor_fds": {
                 "gate_read": gate_read,
                 "gate_write": gate_write,
+                "worker_start_read": worker_start_read,
+                "worker_start_write": worker_start_write,
                 "status_read": status_read,
                 "status_write": status_write,
             },
@@ -310,7 +352,14 @@ class WorkerSessionPlanTests(unittest.TestCase):
             "runtime": {"path": l0.RUNTIME_PATH, "version": l0.RUNTIME_VERSION, "digest": l0.RUNTIME_DIGEST},
             "image": {"image_id": "image-l0-lx-a-v1", "rootfs_manifest_digest": _digest_bytes(contents["ROOTFS_MANIFEST"]), "platform": "linux", "architecture": "x86_64"},
             "registry": {"snapshot_digest": _digest_bytes(contents["REGISTRY_SNAPSHOT"]), "reference": "registry-snapshot-v7", "generation": 7, "rollback_floor": 7, "issued_at": "2026-08-25T11:00:00Z", "expires_at": "2026-08-25T13:00:00Z"},
-            "signer": {"trust_root_id": "supply-root-1", "signer_id": "supply-signer-1", "key_id": "external-key-1", "algorithm": "ED25519", "revocation_epoch": 7, "rollback_floor": 7},
+            "signer": {
+                "trust_root_id": "supply-root-1", "signer_id": "supply-signer-1",
+                "key_id": "external-key-1", "algorithm": "ED25519",
+                "revocation_epoch": 7, "rollback_floor": 7,
+                "verifier_code_digest": profile_raw["measurement_bindings"]["verifier_code_digest"],
+                "verifier_public_key_digest": profile_raw["measurement_bindings"]["verifier_public_key_digest"],
+                "verifier_libcrypto_digest": profile_raw["measurement_bindings"]["verifier_libcrypto_digest"],
+            },
             "placement": placement, "artifacts": artifacts, "verification": dict(ExactExternalVerifier.source),
         }
         # Derive the expected canonical payload without granting it authority, then
@@ -356,17 +405,44 @@ class WorkerSessionPlanTests(unittest.TestCase):
         self.assertNotIn("--unshare-all", argv)
         self.assertNotIn("--share-net", argv)
         self.assertFalse(any(item.endswith("-try") for item in argv))
-        for option in ("--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-net", "--unshare-uts", "--unshare-cgroup", "--disable-userns", "--assert-userns-disabled", "--new-session", "--die-with-parent", "--clearenv", "--cap-drop", "--exec-label", "--seccomp", "--block-fd", "--json-status-fd", "--chdir"):
+        for option in ("--userns", "--unshare-ipc", "--unshare-pid", "--unshare-net", "--unshare-uts", "--unshare-cgroup", "--assert-userns-disabled", "--new-session", "--die-with-parent", "--clearenv", "--cap-drop", "--seccomp", "--block-fd", "--json-status-fd", "--chdir"):
             self.assertIn(option, argv)
-        self.assertEqual(argv[argv.index("--uid") + 1], str(worker.uid))
-        self.assertEqual(argv[argv.index("--gid") + 1], str(worker.gid))
+        self.assertNotIn("--disable-userns", argv)
+        self.assertNotIn("--unshare-user", argv)
+        self.assertEqual(argv[argv.index("--userns") + 1], str(plan.user_namespace_fd))
+        self.assertNotIn("--sync-fd", argv)
+        self.assertNotIn("--exec-label", argv)
+        self.assertNotIn("--remount-ro", argv)
+        separator = argv.index("--")
+        self.assertEqual(
+            argv[separator + 1 : separator + 9],
+            (
+                l0.AA_EXEC_PATH, "--profile", worker.security_label, "--", "/usr/bin/python3.12",
+                "-I", "-S", "/usr/lib/harness/worker-tool",
+            ),
+        )
+        self.assertNotIn("--uid", argv)
+        self.assertNotIn("--gid", argv)
         self.assertEqual(argv[argv.index("--cap-drop") + 1], "ALL")
         self.assertEqual(argv[argv.index("--chdir") + 1], "/workspace")
         self.assertEqual(tuple(plan.environment), ())
+        self.assertNotIn(plan.worker_start_read_fd, plan.pass_fds)
+        runtime = json.loads(plan.runtime_bindings_json)
+        self.assertEqual(
+            {
+                row["kind"]
+                for row in runtime["fd_allowlist"]
+                if row["kind"].startswith("WORKER_START_")
+            },
+            {"WORKER_START_GATE", "WORKER_START_RELEASE"},
+        )
         self.assertFalse(any(item in {"sh", "bash", "-c"} for item in argv))
         self.assertFalse(any(destination == "/staging" for _, destination in plan.read_only_mounts))
         self.assertNotIn("/staging", argv)
-        self.assertNotIn(plan.broker_root_mount[0], (plan.seccomp_fd, plan.tool_fd))
+        self.assertNotIn("/run/harness", argv)
+        self.assertNotIn("--broker-socket", argv)
+        self.assertNotIn(plan.broker_peer_fd, plan.pass_fds)
+        self.assertNotIn(plan.worker_broker_fd, plan.pass_fds)
 
     def test_plan_exactly_binds_resources_descriptors_and_lifecycle_record(self) -> None:
         profile, measurement, supply, claim, raw, plan = self.prepared()
@@ -379,13 +455,16 @@ class WorkerSessionPlanTests(unittest.TestCase):
         self.assertEqual(plan.session_id, raw["session_id"])
         self.assertEqual((plan.fencing_epoch, plan.revocation_epoch), (11, 7))
         self.assertEqual((len(plan.pass_fds), len(set(plan.pass_fds))), (7, 7))
+        self.assertEqual(plan.user_namespace_fd, raw["user_namespace"]["descriptor"])
         self.assertEqual(len(plan.read_only_mounts), 2)
-        self.assertEqual(plan.broker_socket_path, "/run/harness/broker.sock")
-        self.assertEqual(dict(plan.cgroup_limits)["pids.max"], "2")
-        self.assertEqual(dict(plan.cgroup_limits)["memory.max"], str(10 * 1024 * 1024))
+        self.assertEqual(plan.worker_broker_fd, raw["broker_ipc"]["worker_descriptor"])
+        self.assertEqual(plan.broker_peer_fd, raw["broker_ipc"]["broker_descriptor"])
+        self.assertRegex(plan.broker_pair_binding_digest, r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(dict(plan.cgroup_limits)["pids.max"], "8")
+        self.assertEqual(dict(plan.cgroup_limits)["memory.max"], str(128 * 1024 * 1024))
         self.assertEqual(dict(plan.cgroup_limits)["memory.swap.max"], "0")
-        self.assertEqual(dict(plan.cgroup_limits)["io.max"], "259:2 riops=10 wiops=10")
-        self.assertEqual((plan.cpu_time_ms, plan.wall_time_ms, plan.rlimit_nofile), (10, 10, 4))
+        self.assertEqual(dict(plan.cgroup_limits)["io.max"], "259:2 rbps=409600 wbps=409600 riops=100 wiops=100")
+        self.assertEqual((plan.cpu_time_ms, plan.wall_time_ms, plan.rlimit_nofile), (2000, 3000, 32))
         self.assertEqual(dict(plan.quota)["root_id"], "staging-root-1")
         self.assertEqual(dict(plan.namespace_ids), raw["namespace_ids"])
         self.assertIn('"reuse_forbidden":true', plan.cleanup_record_json)
@@ -407,6 +486,21 @@ class WorkerSessionPlanTests(unittest.TestCase):
         cases.append(("input-mount", supply, claim, wrong_mount, supply_verifier, claim_verifier))
         wrong_ipc = deepcopy(raw); wrong_ipc["broker_ipc"]["transport"] = "UNIX_STREAM"
         cases.append(("ipc", supply, claim, wrong_ipc, supply_verifier, claim_verifier))
+        legacy_ipc = deepcopy(raw); legacy_ipc["broker_ipc"]["socket_name"] = "broker.sock"
+        cases.append(("legacy-ipc", supply, claim, legacy_ipc, supply_verifier, claim_verifier))
+        pair_mode = deepcopy(raw); pair_mode["broker_ipc"]["endpoint_mode"] = "PATHNAME"
+        cases.append(("pair-mode", supply, claim, pair_mode, supply_verifier, claim_verifier))
+        pair_nonce = deepcopy(raw); pair_nonce["broker_ipc"]["nonce"] = "other-nonce"
+        cases.append(("pair-nonce", supply, claim, pair_nonce, supply_verifier, claim_verifier))
+        pair_fence = deepcopy(raw); pair_fence["broker_ipc"]["fencing_epoch"] = 12
+        cases.append(("pair-fence", supply, claim, pair_fence, supply_verifier, claim_verifier))
+        pair_expiry = deepcopy(raw); pair_expiry["broker_ipc"]["expires_at"] = "2026-08-25T12:11:00Z"
+        cases.append(("pair-expiry", supply, claim, pair_expiry, supply_verifier, claim_verifier))
+        pair_swap = deepcopy(raw)
+        pair_swap["broker_ipc"]["worker_descriptor"], pair_swap["broker_ipc"]["broker_descriptor"] = (
+            pair_swap["broker_ipc"]["broker_descriptor"], pair_swap["broker_ipc"]["worker_descriptor"]
+        )
+        cases.append(("pair-swap", supply, claim, pair_swap, supply_verifier, claim_verifier))
         no_device = deepcopy(raw); del no_device["cgroup"]["device_major"]
         cases.append(("io-device", supply, claim, no_device, supply_verifier, claim_verifier))
         not_delegated = deepcopy(raw); not_delegated["cgroup"]["delegated"] = False
@@ -415,6 +509,18 @@ class WorkerSessionPlanTests(unittest.TestCase):
         cases.append(("stale-fence", supply, claim, stale_fence, supply_verifier, claim_verifier))
         namespace = deepcopy(raw); namespace["namespace_ids"]["network"] = "shared-net"
         cases.append(("namespace", supply, claim, namespace, supply_verifier, claim_verifier))
+        userns_limit = deepcopy(raw); userns_limit["user_namespace"]["max_user_namespaces"] = 1
+        cases.append(("userns-limit", supply, claim, userns_limit, supply_verifier, claim_verifier))
+        userns_map = deepcopy(raw); userns_map["user_namespace"]["uid_map"] = "0 0 1\n"
+        cases.append(("userns-map", supply, claim, userns_map, supply_verifier, claim_verifier))
+        userns_fd = deepcopy(raw); userns_fd["user_namespace"]["descriptor"] = raw["rootfs"]["descriptor"]
+        cases.append(("userns-fd", supply, claim, userns_fd, supply_verifier, claim_verifier))
+        missing_start = deepcopy(raw); del missing_start["supervisor_fds"]["worker_start_read"]
+        cases.append(("missing-worker-start", supply, claim, missing_start, supply_verifier, claim_verifier))
+        shared_start = deepcopy(raw); shared_start["supervisor_fds"]["worker_start_read"] = raw["supervisor_fds"]["gate_read"]
+        cases.append(("shared-worker-start", supply, claim, shared_start, supply_verifier, claim_verifier))
+        wrong_start_direction = deepcopy(raw); wrong_start_direction["supervisor_fds"]["worker_start_read"] = raw["supervisor_fds"]["worker_start_write"]
+        cases.append(("worker-start-direction", supply, claim, wrong_start_direction, supply_verifier, claim_verifier))
         process_tree = deepcopy(raw); process_tree["process_tree_id"] = "other-tree"
         cases.append(("process-tree", supply, claim, process_tree, supply_verifier, claim_verifier))
         cleanup = deepcopy(raw); cleanup["cleanup"]["reuse_forbidden"] = False

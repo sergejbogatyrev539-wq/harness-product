@@ -1,0 +1,111 @@
+abi <abi/4.0>,
+#include <tunables/global>
+
+# These profiles are only for the disposable L0-LX-A qualification guest.  The
+# outer root-owned supervisor creates namespaces, mounts and cgroups before the
+# final role process changes into one of these domains.  There is deliberately
+# no unconfined fallback and no domain may transition to a peer domain.
+
+profile harness-l0-lx-a.controller flags=(mediate_deleted) {
+  signal,
+  / r,
+  /** mr,
+  /usr/bin/python3.12 ix,
+  /usr/bin/openssl ix,
+  /var/lib/harness-m3-controller/ rw,
+  /var/lib/harness-m3-controller/** rwk,
+  /run/harness-m3/ rw,
+  /run/harness-m3/** rwk,
+
+  audit deny capability,
+  audit deny userns,
+  audit deny network inet,
+  audit deny network inet6,
+  audit deny network netlink,
+  audit deny network packet,
+  audit deny mount,
+  audit deny pivot_root,
+  audit deny ptrace,
+  audit deny change_profile,
+}
+
+profile harness-l0-lx-a.worker flags=(mediate_deleted) {
+  signal,
+  # The worker cannot create/connect a socket.  It can only use the single
+  # anonymous SEQPACKET endpoint already bound into its exact FD inventory.
+  unix (send) type=seqpacket addr=none
+       peer=(addr=none,label=harness-l0-lx-a.broker),
+  / r,
+  /** mr,
+  /usr/bin/python3.12 ix,
+
+  audit deny capability,
+  audit deny userns,
+  audit deny network inet,
+  audit deny network inet6,
+  audit deny network netlink,
+  audit deny network packet,
+  audit deny mount,
+  audit deny pivot_root,
+  audit deny ptrace,
+  audit deny change_profile,
+}
+
+profile harness-l0-lx-a.broker flags=(mediate_deleted) {
+  signal,
+  # The broker receives on the peer endpoint from the same externally attested
+  # connected pair.  It has no bind/listen/accept/connect authority.
+  unix (getopt) type=seqpacket addr=none,
+  unix (receive) type=seqpacket addr=none
+       peer=(addr=none,label=harness-l0-lx-a.worker),
+  / r,
+  /** mr,
+  /usr/bin/python3.12 ix,
+  audit deny capability,
+  audit deny userns,
+  audit deny network inet,
+  audit deny network inet6,
+  audit deny network netlink,
+  audit deny network packet,
+  audit deny mount,
+  audit deny pivot_root,
+  audit deny ptrace,
+  audit deny change_profile,
+}
+
+profile harness-l0-lx-a.executor flags=(mediate_deleted) {
+  signal,
+  / r,
+  /** mr,
+  /usr/bin/python3.12 ix,
+  /staging/ rw,
+  /staging/** rwk,
+
+  audit deny capability,
+  audit deny userns,
+  audit deny network,
+  audit deny mount,
+  audit deny pivot_root,
+  audit deny ptrace,
+  audit deny change_profile,
+}
+
+profile harness-l0-lx-a.attestor flags=(mediate_deleted) {
+  signal,
+  / r,
+  /** mr,
+  /usr/bin/openssl ix,
+  /usr/bin/python3.12 ix,
+  /var/lib/harness-m3-attestor/ r,
+  /var/lib/harness-m3-attestor/** rwk,
+  /run/harness-m3/ rw,
+  /run/harness-m3/** rwk,
+
+  audit deny userns,
+  audit deny network inet,
+  audit deny network inet6,
+  audit deny mount,
+  audit deny pivot_root,
+  audit deny ptrace,
+  audit deny change_profile,
+}

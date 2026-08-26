@@ -28,6 +28,7 @@ class ExactSupplyVerifier:
     def externally_pinned(payload: dict[str, object]) -> bool:
         signer = payload.get("signer")
         placement = payload.get("placement")
+        bindings = l0_tests.valid_raw()["measurement_bindings"]
         return (
             signer
             == {
@@ -35,6 +36,9 @@ class ExactSupplyVerifier:
                 "key_id": "supply-key-1",
                 "revocation_epoch": 7,
                 "rollback_floor": 7,
+                "verifier_code_digest": bindings["verifier_code_digest"],
+                "verifier_public_key_digest": bindings["verifier_public_key_digest"],
+                "verifier_libcrypto_digest": bindings["verifier_libcrypto_digest"],
                 "signer_id": "supply-signer-1",
                 "trust_root_id": "supply-root-1",
             }
@@ -170,6 +174,9 @@ class L0SupplyBoundaryTests(unittest.TestCase):
                 "algorithm": "ED25519",
                 "revocation_epoch": 7,
                 "rollback_floor": 7,
+                "verifier_code_digest": raw_profile["measurement_bindings"]["verifier_code_digest"],
+                "verifier_public_key_digest": raw_profile["measurement_bindings"]["verifier_public_key_digest"],
+                "verifier_libcrypto_digest": raw_profile["measurement_bindings"]["verifier_libcrypto_digest"],
             },
             "placement": {
                 "placement_id": "placement-l0-lx-a-1",

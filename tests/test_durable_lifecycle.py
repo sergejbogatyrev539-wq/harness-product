@@ -28,9 +28,19 @@ def _bindings(claim_digest: str) -> dict[str, object]:
         "kind": "ROOTFS", "descriptor": 10, "descriptor_id": "rootfs-1",
         "device": 1, "inode": 10, "mount_id": 20, "mode": 0o555, "type": "DIRECTORY",
     }
-    broker_root = {
-        "kind": "BROKER_IPC_ROOT", "descriptor": 11, "descriptor_id": "broker-root-1",
-        "device": 1, "inode": 11, "mount_id": 20, "mode": 0o555, "type": "DIRECTORY",
+    worker_endpoint = {
+        "kind": "BROKER_IPC_WORKER_END", "descriptor": 11,
+        "descriptor_id": "worker-pair-end-1", "device": 1, "inode": 11,
+        "cookie": 101, "type": "SOCKET", "family": "AF_UNIX",
+        "socket_type": "SOCK_SEQPACKET", "address_mode": "ANONYMOUS_CONNECTED",
+        "pass_credentials": False, "creation_peer": {"pid": 100, "uid": 1000, "gid": 1000},
+    }
+    broker_endpoint = {
+        "kind": "BROKER_IPC_BROKER_END", "descriptor": 20,
+        "descriptor_id": "broker-pair-end-1", "device": 1, "inode": 20,
+        "cookie": 102, "type": "SOCKET", "family": "AF_UNIX",
+        "socket_type": "SOCK_SEQPACKET", "address_mode": "ANONYMOUS_CONNECTED",
+        "pass_credentials": True, "creation_peer": {"pid": 100, "uid": 1000, "gid": 1000},
     }
     seccomp = {
         "kind": "SECCOMP_PROFILE", "descriptor": 12, "descriptor_id": "seccomp-1",
@@ -42,6 +52,27 @@ def _bindings(claim_digest: str) -> dict[str, object]:
         "device": 1, "inode": 13, "mount_id": 20, "mode": 0o555, "type": "REGULAR",
         "size": 10, "bytes_digest": _digest("d"),
     }
+    user_namespace = {
+        "kind": "USER_NAMESPACE", "descriptor": 9, "descriptor_id": "userns-1",
+        "device": 1, "inode": 9, "identity": "user:[9]",
+        "uid_map": "0 100000 1\n1001 3001 1\n",
+        "gid_map": "0 200000 1\n2001 4001 1\n",
+        "setgroups": "deny", "max_user_namespaces": 0, "type": "NAMESPACE",
+    }
+    broker = {
+        "kind": "UNIX_CONNECTED_PAIR", "endpoint_mode": "UNIX_CONNECTED_PAIR",
+        "transport": "UNIX_SEQPACKET", "worker_endpoint": "worker-endpoint",
+        "broker_endpoint": "broker-endpoint", "worker_principal": "worker-1",
+        "broker_principal": "broker-1", "worker_session": "session-0001",
+        "broker_session": "broker-session-1", "worker_security_label": "label-1",
+        "broker_security_label": "label-2", "worker_socket_identity": worker_endpoint,
+        "broker_socket_identity": broker_endpoint, "operation_id": "operation-1",
+        "nonce": "nonce-0001", "fencing_epoch": 11, "revocation_epoch": 7,
+        "issued_at": "2026-08-25T12:00:00Z", "expires_at": "2026-08-25T12:04:00Z",
+        "sender_authentication": "SCM_CREDENTIALS_PLUS_ENDPOINT_HOLDER_ATTESTATION",
+        "message_binding_digest": _digest("3"),
+    }
+    broker["pair_binding_digest"] = durable_module.canonical_digest(broker)
     return {
         "binding_version": 1,
         "process": {
@@ -64,6 +95,7 @@ def _bindings(claim_digest: str) -> dict[str, object]:
                 "ipc": "ipc-ns-1", "uts": "uts-ns-1", "network": "network-ns-1",
                 "cgroup": "cgroup-ns-1",
             },
+            "user_namespace_binding_digest": durable_module.canonical_digest(user_namespace),
         },
         "cgroup": {
             "path": "/delegated/session-1", "controllers": ["cpu", "io", "memory", "pids"],
@@ -78,18 +110,20 @@ def _bindings(claim_digest: str) -> dict[str, object]:
             "root_id": "staging-root-1", "root_identity": _digest("1"), "mount_id": "mnt:42",
             "mount_identity": _digest("2"), "files": 8, "inodes": 8, "bytes": 10,
         },
-        "broker_ipc": {
-            **broker_root, "socket_name": "broker.sock", "socket_device": 1, "socket_inode": 21,
-            "worker_endpoint": "worker-endpoint", "broker_endpoint": "broker-endpoint",
-            "transport": "UNIX_SEQPACKET", "message_binding_digest": _digest("3"),
-        },
+        "broker_ipc": broker,
         "fd_allowlist": [
+            user_namespace,
             root,
-            broker_root,
+            worker_endpoint,
+            broker_endpoint,
             seccomp,
             tool,
             {"kind": "START_GATE", "descriptor": 14, "device": 1, "inode": 14, "type": "PIPE"},
-            {"kind": "STATUS_SINK", "descriptor": 15, "device": 1, "inode": 15, "type": "PIPE"},
+            {"kind": "START_GATE_RELEASE", "descriptor": 15, "device": 1, "inode": 14, "type": "PIPE"},
+            {"kind": "WORKER_START_GATE", "descriptor": 16, "device": 1, "inode": 16, "type": "PIPE"},
+            {"kind": "WORKER_START_RELEASE", "descriptor": 17, "device": 1, "inode": 16, "type": "PIPE"},
+            {"kind": "STATUS_SOURCE", "descriptor": 18, "device": 1, "inode": 18, "type": "PIPE"},
+            {"kind": "STATUS_SINK", "descriptor": 19, "device": 1, "inode": 18, "type": "PIPE"},
         ],
         "cleanup": {
             "cleanup_id": "cleanup-1", "staging_root_id": "staging-root-1",
@@ -176,6 +210,69 @@ class DurableLifecycleTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 result = store.prepare_runtime_session(raw)
                 self.assertIn(result.outcome, {DurableOutcome.DENY, DurableOutcome.STOP})
+                with sqlite3.connect(self.path) as connection:
+                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM execution_sessions").fetchone(), (0,))
+
+    def test_bound_worker_start_pipe_is_mandatory_unique_and_pairwise_exact(self) -> None:
+        for mutation in ("missing", "duplicate_kind", "wrong_pair", "shared_pipe"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                self.path = Path(directory) / "lifecycle.sqlite3"
+                store = self.store()
+                raw = self.claimed(store)
+                inventory = raw["runtime_bindings"]["fd_allowlist"]
+                if mutation == "missing":
+                    inventory[:] = [row for row in inventory if row["kind"] != "WORKER_START_GATE"]
+                elif mutation == "duplicate_kind":
+                    inventory[-1]["kind"] = "WORKER_START_RELEASE"
+                elif mutation == "wrong_pair":
+                    next(row for row in inventory if row["kind"] == "WORKER_START_RELEASE")["inode"] = 20
+                else:
+                    next(row for row in inventory if row["kind"] == "WORKER_START_GATE")["inode"] = 14
+                    next(row for row in inventory if row["kind"] == "WORKER_START_RELEASE")["inode"] = 14
+                result = store.prepare_runtime_session(raw)
+                self.assertEqual((result.outcome, result.reason), (DurableOutcome.STOP, DurableReason.MALFORMED_INPUT))
+                with sqlite3.connect(self.path) as connection:
+                    self.assertEqual(connection.execute("SELECT COUNT(*) FROM execution_sessions").fetchone(), (0,))
+
+    def test_connected_pair_record_is_closed_exact_and_substitution_resistant(self) -> None:
+        mutations = (
+            "legacy_path", "missing_endpoint", "wrong_kind", "wrong_type", "wrong_transport",
+            "wrong_cookie", "duplicate_descriptor", "passcred_disabled", "worker_principal",
+            "stale_pair_digest",
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                self.path = Path(directory) / "lifecycle.sqlite3"
+                store = self.store()
+                raw = self.claimed(store)
+                broker = raw["runtime_bindings"]["broker_ipc"]
+                inventory = raw["runtime_bindings"]["fd_allowlist"]
+                if mutation == "legacy_path":
+                    raw["runtime_bindings"]["broker_ipc"] = {
+                        "kind": "BROKER_IPC_ROOT", "descriptor": 11,
+                        "descriptor_id": "broker-root-1", "device": 1, "inode": 11,
+                        "mount_id": 20, "mode": 0o555, "type": "DIRECTORY",
+                    }
+                elif mutation == "missing_endpoint":
+                    del broker["broker_socket_identity"]
+                elif mutation == "wrong_kind":
+                    broker["worker_socket_identity"]["kind"] = "BROKER_IPC_ROOT"
+                elif mutation == "wrong_type":
+                    broker["worker_socket_identity"]["socket_type"] = "SOCK_STREAM"
+                elif mutation == "wrong_transport":
+                    broker["transport"] = "UNIX_STREAM"
+                elif mutation == "wrong_cookie":
+                    broker["worker_socket_identity"]["cookie"] = broker["broker_socket_identity"]["cookie"]
+                elif mutation == "duplicate_descriptor":
+                    broker["broker_socket_identity"]["descriptor"] = broker["worker_socket_identity"]["descriptor"]
+                elif mutation == "passcred_disabled":
+                    broker["broker_socket_identity"]["pass_credentials"] = False
+                elif mutation == "worker_principal":
+                    broker["worker_principal"] = "other-worker"
+                else:
+                    broker["pair_binding_digest"] = _digest("9")
+                result = store.prepare_runtime_session(raw)
+                self.assertEqual((result.outcome, result.reason), (DurableOutcome.STOP, DurableReason.MALFORMED_INPUT))
                 with sqlite3.connect(self.path) as connection:
                     self.assertEqual(connection.execute("SELECT COUNT(*) FROM execution_sessions").fetchone(), (0,))
 

@@ -340,14 +340,15 @@
     },
     "brokerIpcRuntimeAttestation": {
       "type": "object", "additionalProperties": false,
-      "required": ["attestation_digest", "isolation_profile_digest", "broker_ipc_binding_digest", "runtime_session_id", "worker_principal", "broker_principal", "worker_subject", "broker_subject", "socket_identity", "worker_fd", "broker_fd", "worker_fd_allowlist_digest", "broker_fd_allowlist_digest", "worker_observed_peer", "broker_observed_peer", "transport", "message_schema_digest", "operation_id", "nonce", "session_fencing_epoch", "issued_at", "expires_at", "revocation_epoch", "signature"],
+      "required": ["attestation_digest", "isolation_profile_digest", "broker_ipc_binding_digest", "runtime_session_id", "worker_principal", "broker_principal", "worker_subject", "broker_subject", "socket_identity", "worker_fd", "broker_fd", "worker_fd_allowlist_digest", "broker_fd_allowlist_digest", "worker_endpoint_holder", "broker_endpoint_holder", "broker_observed_sender", "sender_authentication", "transport", "message_schema_digest", "operation_id", "nonce", "session_fencing_epoch", "issued_at", "expires_at", "revocation_epoch", "signature"],
       "properties": {
         "attestation_digest": {"$ref": "#/$defs/digest"}, "isolation_profile_digest": {"$ref": "#/$defs/digest"}, "broker_ipc_binding_digest": {"$ref": "#/$defs/digest"},
         "runtime_session_id": {"$ref": "#/$defs/id"}, "worker_principal": {"$ref": "#/$defs/id"}, "broker_principal": {"$ref": "#/$defs/id"},
         "worker_subject": {"$ref": "#/$defs/osSubject"}, "broker_subject": {"$ref": "#/$defs/osSubject"}, "socket_identity": {"$ref": "#/$defs/socketIdentity"},
         "worker_fd": {"type": "integer", "minimum": 0}, "broker_fd": {"type": "integer", "minimum": 0},
         "worker_fd_allowlist_digest": {"$ref": "#/$defs/digest"}, "broker_fd_allowlist_digest": {"$ref": "#/$defs/digest"},
-        "worker_observed_peer": {"$ref": "#/$defs/peer"}, "broker_observed_peer": {"$ref": "#/$defs/peer"},
+        "worker_endpoint_holder": {"$ref": "#/$defs/peer"}, "broker_endpoint_holder": {"$ref": "#/$defs/peer"}, "broker_observed_sender": {"$ref": "#/$defs/peer"},
+        "sender_authentication": {"const": "SCM_CREDENTIALS_PLUS_ENDPOINT_HOLDER_ATTESTATION"},
         "transport": {"const": "UNIX_SEQPACKET"}, "message_schema_digest": {"$ref": "#/$defs/digest"}, "operation_id": {"type": "string", "pattern": "^[a-z][a-z0-9._/-]{0,127}$"},
         "nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{22,128}$"}, "session_fencing_epoch": {"type": "integer", "minimum": 0},
         "issued_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"}, "revocation_epoch": {"type": "integer", "minimum": 0}, "signature": {"$ref": "#/$defs/signature"}
@@ -363,10 +364,23 @@
       }
     },
     "socketIdentity": {
-      "oneOf": [
-        {"type": "object", "additionalProperties": false, "required": ["kind", "mount_id", "device_id", "inode"], "properties": {"kind": {"const": "UNIX_PATH_INODE"}, "mount_id": {"$ref": "#/$defs/id"}, "device_id": {"$ref": "#/$defs/id"}, "inode": {"type": "integer", "minimum": 1}}},
-        {"type": "object", "additionalProperties": false, "required": ["kind", "network_namespace", "abstract_name"], "properties": {"kind": {"const": "UNIX_ABSTRACT"}, "network_namespace": {"$ref": "#/$defs/id"}, "abstract_name": {"type": "string", "pattern": "^@[A-Za-z0-9._:-]{1,127}$"}}}
-      ]
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "worker_endpoint", "broker_endpoint", "pair_binding_digest"],
+      "properties": {
+        "kind": {"const": "UNIX_CONNECTED_PAIR"},
+        "worker_endpoint": {"$ref": "#/$defs/socketEndpointIdentity"},
+        "broker_endpoint": {"$ref": "#/$defs/socketEndpointIdentity"},
+        "pair_binding_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "socketEndpointIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["device_id", "inode", "cookie"],
+      "properties": {
+        "device_id": {"$ref": "#/$defs/id"},
+        "inode": {"type": "integer", "minimum": 1},
+        "cookie": {"type": "integer", "minimum": 1}
+      }
     },
     "peer": {
       "type": "object", "additionalProperties": false,

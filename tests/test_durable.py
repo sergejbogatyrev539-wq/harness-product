@@ -310,6 +310,19 @@ def _claim_raw(transaction_id: str = "transaction-0001", *, observed_at: str = "
     }
 
 
+def _verify_claim_raw(claim: object, *, observed_at: str = "2026-08-25T12:02:30Z") -> dict[str, object]:
+    return {
+        "transaction_id": claim.transaction_id,
+        "claim_digest": claim.claim_digest,
+        "audience_id": claim.audience_id,
+        "placement_digest": claim.placement_digest,
+        "session_id": claim.session_id,
+        "revocation_epoch": claim.revocation_epoch,
+        "fencing_epoch": claim.fencing_epoch,
+        "observed_at": observed_at,
+    }
+
+
 class ClaimBarrier:
     def __init__(self, parties: int) -> None:
         self.barrier = threading.Barrier(parties)
@@ -1521,6 +1534,94 @@ class DurableClaimDispatchTests(unittest.TestCase):
         recovered = reopened.recover()
         self.assertEqual(recovered.recovery_intents[0].state, "ATTEMPT_CLAIMED")
         self.assert_claim_stop(reopened.claim_dispatch(_claim_raw()), DurableReason.REPLAY)
+
+    def test_stored_claim_is_reverified_read_only_and_every_substitution_fails_closed(self) -> None:
+        store = self.store(executor=ExactVerifier())
+        self.prepared(store)
+        claimed = store.claim_dispatch(_claim_raw())
+        self.assertTrue(claimed.committed)
+        raw = _verify_claim_raw(claimed.dispatch_claim)
+        verified = store.verify_dispatch_claim(raw)
+        self.assertEqual(
+            (verified.outcome, verified.reason, verified.dispatch_claim),
+            (DurableOutcome.OK, DurableReason.DISPATCH_CLAIM_VERIFIED, claimed.dispatch_claim),
+        )
+        with sqlite3.connect(self.db_path) as connection:
+            before = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("capabilities", "dispatch_intents", "dispatch_attempt_claims", "journal_entries", "outbox_events")
+            )
+        mutations = [{}, {**raw, "unknown": True}, {**raw, "fencing_epoch": True}]
+        for field, value in (
+            ("claim_digest", _digest("substitute-claim")),
+            ("audience_id", "agent_worker-1"),
+            ("placement_digest", _digest("substitute-placement")),
+            ("session_id", "session-substitute"),
+            ("revocation_epoch", raw["revocation_epoch"] + 1),
+            ("fencing_epoch", raw["fencing_epoch"] + 1),
+        ):
+            mutations.append({**raw, field: value})
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                result = store.verify_dispatch_claim(mutation)
+                self.assertIn(result.outcome, {DurableOutcome.DENY, DurableOutcome.STOP})
+                self.assertIsNone(result.dispatch_claim)
+        self.assertEqual(
+            self.store().verify_dispatch_claim(raw).reason,
+            DurableReason.EXECUTOR_VERIFIER_ABSENT,
+        )
+        with sqlite3.connect(self.db_path) as connection:
+            after = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("capabilities", "dispatch_intents", "dispatch_attempt_claims", "journal_entries", "outbox_events")
+            )
+        self.assertEqual(after, before)
+
+    def test_stored_claim_reverification_rejects_expiry_current_fence_and_revocation(self) -> None:
+        store = self.store(executor=ExactVerifier())
+        self.prepared(store)
+        claimed = store.claim_dispatch(_claim_raw())
+        raw = _verify_claim_raw(claimed.dispatch_claim)
+        self.assertEqual(
+            store.verify_dispatch_claim({**raw, "observed_at": "2026-08-25T12:05:00Z"}).reason,
+            DurableReason.EXPIRED,
+        )
+        advanced = store.advance_fence(
+            {
+                "expected_fencing_epoch": raw["fencing_epoch"],
+                "new_fencing_epoch": raw["fencing_epoch"] + 1,
+                "reason_digest": _digest("e"),
+            }
+        )
+        self.assertEqual(
+            (advanced.outcome, advanced.reason),
+            (DurableOutcome.COMMITTED, DurableReason.FENCE_ADVANCED),
+        )
+        self.assertEqual(store.verify_dispatch_claim(raw).reason, DurableReason.STALE_FENCE)
+
+        self.db_path = Path(self.temporary.name) / "verify-revocation.sqlite3"
+        revoked = self.store(executor=ExactVerifier())
+        self.prepared(revoked)
+        claimed = revoked.claim_dispatch(_claim_raw())
+        sibling = revoked.issue(
+            _issue_raw(nonce="nonce-verify-revocation", idempotency_key_digest=_digest("f"))
+        )
+        self.assertTrue(sibling.committed)
+        self.assertTrue(
+            revoked.revoke(
+                {
+                    "capability_id": sibling.capability_id,
+                    "expected_revocation_epoch": claimed.dispatch_claim.revocation_epoch,
+                    "new_revocation_epoch": claimed.dispatch_claim.revocation_epoch + 1,
+                    "fencing_epoch": claimed.dispatch_claim.fencing_epoch,
+                    "reason_digest": _digest("e"),
+                }
+            ).committed
+        )
+        self.assertEqual(
+            revoked.verify_dispatch_claim(_verify_claim_raw(claimed.dispatch_claim)).reason,
+            DurableReason.STALE_REVOCATION,
+        )
 
     def test_claim_closed_terminal_expired_stale_and_verifier_rejections_do_not_claim(self) -> None:
         verifier = ExactVerifier()

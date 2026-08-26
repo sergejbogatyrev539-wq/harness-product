@@ -183,6 +183,7 @@ class DurableReason(str, Enum):
     CAPABILITY_ISSUED = "CAPABILITY_ISSUED"
     INTENT_COMMITTED = "INTENT_COMMITTED"
     DISPATCH_ATTEMPT_CLAIMED = "DISPATCH_ATTEMPT_CLAIMED"
+    DISPATCH_CLAIM_VERIFIED = "DISPATCH_CLAIM_VERIFIED"
     RUNTIME_SESSION_PREPARED = "RUNTIME_SESSION_PREPARED"
     RUNTIME_SESSION_STOPPED = "RUNTIME_SESSION_STOPPED"
     RUNTIME_SESSION_TIMED_OUT = "RUNTIME_SESSION_TIMED_OUT"
@@ -461,7 +462,10 @@ _RUNTIME_PROCESS_KEYS = frozenset(
     }
 )
 _RUNTIME_NAMESPACE_KEYS = frozenset(
-    {"worker_principal", "worker_session", "uid", "gid", "security_label", "credential_namespace", "namespace_ids"}
+    {
+        "worker_principal", "worker_session", "uid", "gid", "security_label",
+        "credential_namespace", "namespace_ids", "user_namespace_binding_digest",
+    }
 )
 _RUNTIME_NAMESPACE_ID_KEYS = frozenset({"user", "mount", "pid", "ipc", "uts", "network", "cgroup"})
 _RUNTIME_CGROUP_KEYS = frozenset(
@@ -476,13 +480,30 @@ _RUNTIME_DIRECTORY_KEYS = frozenset(
 _RUNTIME_REGULAR_KEYS = _RUNTIME_DIRECTORY_KEYS | frozenset({"size", "bytes_digest"})
 _RUNTIME_INPUT_KEYS = _RUNTIME_REGULAR_KEYS | frozenset({"mount_path"})
 _RUNTIME_PIPE_KEYS = frozenset({"kind", "descriptor", "device", "inode", "type"})
+_RUNTIME_USER_NAMESPACE_KEYS = frozenset(
+    {
+        "kind", "descriptor", "descriptor_id", "device", "inode", "identity",
+        "uid_map", "gid_map", "setgroups", "max_user_namespaces", "type",
+    }
+)
 _RUNTIME_WRITABLE_KEYS = frozenset(
     {"root_id", "root_identity", "mount_id", "mount_identity", "files", "inodes", "bytes"}
 )
-_RUNTIME_BROKER_KEYS = _RUNTIME_DIRECTORY_KEYS | frozenset(
+_RUNTIME_SOCKET_PEER_KEYS = frozenset({"pid", "uid", "gid"})
+_RUNTIME_SOCKET_KEYS = frozenset(
     {
-        "socket_name", "socket_device", "socket_inode", "worker_endpoint", "broker_endpoint",
-        "transport", "message_binding_digest",
+        "kind", "descriptor", "descriptor_id", "device", "inode", "cookie", "type",
+        "family", "socket_type", "address_mode", "pass_credentials", "creation_peer",
+    }
+)
+_RUNTIME_BROKER_KEYS = frozenset(
+    {
+        "kind", "endpoint_mode", "transport", "worker_endpoint", "broker_endpoint",
+        "worker_principal", "broker_principal", "worker_session", "broker_session",
+        "worker_security_label", "broker_security_label", "worker_socket_identity",
+        "broker_socket_identity", "operation_id", "nonce", "fencing_epoch",
+        "revocation_epoch", "issued_at", "expires_at", "sender_authentication",
+        "message_binding_digest", "pair_binding_digest",
     }
 )
 _RUNTIME_CLEANUP_KEYS = frozenset(
@@ -499,6 +520,41 @@ def _valid_descriptor_row(value: object, keys: frozenset[str], kinds: frozenset[
         and _bounded_integer(value.get("device"))
         and _bounded_integer(value.get("inode"))
         and type(value.get("type")) is str
+    )
+
+
+def _valid_id_map(value: object, namespace_id: object) -> bool:
+    if type(value) is not str or type(namespace_id) is not int or len(value) > 256 or not value.endswith("\n"):
+        return False
+    try:
+        rows = [tuple(int(field) for field in line.split(" ")) for line in value.splitlines()]
+    except (TypeError, ValueError):
+        return False
+    return (
+        len(rows) == 2
+        and all(len(row) == 3 and all(type(item) is int and 0 <= item <= _MAX_INTEGER for item in row) for row in rows)
+        and rows[0][0] == 0
+        and rows[1][0] == namespace_id
+        and rows[0][1] >= 1
+        and rows[1][1] >= 1
+        and rows[0][1] != rows[1][1]
+        and rows[0][2] == rows[1][2] == 1
+    )
+
+
+def _valid_socket_endpoint(value: object, kind: str, pass_credentials: bool) -> bool:
+    return (
+        _closed_dict(value, _RUNTIME_SOCKET_KEYS)
+        and value.get("kind") == kind
+        and _valid_identifier(value.get("descriptor_id"))
+        and all(_bounded_integer(value.get(field)) for field in ("descriptor", "device", "inode", "cookie"))
+        and value.get("type") == "SOCKET"
+        and value.get("family") == "AF_UNIX"
+        and value.get("socket_type") == "SOCK_SEQPACKET"
+        and value.get("address_mode") == "ANONYMOUS_CONNECTED"
+        and value.get("pass_credentials") is pass_credentials
+        and _closed_dict(value.get("creation_peer"), _RUNTIME_SOCKET_PEER_KEYS)
+        and all(_bounded_integer(value["creation_peer"].get(field)) for field in _RUNTIME_SOCKET_PEER_KEYS)
     )
 
 
@@ -545,6 +601,7 @@ def _valid_runtime_bindings(value: object) -> bool:
         or not all(_bounded_integer(namespaces.get(field), 1) for field in ("uid", "gid"))
         or not all(_valid_identifier(item) for item in namespaces["namespace_ids"].values())
         or len(set(namespaces["namespace_ids"].values())) != len(_RUNTIME_NAMESPACE_ID_KEYS)
+        or not _valid_digest(namespaces.get("user_namespace_binding_digest"))
     ):
         return False
     if (
@@ -582,36 +639,115 @@ def _valid_runtime_bindings(value: object) -> bool:
         or not all(_bounded_integer(writable.get(field), 1) for field in ("files", "inodes", "bytes"))
     ):
         return False
+    if not _closed_dict(broker, _RUNTIME_BROKER_KEYS):
+        return False
+    worker_socket = broker.get("worker_socket_identity")
+    broker_socket = broker.get("broker_socket_identity")
+    pair_preimage = {key: broker[key] for key in broker if key != "pair_binding_digest"}
+    issued_at = _parse_time(broker.get("issued_at"))
+    expires_at = _parse_time(broker.get("expires_at"))
     if (
-        not _valid_descriptor_row(broker, _RUNTIME_BROKER_KEYS, frozenset({"BROKER_IPC_ROOT"}))
-        or broker.get("type") != "DIRECTORY"
-        or not all(_valid_identifier(broker.get(field)) for field in ("descriptor_id", "socket_name", "worker_endpoint", "broker_endpoint"))
-        or not all(_bounded_integer(broker.get(field)) for field in ("socket_device", "socket_inode"))
+        broker.get("kind") != "UNIX_CONNECTED_PAIR"
+        or broker.get("endpoint_mode") != "UNIX_CONNECTED_PAIR"
         or broker.get("transport") != "UNIX_SEQPACKET"
+        or broker.get("sender_authentication") != "SCM_CREDENTIALS_PLUS_ENDPOINT_HOLDER_ATTESTATION"
+        or not all(
+            _valid_identifier(broker.get(field))
+            for field in (
+                "worker_endpoint", "broker_endpoint", "worker_principal", "broker_principal",
+                "worker_session", "broker_session", "worker_security_label", "broker_security_label",
+                "operation_id", "nonce",
+            )
+        )
+        or broker["worker_endpoint"] == broker["broker_endpoint"]
+        or broker["worker_principal"] == broker["broker_principal"]
+        or broker["worker_session"] == broker["broker_session"]
+        or broker["worker_principal"] != process["worker_principal"]
+        or broker["broker_principal"] != process["broker_principal"]
+        or broker["worker_session"] != process["session_id"]
+        or broker["broker_session"] != process["broker_session"]
+        or broker["worker_security_label"] != namespaces["security_label"]
+        or broker["fencing_epoch"] != process["fencing_epoch"]
+        or broker["revocation_epoch"] != process["revocation_epoch"]
+        or not _bounded_integer(broker.get("fencing_epoch"), 1)
+        or not _bounded_integer(broker.get("revocation_epoch"))
+        or issued_at is None
+        or expires_at is None
+        or issued_at >= expires_at
         or not _valid_digest(broker.get("message_binding_digest"))
+        or not _valid_digest(broker.get("pair_binding_digest"))
+        or canonical_digest(pair_preimage) != broker["pair_binding_digest"]
+        or not _valid_socket_endpoint(worker_socket, "BROKER_IPC_WORKER_END", False)
+        or not _valid_socket_endpoint(broker_socket, "BROKER_IPC_BROKER_END", True)
+        or worker_socket["descriptor"] == broker_socket["descriptor"]
+        or worker_socket["cookie"] == broker_socket["cookie"]
     ):
         return False
-    if type(inventory) is not list or len(inventory) < 6 or len(inventory) > 23:
+    if type(inventory) is not list or len(inventory) < 12 or len(inventory) > 28:
         return False
     descriptors: list[int] = []
+    user_namespace: dict[str, object] | None = None
+    by_kind: dict[str, dict[str, object]] = {}
     for row in inventory:
         if type(row) is not dict:
             return False
         kind = row.get("kind")
-        if kind in {"ROOTFS", "BROKER_IPC_ROOT"}:
+        if kind == "ROOTFS":
             valid = _valid_descriptor_row(row, _RUNTIME_DIRECTORY_KEYS, frozenset({kind}))
+        elif kind == "BROKER_IPC_WORKER_END":
+            valid = _valid_socket_endpoint(row, kind, False) and row == worker_socket
+        elif kind == "BROKER_IPC_BROKER_END":
+            valid = _valid_socket_endpoint(row, kind, True) and row == broker_socket
         elif kind == "READ_ONLY_INPUT":
             valid = _valid_descriptor_row(row, _RUNTIME_INPUT_KEYS, frozenset({kind})) and _valid_digest(row.get("bytes_digest"))
         elif kind in {"SECCOMP_PROFILE", "WORKER_TOOL"}:
             valid = _valid_descriptor_row(row, _RUNTIME_REGULAR_KEYS, frozenset({kind})) and _valid_digest(row.get("bytes_digest"))
-        elif kind in {"START_GATE", "START_GATE_RELEASE", "STATUS_SOURCE", "STATUS_SINK"}:
+        elif kind in {
+            "START_GATE", "START_GATE_RELEASE", "WORKER_START_GATE", "WORKER_START_RELEASE",
+            "STATUS_SOURCE", "STATUS_SINK",
+        }:
             valid = _valid_descriptor_row(row, _RUNTIME_PIPE_KEYS, frozenset({kind})) and row.get("type") == "PIPE"
+        elif kind == "USER_NAMESPACE":
+            valid = (
+                _valid_descriptor_row(row, _RUNTIME_USER_NAMESPACE_KEYS, frozenset({kind}))
+                and row.get("type") == "NAMESPACE"
+                and _valid_identifier(row.get("descriptor_id"))
+                and row.get("identity") == f"user:[{row.get('inode')}]"
+                and _valid_id_map(row.get("uid_map"), namespaces["uid"])
+                and _valid_id_map(row.get("gid_map"), namespaces["gid"])
+                and row.get("setgroups") == "deny"
+                and type(row.get("max_user_namespaces")) is int
+                and row.get("max_user_namespaces") == 0
+            )
+            user_namespace = row if valid else None
         else:
             valid = False
         if not valid:
             return False
+        if kind != "READ_ONLY_INPUT":
+            if kind in by_kind:
+                return False
+            by_kind[kind] = row
         descriptors.append(row["descriptor"])
-    if len(set(descriptors)) != len(descriptors):
+    required_kinds = {
+        "USER_NAMESPACE", "ROOTFS", "BROKER_IPC_WORKER_END", "BROKER_IPC_BROKER_END",
+        "SECCOMP_PROFILE", "WORKER_TOOL",
+        "START_GATE", "START_GATE_RELEASE", "WORKER_START_GATE", "WORKER_START_RELEASE",
+        "STATUS_SOURCE", "STATUS_SINK",
+    }
+    pipe_pairs = (
+        ("START_GATE", "START_GATE_RELEASE"),
+        ("WORKER_START_GATE", "WORKER_START_RELEASE"),
+        ("STATUS_SOURCE", "STATUS_SINK"),
+    )
+    if (
+        len(set(descriptors)) != len(descriptors)
+        or user_namespace is None
+        or canonical_digest(user_namespace) != namespaces["user_namespace_binding_digest"]
+        or set(by_kind) != required_kinds
+        or any(by_kind[left]["inode"] != by_kind[right]["inode"] for left, right in pipe_pairs)
+        or len({by_kind[left]["inode"] for left, _ in pipe_pairs}) != len(pipe_pairs)
+    ):
         return False
     return (
         _closed_dict(cleanup, _RUNTIME_CLEANUP_KEYS)
@@ -3289,6 +3425,155 @@ class DurableStore:
         finally:
             if connection is not None:
                 connection.close()
+
+    def verify_dispatch_claim(self, raw: object) -> DurableResult:
+        """Revalidate the one stored claim and current epochs without mutation."""
+
+        if not self._usable:
+            return _result(DurableOutcome.STOP, self._stopped_reason)
+        keys = frozenset(
+            {
+                "transaction_id", "claim_digest", "audience_id", "placement_digest",
+                "session_id", "revocation_epoch", "fencing_epoch", "observed_at",
+            }
+        )
+        if not _closed_dict(raw, keys):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if (
+            not all(
+                _valid_identifier(raw[key])
+                for key in ("transaction_id", "audience_id", "session_id")
+            )
+            or not _valid_digest(raw["claim_digest"])
+            or not _valid_digest(raw["placement_digest"])
+            or not _bounded_integer(raw["revocation_epoch"], 0)
+            or not _bounded_integer(raw["fencing_epoch"], 1)
+            or _parse_time(raw["observed_at"]) is None
+        ):
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if self._executor_claim_verifier is None:
+            return _result(DurableOutcome.STOP, DurableReason.EXECUTOR_VERIFIER_ABSENT)
+        try:
+            connection = self._connect()
+            try:
+                self._audit(connection)
+                meta = connection.execute("SELECT * FROM store_meta WHERE id=1").fetchone()
+                claim_row = connection.execute(
+                    "SELECT * FROM dispatch_attempt_claims WHERE transaction_id=?",
+                    (raw["transaction_id"],),
+                ).fetchone()
+                intent_row = connection.execute(
+                    "SELECT * FROM dispatch_intents WHERE transaction_id=?",
+                    (raw["transaction_id"],),
+                ).fetchone()
+                if meta is None:
+                    raise _StoreCorrupt("missing metadata")
+                if claim_row is None or intent_row is None:
+                    return _result(DurableOutcome.DENY, DurableReason.UNKNOWN_INTENT)
+                capability = connection.execute(
+                    "SELECT * FROM capabilities WHERE capability_id=?",
+                    (intent_row["capability_id"],),
+                ).fetchone()
+                if (
+                    capability is None
+                    or capability["state"] != "CONSUMED"
+                    or capability["consumed_transaction_id"] != raw["transaction_id"]
+                    or intent_row["state"] != "PENDING"
+                ):
+                    return _result(DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION)
+                if capability["revocation_epoch"] != meta["revocation_epoch"]:
+                    return _result(DurableOutcome.DENY, DurableReason.STALE_REVOCATION)
+                if (
+                    capability["fencing_epoch"] != meta["fencing_epoch"]
+                    or intent_row["fencing_epoch"] != meta["fencing_epoch"]
+                ):
+                    return _result(DurableOutcome.DENY, DurableReason.STALE_FENCE)
+                if (
+                    raw["claim_digest"] != claim_row["claim_digest"]
+                    or raw["audience_id"] != claim_row["audience_id"]
+                    or raw["placement_digest"] != claim_row["placement_digest"]
+                    or raw["session_id"] != claim_row["session_id"]
+                    or raw["revocation_epoch"] != claim_row["revocation_epoch"]
+                    or raw["fencing_epoch"] != claim_row["fencing_epoch"]
+                ):
+                    return _result(DurableOutcome.DENY, DurableReason.BINDING_MISMATCH)
+                observed = _parse_time(raw["observed_at"])
+                claim_observed = _parse_time(claim_row["observed_at"])
+                not_before = _parse_time(capability["not_before"])
+                expires_at = _parse_time(capability["expires_at"])
+                if (
+                    observed is None
+                    or claim_observed is None
+                    or not_before is None
+                    or expires_at is None
+                    or not (not_before <= claim_observed <= observed < expires_at)
+                ):
+                    return _result(DurableOutcome.DENY, DurableReason.EXPIRED)
+                if not self._stored_verification_is_valid(capability, raw["observed_at"]):
+                    return _result(DurableOutcome.DENY, DurableReason.CAPABILITY_INVALID)
+                claim_value = _json_value(claim_row["claim_json"])
+                verification = _json_value(claim_row["executor_verification_json"])
+                if (
+                    canonical_digest(claim_value) != claim_row["claim_digest"]
+                    or canonical_digest(verification) != claim_row["executor_verification_digest"]
+                    or verification.get("payload_digest") != claim_row["claim_digest"]
+                    or verification.get("bindings") != claim_value
+                    or not self._executor_claim_verification_is_valid(
+                        claim_row["claim_json"],
+                        claim_row["claim_digest"],
+                        verification,
+                        claim_row["executor_verification_json"],
+                        claim_row["executor_verification_digest"],
+                        claim_row["observed_at"],
+                    )
+                ):
+                    return _result(DurableOutcome.DENY, DurableReason.CAPABILITY_INVALID)
+                intent = _json_value(intent_row["intent_json"])
+                dispatch_claim = DispatchClaim(
+                    transaction_id=raw["transaction_id"],
+                    claim_digest=claim_row["claim_digest"],
+                    intent_digest=intent_row["intent_digest"],
+                    capability_id=capability["capability_id"],
+                    idempotency_key_digest=capability["idempotency_key_digest"],
+                    principal_id=capability["principal_id"],
+                    audience_id=capability["audience_id"],
+                    purpose=capability["purpose"],
+                    profile_digest=capability["profile_digest"],
+                    placement_digest=capability["placement_digest"],
+                    session_id=capability["session_id"],
+                    lineage_root=capability["lineage_root"],
+                    nonce=capability["nonce"],
+                    revocation_epoch=capability["revocation_epoch"],
+                    fencing_epoch=capability["fencing_epoch"],
+                    observed_at=claim_row["observed_at"],
+                    target_scope_digest=intent["target_scope_digest"],
+                    material_digest=intent["material_digest"],
+                    request_json=capability["request_json"],
+                    decision_json=capability["decision_json"],
+                    authorized_envelope_json=capability["authorized_envelope_json"],
+                    capability_payload_json=capability["payload_json"],
+                    capability_verification_json=capability["verification_json"],
+                    intent_json=intent_row["intent_json"],
+                    claim_json=claim_row["claim_json"],
+                    executor_verification_json=claim_row["executor_verification_json"],
+                )
+            finally:
+                connection.close()
+            return DurableResult(
+                DurableOutcome.OK,
+                DurableReason.DISPATCH_CLAIM_VERIFIED,
+                capability_id=dispatch_claim.capability_id,
+                transaction_id=dispatch_claim.transaction_id,
+                dispatch_claim=dispatch_claim,
+            )
+        except _StoreCorrupt:
+            return self._mark_corrupt()
+        except sqlite3.OperationalError as error:
+            if "locked" in str(error).lower() or "busy" in str(error).lower():
+                return _result(DurableOutcome.STOP, DurableReason.STORE_BUSY)
+            return self._mark_corrupt()
+        except Exception:
+            return _result(DurableOutcome.STOP, DurableReason.INTERNAL_ERROR)
 
     def _runtime_session_verification_is_valid(
         self,

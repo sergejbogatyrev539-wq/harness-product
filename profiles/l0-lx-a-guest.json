@@ -1,0 +1,7 @@
+{
+  "image_digest": "sha256:6e40c07ae715f744f84af0bec76415cc1987dd115b4b8de437818561f01a3733",
+  "marker_version": "1.0.0",
+  "offline_egress": true,
+  "qemu_machine": "q35",
+  "release_id": "20260814"
+}

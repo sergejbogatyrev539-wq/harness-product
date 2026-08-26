@@ -58,7 +58,7 @@ RESOURCE_UNIT_ENFORCER = {
     "OUTPUT_BYTES": ("BYTES", "FILESYSTEM_QUOTA"),
     "GPU_TIME": ("MILLISECONDS", "DEVICE_SCHEDULER"), "GPU_MEMORY": ("MIB", "DEVICE_SCHEDULER"),
 }
-BROKER_IPC_ATTESTATION_FIELDS = frozenset({"attestation_digest", "isolation_profile_digest", "broker_ipc_binding_digest", "runtime_session_id", "worker_principal", "broker_principal", "worker_subject", "broker_subject", "socket_identity", "worker_fd", "broker_fd", "worker_fd_allowlist_digest", "broker_fd_allowlist_digest", "worker_observed_peer", "broker_observed_peer", "transport", "message_schema_digest", "operation_id", "nonce", "session_fencing_epoch", "issued_at", "expires_at", "revocation_epoch", "signature"})
+BROKER_IPC_ATTESTATION_FIELDS = frozenset({"attestation_digest", "isolation_profile_digest", "broker_ipc_binding_digest", "runtime_session_id", "worker_principal", "broker_principal", "worker_subject", "broker_subject", "socket_identity", "worker_fd", "broker_fd", "worker_fd_allowlist_digest", "broker_fd_allowlist_digest", "worker_endpoint_holder", "broker_endpoint_holder", "broker_observed_sender", "sender_authentication", "transport", "message_schema_digest", "operation_id", "nonce", "session_fencing_epoch", "issued_at", "expires_at", "revocation_epoch", "signature"})
 
 
 def _broker_ipc_payload(attestation: Mapping[str, Any]) -> dict[str, Any]:
@@ -1088,7 +1088,7 @@ def _role_subjects_valid(profile: Mapping[str, Any], trusted_facts: Mapping[str,
 
 
 def _broker_ipc_binding_valid(profile: Mapping[str, Any]) -> bool:
-    fields = {"worker_principal", "broker_principal", "worker_endpoint", "broker_endpoint", "transport", "peer_credentials_verified", "worker_network_namespace", "broker_network_namespace", "binding_digest"}
+    fields = {"worker_principal", "broker_principal", "worker_endpoint", "broker_endpoint", "transport", "endpoint_mode", "fd_delivery", "sender_authentication", "worker_network_namespace", "broker_network_namespace", "binding_digest"}
     binding = _mapping(profile.get("broker_ipc_binding"))
     principals = profile.get("principal_envelopes")
     if binding is None or set(binding) != fields or not isinstance(principals, list):
@@ -1104,7 +1104,10 @@ def _broker_ipc_binding_valid(profile: Mapping[str, Any]) -> bool:
         and binding.get("broker_endpoint") == (_mapping(broker.get("os_subject")) or {}).get("ipc_endpoint")
         and binding.get("worker_network_namespace") == (_mapping(worker.get("os_subject")) or {}).get("network_namespace")
         and binding.get("broker_network_namespace") == (_mapping(broker.get("os_subject")) or {}).get("network_namespace")
-        and binding.get("transport") == "UNIX_SEQPACKET" and binding.get("peer_credentials_verified") is True
+        and binding.get("transport") == "UNIX_SEQPACKET"
+        and binding.get("endpoint_mode") == "UNIX_CONNECTED_PAIR"
+        and binding.get("fd_delivery") == "SUPERVISOR_TYPED_ALLOWLIST"
+        and binding.get("sender_authentication") == "SCM_CREDENTIALS_PLUS_ENDPOINT_HOLDER_ATTESTATION"
         and binding.get("binding_digest") == canonical_digest(unsigned)
     )
 
@@ -1123,7 +1126,10 @@ def validate_broker_ipc_attestation(candidate: Mapping[str, Any], profile: Mappi
     roles = {item.get("principal"): _mapping(item.get("os_subject")) for item in profile.get("principal_envelopes", []) if isinstance(item, Mapping)}
     worker, broker = roles.get(ipc.get("worker_principal")), roles.get(ipc.get("broker_principal"))
     now, issued, expires = (_parse_time(value) for value in (candidate.get("evaluated_at"), attestation.get("issued_at"), attestation.get("expires_at")))
-    peers = (("worker_subject", "broker_observed_peer"), ("broker_subject", "worker_observed_peer"))
+    holders = (("worker_subject", "worker_endpoint_holder"), ("broker_subject", "broker_endpoint_holder"))
+    socket_identity = _mapping(attestation.get("socket_identity")) or {}
+    worker_endpoint = _mapping(socket_identity.get("worker_endpoint")) or {}
+    broker_endpoint = _mapping(socket_identity.get("broker_endpoint")) or {}
     return bool(
         record and worker and broker and attestation.get("attestation_digest") == canonical_digest(unsigned) == bindings.get("broker_ipc_attestation_digest") and signature.get("payload_digest") == canonical_digest(unsigned)
         and attestation.get("isolation_profile_digest") == bindings.get("isolation_profile_digest") == profile.get("profile_digest")
@@ -1131,11 +1137,18 @@ def validate_broker_ipc_attestation(candidate: Mapping[str, Any], profile: Mappi
         and attestation.get("runtime_session_id") == session.get("session_id")
         and attestation.get("worker_principal") == ipc.get("worker_principal") and attestation.get("broker_principal") == ipc.get("broker_principal")
         and attestation.get("worker_subject") == worker and attestation.get("broker_subject") == broker
-        and all(_mapping(attestation.get(subject)) and _mapping(attestation.get(peer)) and all(attestation[peer].get(key) == attestation[subject].get(key) for key in ("process_id", "uid", "gid", "session_id")) for subject, peer in peers)
+        and all(_mapping(attestation.get(subject)) and _mapping(attestation.get(holder)) and all(attestation[holder].get(key) == attestation[subject].get(key) for key in ("process_id", "uid", "gid", "session_id")) for subject, holder in holders)
+        and _mapping(attestation.get("broker_observed_sender"))
+        and all(attestation["broker_observed_sender"].get(key) == attestation["worker_subject"].get(key) for key in ("process_id", "uid", "gid", "session_id"))
+        and attestation.get("sender_authentication") == ipc.get("sender_authentication") == "SCM_CREDENTIALS_PLUS_ENDPOINT_HOLDER_ATTESTATION"
         and attestation.get("transport") == ipc.get("transport") == "UNIX_SEQPACKET" and attestation.get("operation_id") == candidate.get("operation_id")
         and isinstance(attestation.get("worker_fd"), int) and isinstance(attestation.get("broker_fd"), int) and attestation["worker_fd"] >= 0 and attestation["broker_fd"] >= 0
         and all(_valid_digest(attestation.get(key)) for key in ("worker_fd_allowlist_digest", "broker_fd_allowlist_digest", "message_schema_digest"))
-        and ((set((_mapping(attestation.get("socket_identity")) or {})) == {"kind", "mount_id", "device_id", "inode"} and attestation["socket_identity"].get("kind") == "UNIX_PATH_INODE" and all(isinstance(attestation["socket_identity"].get(key), str) and attestation["socket_identity"][key] for key in ("mount_id", "device_id")) and isinstance(attestation["socket_identity"].get("inode"), int) and attestation["socket_identity"]["inode"] >= 1) or (set((_mapping(attestation.get("socket_identity")) or {})) == {"kind", "network_namespace", "abstract_name"} and attestation["socket_identity"].get("kind") == "UNIX_ABSTRACT" and attestation["socket_identity"].get("network_namespace") == worker.get("network_namespace") and isinstance(attestation["socket_identity"].get("abstract_name"), str) and bool(attestation["socket_identity"]["abstract_name"])))
+        and set(socket_identity) == {"kind", "worker_endpoint", "broker_endpoint", "pair_binding_digest"}
+        and socket_identity.get("kind") == "UNIX_CONNECTED_PAIR"
+        and all(set(endpoint) == {"device_id", "inode", "cookie"} and isinstance(endpoint.get("device_id"), str) and bool(endpoint["device_id"]) and isinstance(endpoint.get("inode"), int) and not isinstance(endpoint.get("inode"), bool) and endpoint["inode"] >= 1 and isinstance(endpoint.get("cookie"), int) and not isinstance(endpoint.get("cookie"), bool) and endpoint["cookie"] >= 1 for endpoint in (worker_endpoint, broker_endpoint))
+        and worker_endpoint != broker_endpoint
+        and socket_identity.get("pair_binding_digest") == canonical_digest({"worker_endpoint": worker_endpoint, "broker_endpoint": broker_endpoint})
         and now and issued and expires and issued <= now < expires and attestation.get("revocation_epoch") == trusted_facts.get("current_revocation_epoch")
         and attestation.get("session_fencing_epoch") == trusted_facts.get("current_fencing_epoch") == session.get("epoch")
         and attestation.get("nonce") == trusted_facts.get("current_broker_ipc_nonce")
@@ -1187,9 +1200,9 @@ def validate_isolation_profile(profile: Any, trusted_facts: Mapping[str, Any] | 
         if expected is None or (item.get("unit"), item.get("enforcement")) != expected:
             return False
     network, process = _mapping(profile.get("network")) or {}, _mapping(profile.get("process")) or {}
-    network_fields = ("worker_default", "loopback", "ipv4", "ipv6", "dns", "unix_sockets", "metadata_service")
+    network_fields = ("worker_default", "loopback", "ipv4", "ipv6", "dns", "unix_sockets", "metadata_service", "connected_fd_policy", "external_sink_fds")
     attestation, supply, facts = _mapping(profile.get("attestation")) or {}, _mapping(profile.get("supply_chain")) or {}, _mapping(trusted_facts) or {}
-    expected_network = {"worker_default": "DISCONNECTED", "loopback": "DISABLED", "ipv4": "DISABLED", "ipv6": "DISABLED", "dns": "DISABLED", "unix_sockets": "NONE", "metadata_service": "BLOCKED"}
+    expected_network = {"worker_default": "DISCONNECTED", "loopback": "DISABLED", "ipv4": "DISABLED", "ipv6": "DISABLED", "dns": "DISABLED", "unix_sockets": "BROKER_CONNECTED_PAIR_ONLY", "metadata_service": "BLOCKED", "connected_fd_policy": "EXACT_OPERATION_SCOPED_PAIR_ONLY", "external_sink_fds": "NONE"}
     gpu = {item.get("resource"): item.get("limit") for item in resources}
     gpu_pair = (gpu.get("GPU_TIME"), gpu.get("GPU_MEMORY"))
     return bool(set(resource_names) == RESOURCE_CLASSES and len(resource_names) == len(set(resource_names)) and (gpu_pair == (0, 0) or all(isinstance(value, int) and value > 0 for value in gpu_pair)) and process.get("rootless_user_mapping") is True and {key: network.get(key) for key in network_fields} == expected_network and network.get("inherited_fds_closed") is True and _broker_ipc_binding_valid(profile) and all(attestation.get(key) is True for key in ("placement_required", "session_receipt_required", "independent_verification_required")) and supply.get("signed_artifacts") is True and supply.get("exact_byte_binding") is True and supply.get("registry_generation", -1) >= supply.get("rollback_floor", 0) and _activation_valid(profile, "profile_digest", "profile_activation", facts.get("verified_profile_activations"), None, facts.get("trusted_time")) and _role_subjects_valid(profile, facts) and _validate_risk_dispositions(profile, facts))

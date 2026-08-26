@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import os
+import json
 import random
 import socket
 import subprocess
 import tempfile
 import time
+import struct
 import unittest
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, is_dataclass, replace
 from hashlib import sha256
+from pathlib import Path
 from unittest.mock import patch
 
 import harness_product
@@ -34,7 +37,7 @@ def active_principal(role: str, number: int) -> dict[str, object]:
         "uts_namespace": f"uts-ns-{number}",
         "network_namespace": f"network-ns-{number}",
         "cgroup_namespace": f"cgroup-ns-{number}",
-        "security_label": f"label-{number}",
+        "security_label": l0._ROLE_APPARMOR_LABELS[role],
         "credential_namespace": f"credentials-{number}",
         "session_id": f"session-{number}",
         "network_mode": l0._ROLE_NETWORK[role],
@@ -60,18 +63,18 @@ def disabled_principal(role: str, number: int) -> dict[str, object]:
 
 def resources() -> list[dict[str, object]]:
     limits = {
-        "CPU_TIME": 10,
-        "CPU_RATE": 10,
-        "WALL_TIME": 10,
-        "MEMORY": 10,
+        "CPU_TIME": 2000,
+        "CPU_RATE": 500,
+        "WALL_TIME": 3000,
+        "MEMORY": 128,
         "SWAP": 0,
-        "PIDS": 2,
-        "BLOCK_IO_READ": 10,
-        "BLOCK_IO_WRITE": 10,
-        "FILES": 8,
-        "INODES": 8,
-        "OPEN_FDS": 4,
-        "OUTPUT_BYTES": 10,
+        "PIDS": 8,
+        "BLOCK_IO_READ": 100,
+        "BLOCK_IO_WRITE": 100,
+        "FILES": 16,
+        "INODES": 32,
+        "OPEN_FDS": 32,
+        "OUTPUT_BYTES": 4096,
         "GPU_TIME": 0,
         "GPU_MEMORY": 0,
     }
@@ -133,14 +136,19 @@ def valid_raw() -> dict[str, object]:
             "wall_time_supervisor": True,
             "path_resolution": sorted(l0._OPENAT2_FLAGS),
         },
-        "network": {key: key == "broker_ipc_only" for key in l0._NETWORK_KEYS},
+        "network": {
+            key: key in {"broker_ipc_only", "operation_scoped_connected_pair"}
+            for key in l0._NETWORK_KEYS
+        },
         "broker_ipc": {
             "worker_principal": principals[0]["principal_id"],
             "broker_principal": principals[1]["principal_id"],
             "worker_endpoint": "worker-ipc-endpoint",
             "broker_endpoint": "broker-ipc-endpoint",
             "transport": "UNIX_SEQPACKET",
-            "peer_credentials": "SO_PEERCRED_REQUIRED",
+            "endpoint_mode": "UNIX_CONNECTED_PAIR",
+            "fd_delivery": "SUPERVISOR_TYPED_ALLOWLIST",
+            "sender_authentication": "SCM_CREDENTIALS_PLUS_ENDPOINT_HOLDER_ATTESTATION",
             "operation_scoped": True,
             "max_message_bytes": 1024,
             "message_schema_digest": message_digest,
@@ -152,6 +160,9 @@ def valid_raw() -> dict[str, object]:
             "lsm_policy_name": "harness-l0-lx-a",
             "lsm_policy_digest": digest("d"),
             "broker_message_schema_digest": message_digest,
+            "verifier_code_digest": digest("1"),
+            "verifier_public_key_digest": digest("2"),
+            "verifier_libcrypto_digest": digest("3"),
         },
         "denied_surfaces": sorted(l0._DENIED_SURFACES),
     }
@@ -236,6 +247,8 @@ class L0CompilerTests(unittest.TestCase):
         disabled_enabled["principals"][4]["enabled"] = True
         missing_role = valid_raw()
         missing_role["principals"].pop()
+        symbolic_label = valid_raw()
+        symbolic_label["principals"][0]["security_label"] = "declared-but-not-loaded"
         for raw in (
             duplicate_role,
             shared_subject,
@@ -243,9 +256,36 @@ class L0CompilerTests(unittest.TestCase):
             observer_subject,
             disabled_enabled,
             missing_role,
+            symbolic_label,
         ):
             with self.subTest(raw=raw):
                 self.assert_stop(l0.compile_profile(raw))
+
+    def test_exact_seccomp_policy_compiles_to_bound_deny_default_bpf(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        raw = json.loads((root / "profiles/l0-lx-a-seccomp.json").read_bytes())
+        profile = json.loads((root / "profiles/l0-lx-a.json").read_bytes())
+        program = l0._compile_seccomp_bpf(raw)
+        self.assertEqual(
+            "sha256:" + sha256(program).hexdigest(),
+            "sha256:1dd76e99bb6e49b0e3dfafcde1012ff626f72377ade7c5d2bd75150f5ba6f322",
+        )
+        self.assertEqual(profile["measurement_bindings"]["seccomp_profile_digest"], "sha256:" + sha256(program).hexdigest())
+        for forbidden in (41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 288):
+            self.assertNotIn(forbidden, raw["syscalls"], "worker uses only read/write on inherited FD 3")
+        self.assertEqual(struct.unpack("=HBBI", program[-8:]), (0x06, 0, 0, 0x00050001))
+
+        mutations = []
+        missing = deepcopy(raw); del missing["default_action"]; mutations.append(missing)
+        extra = deepcopy(raw); extra["allow_network"] = False; mutations.append(extra)
+        duplicate = deepcopy(raw); duplicate["syscalls"].append(duplicate["syscalls"][-1]); mutations.append(duplicate)
+        reordered = deepcopy(raw); reordered["syscalls"] = list(reversed(reordered["syscalls"])); mutations.append(reordered)
+        boolean = deepcopy(raw); boolean["syscalls"][0] = True; mutations.append(boolean)
+        permissive = deepcopy(raw); permissive["default_action"] = "ALLOW"; mutations.append(permissive)
+        for tested in mutations:
+            with self.subTest(tested=tested):
+                with self.assertRaises(l0._Stop):
+                    l0._compile_seccomp_bpf(tested)
 
     def test_worker_network_fd_effect_and_direct_mutation_invariants_are_exact(self) -> None:
         cases: list[dict[str, object]] = []
@@ -285,6 +325,21 @@ class L0CompilerTests(unittest.TestCase):
         operation = valid_raw()
         operation["broker_ipc"]["operation_scoped"] = False
         cases.append(operation)
+        connected_pair = valid_raw()
+        connected_pair["network"]["operation_scoped_connected_pair"] = False
+        cases.append(connected_pair)
+        mode = valid_raw()
+        mode["broker_ipc"]["endpoint_mode"] = "PATHNAME"
+        cases.append(mode)
+        delivery = valid_raw()
+        delivery["broker_ipc"]["fd_delivery"] = "INHERITED_AMBIENT"
+        cases.append(delivery)
+        authentication = valid_raw()
+        authentication["broker_ipc"]["sender_authentication"] = "SO_PEERCRED_ONLY"
+        cases.append(authentication)
+        legacy = valid_raw()
+        legacy["broker_ipc"]["peer_credentials"] = "SO_PEERCRED_REQUIRED"
+        cases.append(legacy)
         oversized = valid_raw()
         oversized["broker_ipc"]["max_message_bytes"] = (1 << 20) + 1
         cases.append(oversized)
@@ -351,10 +406,16 @@ class L0CompilerTests(unittest.TestCase):
             0o755,
             (
                 "--assert-userns-disabled", "--bind-fd", "--cap-drop", "--clearenv", "--die-with-parent",
-                "--disable-userns", "--gid", "--new-session", "--proc", "--ro-bind-fd", "--seccomp",
-                "--tmpfs", "--uid", "--unshare-all", "--unshare-cgroup", "--unshare-ipc", "--unshare-net",
-                "--unshare-pid", "--unshare-user", "--unshare-uts",
+                "--gid", "--new-session", "--proc", "--ro-bind-fd", "--seccomp",
+                "--sync-fd", "--tmpfs", "--uid", "--unshare-all", "--unshare-cgroup", "--unshare-ipc", "--unshare-net",
+                "--unshare-pid", "--unshare-uts", "--userns",
             ),
+            l0.AA_EXEC_PATH,
+            l0.AA_EXEC_DIGEST,
+            0,
+            0,
+            0o755,
+            True,
             True,
             "x86_64",
             "test-kernel",
@@ -371,7 +432,7 @@ class L0CompilerTests(unittest.TestCase):
             True,
             ("capability", "apparmor"),
             True,
-            ("harness-l0-lx-a",),
+            tuple(sorted(l0._APPARMOR_PROFILES)),
             True,
         )
 
@@ -386,6 +447,7 @@ class L0CompilerTests(unittest.TestCase):
     def test_host_preflight_fail_closes_each_runtime_blocker_and_exception(self) -> None:
         changes: tuple[tuple[l0.L0Reason, dict[str, object]], ...] = (
             (l0.L0Reason.RUNTIME_MISMATCH, {"backend_digest": digest("f")} ),
+            (l0.L0Reason.LSM_POLICY_ABSENT, {"aa_exec_digest": digest("f")} ),
             (l0.L0Reason.UNSUPPORTED_CONTROL, {"backend_options": ()}),
             (l0.L0Reason.HOST_UNSUPPORTED, {"linux": False}),
             (l0.L0Reason.USER_NAMESPACE_ABSENT, {"user_namespaces": False}),
@@ -393,6 +455,10 @@ class L0CompilerTests(unittest.TestCase):
             (l0.L0Reason.CGROUP_DELEGATION_ABSENT, {"cgroup_delegated": False}),
             (l0.L0Reason.LSM_ABSENT, {"lsm_stack": ()}),
             (l0.L0Reason.LSM_POLICY_ABSENT, {"loaded_apparmor_profiles": ()}),
+            (
+                l0.L0Reason.LSM_POLICY_ABSENT,
+                {"loaded_apparmor_profiles": tuple(sorted(l0._APPARMOR_PROFILES - {"harness-l0-lx-a.executor"}))},
+            ),
             (l0.L0Reason.OPENAT2_ABSENT, {"openat2": False}),
         )
         for reason, changeset in changes:
@@ -593,9 +659,11 @@ class L0BrokerReceiveTests(unittest.TestCase):
             "binding_digest": profile.broker_binding_digest, "proposal": proposal, "proposal_digest": l0._hash_text(l0._canonical(proposal)),
         }
 
-    def receive(self, profile: l0.CompiledL0Profile, expected: dict[str, object], payload: bytes, *, socket_type: int = socket.SOCK_SEQPACKET, ancillary: list[tuple[int, int, bytes]] | None = None) -> l0.BrokerResult:
+    def receive(self, profile: l0.CompiledL0Profile, expected: dict[str, object], payload: bytes, *, socket_type: int = socket.SOCK_SEQPACKET, ancillary: list[tuple[int, int, bytes]] | None = None, passcred: bool = True) -> l0.BrokerResult:
         sender, receiver = socket.socketpair(socket.AF_UNIX, socket_type)
         try:
+            if passcred:
+                receiver.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
             if ancillary is None:
                 sender.send(payload)
             else:
@@ -631,6 +699,7 @@ class L0BrokerReceiveTests(unittest.TestCase):
         expected = self.expected(profile)
         good = l0._canonical(self.packet(profile, expected)).encode("utf-8")
         self.assert_broker_stop(self.receive(profile, expected, good, socket_type=socket.SOCK_STREAM), l0.L0Reason.BROKER_BINDING_MISMATCH)
+        self.assert_broker_stop(self.receive(profile, expected, good, passcred=False), l0.L0Reason.BROKER_BINDING_MISMATCH)
         self.assert_broker_stop(self.receive(profile, expected, b"x" * 1026), l0.L0Reason.MESSAGE_TOO_LARGE)
         descriptor = os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC)
         try:

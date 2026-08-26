@@ -554,7 +554,7 @@
       "15_LEVEL5_HUMAN_CONTROL.md"
     ],
     "row_count": 103,
-    "digest": "sha256:d6f1e08844de759e7d25c19631878d77b549b2a78be9f21db6fc59cb28c08370",
+    "digest": "sha256:c89aee5298ec7528aa37d43623bef1b29fcfe4a0c4bb5a1515f0169bdf39627b",
     "event_alert_by_level": {
       "L0": "host STOP/incident",
       "L1": "classifier DENY/STOP",
@@ -1817,142 +1817,142 @@
       "invariants_source": "04_FORMAL_CORE_AND_INVARIANTS.md",
       "test_source": "tests/run_checks.py",
       "scope": "registry-and-model",
-      "normative_requirement_catalog_digest": "sha256:d6f1e08844de759e7d25c19631878d77b549b2a78be9f21db6fc59cb28c08370"
+      "normative_requirement_catalog_digest": "sha256:c89aee5298ec7528aa37d43623bef1b29fcfe4a0c4bb5a1515f0169bdf39627b"
     },
-    "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852"
+    "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737"
   },
   "evidence_records": {
     "EV-ADMISSION-MODEL": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "specification-model result only; runtime absent",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-CAPABILITY-LIFECYCLE": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "specification-model result only; runtime absent",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-HOST-LIFECYCLE": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "specification-model result only; runtime absent",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-NEGATIVE-MUTATIONS": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "specification-model result only; runtime absent",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-SCHEMA-CONFORMANCE": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "specification-model result only; runtime absent",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-TRACEABILITY-EXECUTION": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
-      "normative_requirement_catalog_digest": "sha256:d6f1e08844de759e7d25c19631878d77b549b2a78be9f21db6fc59cb28c08370",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
+      "normative_requirement_catalog_digest": "sha256:c89aee5298ec7528aa37d43623bef1b29fcfe4a0c4bb5a1515f0169bdf39627b",
       "result": "registry/reverse-edge contract; root-side validator required; runtime absent",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q39-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q39-SUPPLY-EXTERNAL-BUNDLE-SUBSTITUTION passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q40-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q40-D2-EMPTY, T-Q40-D2-STALE and T-Q40-D2-HIDDEN_N_PLUS_2 passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q41-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q41-EVENT-EMITTER-ROLE-FORGE passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q42-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q42-EVENT-DIGEST-SUBSTITUTION passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q43-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q43-DESCRIPTOR-ROOT-SUBSTITUTION passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q44-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q44-CONTRACT-SUBSTITUTION passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q45-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q45-STAGEABLE-CRASH-QUARANTINES passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q46-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q46-DIRECT-WORKER-MUTATE-DENY passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q47-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q47-MUTATION-SELF-AUDIENCE-DENY passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q48-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q48-POLICY-SCOPE-KIND-CROSS-MATRIX passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q49-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q49-JOIN-TYPED-EVIDENCE-FORGE passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q50-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q50-BUDGET-SCOPE-IDENTITY-SUBSTITUTION passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     },
     "EV-R4-Q51-001": {
       "command": "python3 tests/run_checks.py",
       "environment_digest": "sha256:eab36f532d4daaf46464f7e775aff2c7ec62c5f6426dd59c0c760726f9864caa",
-      "input_digest": "sha256:33e50da94721ab98a6c94e57fd68d78d756e87d1bb847681038e21439bd1c852",
+      "input_digest": "sha256:d2c88a0eadd56b235b1afb88abadda30253740a47c6ca83b02d62a8cd5e99737",
       "result": "T-Q51-ISSUE-EXTERNAL-FULL-RECORD passed; specification model only",
       "status": "SPECIFICATION_MODEL_TESTED"
     }

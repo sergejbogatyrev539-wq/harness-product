@@ -1,0 +1,17 @@
+{
+  "encoding": "UTF-8 canonical JSON",
+  "fields": [
+    "operation_id",
+    "worker_principal",
+    "worker_session",
+    "nonce",
+    "fencing_epoch",
+    "binding_digest",
+    "proposal_json",
+    "proposal_digest"
+  ],
+  "format_version": "1.0.0",
+  "max_message_bytes": 1024,
+  "peer_identity": "SO_PEERCRED",
+  "transport": "AF_UNIX/SOCK_SEQPACKET"
+}
