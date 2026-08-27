@@ -6,6 +6,7 @@ filesystem profile.  It has no connector, external-effect or retry path.
 
 from __future__ import annotations
 
+import ctypes
 from dataclasses import asdict, dataclass
 from enum import Enum
 import errno
@@ -13,7 +14,6 @@ import fcntl
 import json
 import os
 import re
-import resource
 import select
 import signal
 import stat
@@ -228,23 +228,35 @@ def _evidence(body: dict[str, object]) -> dict[str, object]:
     return value
 
 
+def _linux_close_range(first: int, last: int) -> None:
+    try:
+        close_range = ctypes.CDLL(None, use_errno=True).close_range
+    except (AttributeError, OSError) as error:
+        raise OSError(errno.ENOSYS, "close_range unavailable") from error
+    close_range.argtypes = (ctypes.c_uint, ctypes.c_uint, ctypes.c_uint)
+    close_range.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    if close_range(first, last, 0) != 0:
+        error_number = ctypes.get_errno() or errno.EIO
+        raise OSError(error_number, os.strerror(error_number))
+
+
 def _close_except(keep: set[int]) -> None:
-    hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
-    if (
-        type(hard) is not int
-        or hard == resource.RLIM_INFINITY
-        or hard < 0
-        or hard > 1 << 20
-        or any(type(descriptor) is not int or descriptor < 0 or descriptor >= hard for descriptor in keep)
+    maximum = (1 << (ctypes.sizeof(ctypes.c_uint) * 8)) - 1
+    if any(
+        type(descriptor) is not int or descriptor < 0 or descriptor > maximum
+        for descriptor in keep
     ):
-        raise OSError(errno.EOVERFLOW, "unbounded descriptor table")
+        raise OSError(errno.EOVERFLOW, "invalid descriptor allowlist")
+    for descriptor in keep:
+        fcntl.fcntl(descriptor, fcntl.F_GETFD)
     start = 0
     for descriptor in sorted(keep):
         if start < descriptor:
-            os.closerange(start, descriptor)
+            _linux_close_range(start, descriptor - 1)
         start = descriptor + 1
-    if start < hard:
-        os.closerange(start, hard)
+    if start <= maximum:
+        _linux_close_range(start, maximum)
     for descriptor in keep:
         fcntl.fcntl(descriptor, fcntl.F_GETFD)
 
@@ -316,6 +328,7 @@ def _factory(factory: object) -> object:
 
 
 def _stage_child(
+    store: DurableStore,
     profile: l0.CompiledL0Profile,
     claim: DispatchClaim,
     supply: l0.SupplyVerification,
@@ -337,6 +350,7 @@ def _stage_child(
                 supply,
                 root_descriptor,
                 stage_request,
+                durable_store=store,
                 executor_claim_verifier=_factory(claim_verifier_factory),
                 supply_verifier=_factory(supply_verifier_factory),
             )
@@ -918,7 +932,9 @@ class M4Coordinator:
                 {
                     "transaction_id": transaction_id,
                     "d2_frontier_digest": value["d2_frontier_digest"],
+                    "target_binding": source.data(),
                     "observed_at": times["BEGIN"],
+                    "stage_authorization_verification": verifications["STAGED"],
                 }
             )
             if (
@@ -926,12 +942,19 @@ class M4Coordinator:
                 or begun.m4_state != "DISPATCHED"
                 or begun.m4_iteration is None
                 or begun.frontier_record_digest is None
+                or begun.record_digest is None
             ):
                 raise _M4Stop(M4Reason.DURABLE_TRANSITION_FAILED)
             state = "DISPATCHED"
             if _fault is not None:
                 _fault("after_dispatch")
+            stage_request = {
+                **stage_request,
+                "stage_authorization_digest": begun.record_digest,
+                "observed_at": times["STAGED"],
+            }
             stage_record, executor_pid, executor_session = _stage_child(
+                self._store,
                 self._profile,
                 claim,
                 supply,
@@ -1177,6 +1200,8 @@ class M4Coordinator:
             _recheck_bound_path(self._profile, root_descriptor, staged)
             if _fault is not None:
                 _fault("before_commit_record")
+            if not self._publisher.continuity():
+                raise _M4Stop(M4Reason.PUBLICATION_FAILED)
             _assert_read_lease(self._profile, read_lease, staged)
             _recheck_bound_path(self._profile, root_descriptor, staged)
             commit = _evidence(
@@ -1195,12 +1220,16 @@ class M4Coordinator:
                     "publication_verification": publication_verification,
                 }
             )
+            if not self._publisher.continuity():
+                raise _M4Stop(M4Reason.PUBLICATION_FAILED)
             current_record_digest = self._advance(
                 transaction_id, state, "COMMITTED", times, verifications, commit
             )
             state = "COMMITTED"
             if _fault is not None:
                 _fault("after_commit")
+            if not self._publisher.continuity():
+                raise _M4Stop(M4Reason.PUBLICATION_FAILED)
             _assert_read_lease(self._profile, read_lease, staged)
             _recheck_bound_path(self._profile, root_descriptor, staged)
             join = _evidence(
@@ -1213,6 +1242,8 @@ class M4Coordinator:
                     "controller_session": self._principals.controller_session,
                 }
             )
+            if not self._publisher.continuity():
+                raise _M4Stop(M4Reason.PUBLICATION_FAILED)
             current_record_digest = self._advance(
                 transaction_id, state, "JOINED", times, verifications, join
             )

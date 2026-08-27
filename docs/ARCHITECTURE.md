@@ -28,8 +28,9 @@ shell adapter in M1. Trusted facts are model inputs; M1 does not attest their
 provenance. Decision digests are deterministic bindings, not signatures.
 
 M2 is one direct `harness_product.durable` stdlib SQLite module, deliberately
-outside the package-root API. Format version 1/schema version 4 (with exact
-audited v1-to-v2-to-v3-to-v4 migrations) uses `STRICT` tables and foreign keys;
+outside the package-root API. Format version 1/schema version 5 uses `STRICT`
+tables and foreign keys. Exact v1-v3 schemas migrate atomically; v4 migrates
+only with an empty M4 surface and otherwise fails closed without mutation;
 each competing mutation uses `BEGIN IMMEDIATE`, rollback-journal (`DELETE`) mode,
 and `synchronous=FULL`. Capability issue reruns M1 and stores its full canonical
 inputs, exact bindings, canonical decision digest, and full verifier record.
@@ -81,9 +82,12 @@ and broker-binding checks. `resolve_target` opens one existing file relative to
 a trusted root descriptor with `openat2(BENEATH|NO_MAGICLINKS|NO_SYMLINKS|NO_XDEV)`
 and binds path, descriptor/root/mount/epoch, final device/inode/type/content, and
 one composite digest. `stage_committed_intent` is the sole effect surface: after
-revalidating exact M2 claim and supply-verifier records, it can replace that file
-inside a 0700 disposable staging root. It has no project-root path,
-durable DB handle, network, shell, commit, seal, JOIN, or retry surface. A fault
+revalidating exact M2 claim and supply-verifier records, it must atomically
+consume a current one-use M4 stage authorization bound to the exact
+contract/frontier attempt, target authority and root/object identity before it
+can replace that file inside a 0700 disposable staging root. A claim, boolean or
+caller digest alone cannot stage. It has no project-root path, network, shell,
+commit, seal, JOIN, or retry surface. A fault
 after the first write becomes `QUARANTINED/STAGE_OUTCOME_UNKNOWN`.
 
 `prepare_session` remeasures the complete prospective runtime inventory and
@@ -115,13 +119,19 @@ existing M2 dispatch claim plus trusted active-contract/D2 state. One immutable
 topology binds the disposable staging object, separate publication target,
 worker/controller/executor/observer/publisher subjects, sole publisher writer,
 and denied `.git` authority. Neither root descriptor is accepted from the M4
-request. Schema v4 stores fenced, verified records for `STAGED`, `QUIESCED`,
+request. Schema v5 stores fenced, verified records for `STAGED`, `QUIESCED`,
 `SEALED`, `POSTCHECKED`, `COMMITTED`, `JOINED`, `DISCARDED`, `QUARANTINED`, and
 `RECONCILING`. Every record preserves the exact four-part budget key; only a
 COMMITTED record containing verified publication authorization and receipt
 spends escrow, while uncertainty and recovery never resume or retry.
+The append-only D2 frontier sequence is the attempt ledger: every committed
+frontier consumes the next slot, terminal discard and restart do not reset it,
+and `joined_iteration` remains the last successful JOIN rather than an attempt
+cursor.
 
-The controller retains the trusted staging resolver and rechecks the exact inode
+Stage and observer children close the complete Linux descriptor space with
+`close_range` and fail closed if exact allowlist closure cannot be proved. The
+controller retains the trusted staging resolver and rechecks the exact inode
 by descriptor and canonical path at every boundary. A Linux read lease has no
 fallback; its break flag, state, owner, device/inode, mount and content remain
 checked through JOIN. The controller copies that inode into a memfd and applies
@@ -130,9 +140,13 @@ snapshot and emits a powerless proposal; a full external observer receipt is
 mandatory. A separately verified publication authorization then permits the
 trusted publisher to consume only the sealed descriptor, atomically replace its
 fixed descriptor-rooted target, fsync, and return a mandatory verified receipt.
-The controller performs one final lease/path check before JOIN. Existing or new
+The publication root is separately anchored to its mount namespace, mountpoint,
+absolute path, basename, root identity and complete physical ancestry; those
+facts are checked around atomic replacement and again before COMMIT/JOIN. The
+controller performs one final lease/path check before JOIN. Existing or new
 writers, lease loss, unsupported filesystems, path/inode/target substitution,
-crashes, publication uncertainty, or record mutations prohibit JOIN and
+publication-root relocation (including movement under `.git`), crashes,
+publication uncertainty, or record mutations prohibit JOIN and
 preserve quarantine/no-retry semantics. A reconciling lineage also fences fresh
 issue, consume, claim, frontier and begin transitions. The external branch
 remains explicitly disabled.
@@ -158,7 +172,7 @@ requires the non-skipping conformance environment.
 | `ATK-011`, `ATK-012`, `ATK-026` | no checkout/`.git`/home/staging visibility, disposable-root stage tests, durable cleanup/quarantine state | UNIT; cross-session cleanup proof ABSENT |
 | `T-Q40-*`, `T-Q44-*`, `T-Q49-*`, `T-Q50-*` | `test_m4_durable.py` complete D2, contract/lineage, typed evidence and four-part budget mutation matrices | UNIT; production external anchor ABSENT |
 | `T-Q45-STAGEABLE-CRASH-QUARANTINES`, `T-Q48-POLICY-SCOPE-KIND-CROSS-MATRIX` | `test_m4.py` process/fault recovery, no-retry escrow, endpoint deny, exact inode lease races and atomic publication uncertainty | UNIT; current physical M4 qualification ABSENT |
-| `M4-SEC-001`–`M4-SEC-005`, `INT-001`–`INT-003` | `test_m4.py` and `test_m4_durable.py` trusted-root, canonical-path, observer, full-FD closure, lineage-fence, publisher and no-public-effect-surface matrices | UNIT; `DEPLOYMENT_ATTESTED` topology ABSENT on this host |
+| `M4-SEC-001`–`M4-SEC-005`, `INT-001`–`INT-003`, `FORMAL-ATTEMPT-001` | `test_m4.py` and `test_m4_durable.py` trusted-root, ancestry, observer, full-FD closure, durable stage-authorization, lineage-fence, publisher and attempt-ceiling matrices | UNIT; `DEPLOYMENT_ATTESTED` topology ABSENT on this host |
 
 ```text
 untrusted worker ── powerless proposal ──> Controller / PEP
@@ -229,8 +243,9 @@ acting; process-blind reviewers do not. The live record is not part of a runtime
 candidate. No report, passing test, or roadmap transition starts another attempt
 or milestone without fresh user authority.
 
-No reviewed host VM entrypoint or append-only attempt ledger exists yet, so a
-new full VM cycle is forbidden. A future launcher must consume the exact
+No reviewed host VM entrypoint or append-only *qualification-attempt* ledger
+exists yet, so a new full VM cycle is forbidden. This is distinct from the M4
+contract-attempt ledger above. A future launcher must consume the exact
 candidate/environment/ceiling/user-scope tuple once before launch and reject
 replay across restart or handoff.
 

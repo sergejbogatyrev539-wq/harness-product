@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -121,6 +122,8 @@ class L0CommittedIntentStageTests(unittest.TestCase):
             "content": content,
             "content_digest": l0._hash_text(content),
             "target_binding": binding,
+            "stage_authorization_digest": _digest("a"),
+            "observed_at": "2026-08-25T12:02:10Z",
         }
 
     def stage(
@@ -131,6 +134,7 @@ class L0CommittedIntentStageTests(unittest.TestCase):
         descriptor: int,
         raw: object,
         *,
+        durable_store: object | None = None,
         claim_verifier: object | None = None,
         supply_verifier: object | None = None,
         fault: object | None = None,
@@ -142,22 +146,62 @@ class L0CommittedIntentStageTests(unittest.TestCase):
                 supply,
                 descriptor,
                 raw,
+                durable_store=durable_store,
                 executor_claim_verifier=claim_verifier,
                 supply_verifier=supply_verifier,
                 _fault=fault,
             )
 
-    def test_exact_claim_stages_once_inside_temp_0700_root_and_replay_never_writes_again(self) -> None:
+    def test_exact_claim_without_m4_authorization_never_stages_or_replays(self) -> None:
         profile, supply, _, claim, content, descriptor, binding, target = self.stage_setup()
         try:
             raw = self.stage_raw(claim, content, binding)
             result = self.stage(profile, claim, supply, descriptor, raw, claim_verifier=ExactVerifier(), supply_verifier=ExactSupplyVerifier())
-            self.assertEqual((result.outcome, result.reason), (l0.L0Outcome.STAGED, l0.L0Reason.STAGED))
-            self.assertIsNotNone(result.record)
-            self.assertEqual(Path(target).read_text(encoding="utf-8"), content)
+            self.assertEqual(
+                (result.outcome, result.reason),
+                (l0.L0Outcome.STOP, l0.L0Reason.STAGE_AUTHORIZATION_REQUIRED),
+            )
+            self.assertIsNone(result.record)
+            self.assertEqual(Path(target).read_text(encoding="utf-8"), "old")
             replay = self.stage(profile, claim, supply, descriptor, raw, claim_verifier=ExactVerifier(), supply_verifier=ExactSupplyVerifier())
             self.assertEqual(replay.outcome, l0.L0Outcome.STOP)
-            self.assertEqual(Path(target).read_text(encoding="utf-8"), content)
+            self.assertEqual(Path(target).read_text(encoding="utf-8"), "old")
+        finally:
+            os.close(descriptor)
+
+    def test_direct_stage_without_current_durable_authorization_stops_unchanged(self) -> None:
+        profile, supply, _, claim, content, descriptor, binding, target = self.stage_setup()
+        try:
+            with sqlite3.connect(self.database) as connection:
+                before = (
+                    connection.execute(
+                        "SELECT remaining, reserved, spent FROM budgets"
+                    ).fetchone(),
+                    connection.execute("SELECT COUNT(*) FROM journal_entries").fetchone(),
+                    connection.execute("SELECT COUNT(*) FROM m4_transactions").fetchone(),
+                )
+            result = self.stage(
+                profile,
+                claim,
+                supply,
+                descriptor,
+                self.stage_raw(claim, content, binding),
+                claim_verifier=ExactVerifier(),
+                supply_verifier=ExactSupplyVerifier(),
+            )
+            with sqlite3.connect(self.database) as connection:
+                after = (
+                    connection.execute(
+                        "SELECT remaining, reserved, spent FROM budgets"
+                    ).fetchone(),
+                    connection.execute("SELECT COUNT(*) FROM journal_entries").fetchone(),
+                    connection.execute("SELECT COUNT(*) FROM m4_transactions").fetchone(),
+                )
+            self.assertEqual(result.outcome, l0.L0Outcome.STOP)
+            self.assertEqual(result.reason, l0.L0Reason.STAGE_AUTHORIZATION_REQUIRED)
+            self.assertIsNone(result.record)
+            self.assertEqual(Path(target).read_text(encoding="utf-8"), "old")
+            self.assertEqual(after, before)
         finally:
             os.close(descriptor)
 
@@ -215,16 +259,33 @@ class L0CommittedIntentStageTests(unittest.TestCase):
         finally:
             os.close(descriptor)
 
-    def test_post_effect_fault_is_quarantined_and_cannot_retry_the_same_binding(self) -> None:
+    def test_missing_authorization_stops_before_post_effect_fault_seam(self) -> None:
         profile, supply, _, claim, content, descriptor, binding, target = self.stage_setup()
         try:
             raw = self.stage_raw(claim, content, binding)
-            with patch.object(l0.os, "fsync", side_effect=OSError("forced post-write failure")):
-                uncertain = self.stage(profile, claim, supply, descriptor, raw, claim_verifier=ExactVerifier(), supply_verifier=ExactSupplyVerifier())
-            self.assertEqual((uncertain.outcome, uncertain.reason), (l0.L0Outcome.QUARANTINED, l0.L0Reason.STAGE_OUTCOME_UNKNOWN))
-            self.assertEqual(Path(target).read_text(encoding="utf-8"), content)
-            retry = self.stage(profile, claim, supply, descriptor, raw, claim_verifier=ExactVerifier(), supply_verifier=ExactSupplyVerifier())
-            self.assertEqual(retry.outcome, l0.L0Outcome.STOP)
+            reached: list[str] = []
+
+            def fault(point: str) -> None:
+                reached.append(point)
+                if point == "stage_after_write":
+                    raise OSError("post-effect seam must be unreachable")
+
+            stopped = self.stage(
+                profile,
+                claim,
+                supply,
+                descriptor,
+                raw,
+                claim_verifier=ExactVerifier(),
+                supply_verifier=ExactSupplyVerifier(),
+                fault=fault,
+            )
+            self.assertEqual(
+                (stopped.outcome, stopped.reason),
+                (l0.L0Outcome.STOP, l0.L0Reason.STAGE_AUTHORIZATION_REQUIRED),
+            )
+            self.assertNotIn("stage_after_write", reached)
+            self.assertEqual(Path(target).read_text(encoding="utf-8"), "old")
         finally:
             os.close(descriptor)
 

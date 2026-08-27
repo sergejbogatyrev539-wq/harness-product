@@ -254,19 +254,25 @@ def _begin_chain(
         }
     )
     assert bound.committed and bound.d2_frontier_digest is not None
+    before = _path_binding(m2._digest("e"))
     begun = store.begin_m4_transaction(
         {
             "transaction_id": "transaction-0001",
             "d2_frontier_digest": bound.d2_frontier_digest,
+            "target_binding": before,
             "observed_at": "2026-08-25T12:02:02Z",
+            "stage_authorization_verification": m2._verification_source(),
         }
     )
-    assert begun.committed and begun.m4_state == "DISPATCHED"
+    assert begun.committed and begun.m4_state == "DISPATCHED" and begun.record_digest
     return {
         **claimed,
+        "transaction_id": "transaction-0001",
         "frontier": frontier,
         "d2_frontier_digest": bound.d2_frontier_digest,
-        "before": _path_binding(m2._digest("e")),
+        "before": before,
+        "stage_authorization_digest": begun.record_digest,
+        "stage_authorization_consumed": False,
         "staged": _path_binding(m2._digest("a")),
         "publication_before": _publication_binding(m2._digest("e"), 91),
         "published": _publication_binding(m2._digest("a"), 92),
@@ -328,13 +334,15 @@ class M4DurableLifecycleTests(unittest.TestCase):
         return _begin_chain(self.store(), self.row)
 
     def evidence(self, chain: dict[str, object], state: str) -> dict[str, object]:
+        transaction_id = chain.get("transaction_id", "transaction-0001")
+        iteration = chain["frontier"]["iteration"]
         before = chain["before"]
         staged = chain["staged"]
         records = chain["records"]
         target_authority = chain["payload"]["target_authority_digest"]
         if state == "STAGED":
             stage: dict[str, object] = {
-                "transaction_id": "transaction-0001",
+                "transaction_id": transaction_id,
                 "claim_digest": chain["claim_digest"],
                 "binding_digest": before["composite_binding_digest"],
                 "before_digest": before["final_digest"],
@@ -389,7 +397,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
             receipt_body = {
                 "receipt_version": 1,
                 "outcome": "PASS",
-                "transaction_id": "transaction-0001",
+                "transaction_id": transaction_id,
                 "capability_id": chain["capability_id"],
                 "claim_digest": chain["claim_digest"],
                 "intent_digest": chain["intent_digest"],
@@ -443,7 +451,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
             receipt_body = {
                 "receipt_version": 1,
                 "outcome": "PUBLISHED",
-                "transaction_id": "transaction-0001",
+                "transaction_id": transaction_id,
                 "target_authority_digest": target_authority,
                 "snapshot_id": "sealed-snapshot-1",
                 "snapshot_digest": staged["final_digest"],
@@ -457,7 +465,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
             }
             authorization_body = {
                 "authorization_version": 1,
-                "transaction_id": "transaction-0001",
+                "transaction_id": transaction_id,
                 "decision_digest": chain["payload"]["decision_digest"],
                 "authorized_envelope_digest": chain["payload"][
                     "authorized_envelope_digest"
@@ -467,7 +475,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 "capability_id": chain["capability_id"],
                 "contract_digest": chain["contract"]["contract_digest"],
                 "d2_frontier_digest": chain["d2_frontier_digest"],
-                "iteration": 1,
+                "iteration": iteration,
                 "target_authority_digest": target_authority,
                 "publication_target_binding_digest": chain["publication_before"][
                     "composite_binding_digest"
@@ -520,7 +528,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
             return {
                 "evidence_version": 1,
                 "commit_record_digest": records["COMMITTED"],
-                "joined_iteration": 1,
+                "joined_iteration": iteration,
                 "frontier_record_digest": chain["frontier"]["frontier_record_digest"],
                 "controller_principal": "controller-1",
                 "controller_session": "controller-session-1",
@@ -556,9 +564,27 @@ class M4DurableLifecycleTests(unittest.TestCase):
         store: DurableStore | None = None,
     ) -> object:
         actual_store = store or chain["store"]
+        if (
+            state == "STAGED"
+            and chain["state"] == "DISPATCHED"
+            and not chain["stage_authorization_consumed"]
+        ):
+            consumed = actual_store.consume_m4_stage_authorization(
+                {
+                    "transaction_id": chain.get("transaction_id", "transaction-0001"),
+                    "stage_authorization_digest": chain[
+                        "stage_authorization_digest"
+                    ],
+                    "target_binding": chain["before"],
+                    "observed_at": "2026-08-25T12:02:10Z",
+                }
+            )
+            if not consumed.committed:
+                return consumed
+            chain["stage_authorization_consumed"] = True
         result = actual_store.advance_m4(
             {
-                "transaction_id": "transaction-0001",
+                "transaction_id": chain.get("transaction_id", "transaction-0001"),
                 "expected_state": chain["state"],
                 "state": state,
                 "observed_at": "2026-08-25T12:02:10Z",
@@ -1076,12 +1102,11 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 )
             return result
 
+        for state in ("STAGED", "QUIESCED", "SEALED", "POSTCHECKED", "COMMITTED", "JOINED"):
+            self.assertTrue(self.advance(first, state).committed)
         bound_candidate = prepare(2, claim=True)
         unclaimed_candidate = prepare(3, claim=False)
         frontier_candidate = prepare(4, claim=True)
-
-        for state in ("STAGED", "QUIESCED", "SEALED", "POSTCHECKED", "COMMITTED", "JOINED"):
-            self.assertTrue(self.advance(first, state).committed)
         second_frontier = _frontier(
             bound_candidate, self.row, joined_iteration=1, iteration=2
         )
@@ -1136,7 +1161,9 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 {
                     "transaction_id": "transaction-0002",
                     "d2_frontier_digest": bound.d2_frontier_digest,
+                    "target_binding": _path_binding(m2._digest("e")),
                     "observed_at": "2026-08-25T12:02:10Z",
+                    "stage_authorization_verification": m2._verification_source(),
                 }
             ).outcome,
             DurableOutcome.DENY,
@@ -1244,7 +1271,9 @@ class M4DurableLifecycleTests(unittest.TestCase):
                     {
                         "transaction_id": "transaction-0001",
                         "d2_frontier_digest": bound.d2_frontier_digest,
+                        "target_binding": _path_binding(m2._digest("e")),
                         "observed_at": "2026-08-25T12:02:02Z",
+                        "stage_authorization_verification": m2._verification_source(),
                     }
                 )
                 self.assertEqual(result.outcome, DurableOutcome.STOP)
@@ -1267,6 +1296,16 @@ class M4DurableLifecycleTests(unittest.TestCase):
 
     def test_verifier_freshness_revocation_and_fence_are_rechecked_at_every_transition(self) -> None:
         chain = self.chain()
+        consumed = chain["store"].consume_m4_stage_authorization(
+            {
+                "transaction_id": "transaction-0001",
+                "stage_authorization_digest": chain["stage_authorization_digest"],
+                "target_binding": chain["before"],
+                "observed_at": "2026-08-25T12:02:10Z",
+            }
+        )
+        self.assertTrue(consumed.committed, consumed)
+        chain["stage_authorization_consumed"] = True
         forged = deepcopy(self.evidence(chain, "STAGED"))
         result = chain["store"].advance_m4(
             {
@@ -1300,7 +1339,10 @@ class M4DurableLifecycleTests(unittest.TestCase):
             m4_verifier=m2.ExactVerifier(status=durable_module.VerificationStatus.REJECTED),
         )
         denied = self.advance(chain, "STAGED", store=rejected)
-        self.assertEqual((denied.outcome, denied.reason), (DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID))
+        self.assertEqual(
+            (denied.outcome, denied.reason),
+            (DurableOutcome.STOP, DurableReason.CORRUPT_STORE),
+        )
         self.assertEqual(self.row("SELECT state FROM m4_transactions"), ("DISPATCHED",))
 
         self.assertTrue(chain["store"].advance_fence(
@@ -1315,6 +1357,16 @@ class M4DurableLifecycleTests(unittest.TestCase):
 
     def test_concurrent_transition_has_one_winner_and_one_record(self) -> None:
         chain = self.chain()
+        consumed = chain["store"].consume_m4_stage_authorization(
+            {
+                "transaction_id": "transaction-0001",
+                "stage_authorization_digest": chain["stage_authorization_digest"],
+                "target_binding": chain["before"],
+                "observed_at": "2026-08-25T12:02:10Z",
+            }
+        )
+        self.assertTrue(consumed.committed, consumed)
+        chain["stage_authorization_consumed"] = True
         raw = {
             "transaction_id": "transaction-0001",
             "expected_state": "DISPATCHED",
@@ -1366,6 +1418,239 @@ class M4DurableLifecycleTests(unittest.TestCase):
         self.assertEqual((attempt.outcome, attempt.reason), (DurableOutcome.DENY, DurableReason.ILLEGAL_TRANSITION))
         self.assertEqual(self.row_at(path, "SELECT disposition FROM budget_reservations"), ("SPENT",))
 
+    def test_max_iterations_counts_discarded_attempts_across_reopen(self) -> None:
+        first = self.advance_through("SEALED")
+        discarded = self.advance(first, "DISCARDED")
+        self.assertEqual(
+            (discarded.outcome, discarded.m4_state),
+            (DurableOutcome.COMMITTED, "DISCARDED"),
+        )
+        self.assertEqual(self.row("SELECT joined_iteration FROM active_contracts"), (0,))
+        self.assertEqual(self.row("SELECT iteration FROM d2_frontiers"), (1,))
+
+        store = self.store()
+        transaction_id = "transaction-0002"
+        issue = m2._issue_raw(
+            nonce="nonce-attempt-0002",
+            idempotency_key_digest=m2._digest("b"),
+        )
+        issue["contract_digest"] = first["contract"]["contract_digest"]
+        issue["target_authority_digest"] = first["contract"][
+            "target_authority_digest"
+        ]
+        issued = store.issue(issue)
+        self.assertTrue(issued.committed, issued)
+        payload = json.loads(
+            self.row(
+                "SELECT payload_json FROM capabilities WHERE capability_id=?",
+                (issued.capability_id,),
+            )[0]
+        )
+        consumed = store.consume(
+            m2._consume_from_payload(
+                issued.capability_id, payload, transaction_id=transaction_id
+            )
+        )
+        self.assertTrue(consumed.committed, consumed)
+        claimed = store.claim_dispatch(
+            {
+                "transaction_id": transaction_id,
+                "observed_at": "2026-08-25T12:02:00Z",
+                "executor_verification": m2._verification_source(),
+            }
+        )
+        self.assertTrue(claimed.committed, claimed)
+        intent_text, intent_digest, claim_digest = self.row(
+            "SELECT i.intent_json,i.intent_digest,c.claim_digest "
+            "FROM dispatch_intents AS i JOIN dispatch_attempt_claims AS c "
+            "USING (transaction_id) WHERE i.transaction_id=?",
+            (transaction_id,),
+        )
+        second: dict[str, object] = {
+            "store": store,
+            "transaction_id": transaction_id,
+            "contract": first["contract"],
+            "payload": payload,
+            "capability_id": issued.capability_id,
+            "claim_digest": claim_digest,
+            "intent": json.loads(intent_text),
+            "intent_digest": intent_digest,
+        }
+        frontier = _frontier(second, self.row, joined_iteration=0, iteration=2)
+        bound = store.bind_m4_frontier(
+            {
+                "transaction_id": transaction_id,
+                "observed_at": "2026-08-25T12:02:01Z",
+                "frontier": frontier,
+                "frontier_verification": m2._verification_source(),
+            }
+        )
+        self.assertTrue(bound.committed, bound)
+        before = _path_binding(m2._digest("e"))
+        begun = store.begin_m4_transaction(
+            {
+                "transaction_id": transaction_id,
+                "d2_frontier_digest": bound.d2_frontier_digest,
+                "target_binding": before,
+                "observed_at": "2026-08-25T12:02:02Z",
+                "stage_authorization_verification": m2._verification_source(),
+            }
+        )
+        self.assertTrue(begun.committed, begun)
+        second.update(
+            frontier=frontier,
+            d2_frontier_digest=bound.d2_frontier_digest,
+            before=before,
+            stage_authorization_digest=begun.record_digest,
+            stage_authorization_consumed=False,
+            staged=_path_binding(m2._digest("a")),
+            publication_before=_publication_binding(m2._digest("e"), 91),
+            published=_publication_binding(m2._digest("a"), 92),
+            state="DISPATCHED",
+            records={},
+        )
+        for state in (
+            "STAGED",
+            "QUIESCED",
+            "SEALED",
+            "POSTCHECKED",
+            "COMMITTED",
+            "JOINED",
+        ):
+            advanced = self.advance(second, state, store=store)
+            self.assertEqual(
+                (advanced.outcome, advanced.m4_state),
+                (DurableOutcome.COMMITTED, state),
+            )
+        self.assertEqual(self.row("SELECT joined_iteration FROM active_contracts"), (2,))
+        self.assertEqual(
+            self.row("SELECT group_concat(iteration, ',') FROM d2_frontiers"),
+            ("1,2",),
+        )
+
+        before_third = (
+            self.row("SELECT COUNT(*) FROM capabilities"),
+            self.row("SELECT COUNT(*) FROM budget_reservations"),
+            self.row("SELECT COUNT(*) FROM d2_frontiers"),
+            self.row("SELECT journal_head_sequence FROM store_meta"),
+        )
+        third_issue = m2._issue_raw(
+            nonce="nonce-attempt-0003",
+            idempotency_key_digest=m2._digest("c"),
+        )
+        third_issue["contract_digest"] = first["contract"]["contract_digest"]
+        third_issue["target_authority_digest"] = first["contract"][
+            "target_authority_digest"
+        ]
+        denied = store.issue(third_issue)
+        self.assertEqual(
+            (denied.outcome, denied.reason),
+            (DurableOutcome.DENY, DurableReason.ITERATION_LIMIT_EXCEEDED),
+        )
+        after_third = (
+            self.row("SELECT COUNT(*) FROM capabilities"),
+            self.row("SELECT COUNT(*) FROM budget_reservations"),
+            self.row("SELECT COUNT(*) FROM d2_frontiers"),
+            self.row("SELECT journal_head_sequence FROM store_meta"),
+        )
+        self.assertEqual(after_third, before_third)
+        self.assertEqual(self.row("SELECT max_iterations FROM active_contracts"), (2,))
+
+    def test_unfinished_attempt_blocks_next_capability_across_reopen(self) -> None:
+        first = self.chain()
+        before = (
+            self.row("SELECT COUNT(*) FROM capabilities"),
+            self.row("SELECT COUNT(*) FROM budget_reservations"),
+            self.row("SELECT COUNT(*) FROM d2_frontiers"),
+            self.row("SELECT journal_head_sequence FROM store_meta"),
+        )
+        issue = m2._issue_raw(
+            nonce="nonce-blocked-attempt-0002",
+            idempotency_key_digest=m2._digest("b"),
+        )
+        issue["contract_digest"] = first["contract"]["contract_digest"]
+        issue["target_authority_digest"] = first["contract"][
+            "target_authority_digest"
+        ]
+        denied = self.store().issue(issue)
+        self.assertEqual(
+            (denied.outcome, denied.reason),
+            (DurableOutcome.DENY, DurableReason.D2_INVENTORY_INVALID),
+        )
+        after = (
+            self.row("SELECT COUNT(*) FROM capabilities"),
+            self.row("SELECT COUNT(*) FROM budget_reservations"),
+            self.row("SELECT COUNT(*) FROM d2_frontiers"),
+            self.row("SELECT journal_head_sequence FROM store_meta"),
+        )
+        self.assertEqual(after, before)
+
+    def test_nonempty_valid_v4_m4_state_refuses_partial_v5_migration(self) -> None:
+        self.chain()
+        table_order = (
+            "active_contracts",
+            "d2_frontiers",
+            "m4_transactions",
+            "m4_transition_records",
+        )
+        with sqlite3.connect(self.path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = {
+                table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table}")]
+                for table in table_order
+            }
+            columns = {
+                table: [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
+                for table in table_order
+            }
+            before = (
+                connection.execute("SELECT * FROM store_meta").fetchone(),
+                connection.execute("SELECT COUNT(*) FROM journal_entries").fetchone(),
+                rows,
+            )
+            for table in reversed(table_order):
+                connection.execute(f"DROP TABLE {table}")
+            for statement in durable_module._M4_SCHEMA_V4:
+                connection.execute(statement)
+            for table in table_order:
+                placeholders = ",".join("?" for _ in columns[table])
+                connection.executemany(
+                    f"INSERT INTO {table} VALUES ({placeholders})", rows[table]
+                )
+            connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v5")
+            connection.execute(durable_module._SCHEMA_V4[0])
+            connection.execute(
+                """
+                INSERT INTO store_meta
+                SELECT id, 4, lineage_root, revocation_epoch, fencing_epoch,
+                       dispatch_counter, journal_head_sequence, journal_head_digest,
+                       outbox_head_sequence, outbox_head_digest
+                FROM store_meta_v5
+                """
+            )
+            connection.execute("DROP TABLE store_meta_v5")
+            connection.execute("PRAGMA user_version=4")
+        refused = self.store()
+        self.assertEqual(refused.health().reason, DurableReason.CORRUPT_STORE)
+        with sqlite3.connect(self.path) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (4,))
+            self.assertEqual(connection.execute("SELECT schema_version FROM store_meta").fetchone(), (4,))
+            self.assertIn(
+                "iteration = joined_iteration + 1",
+                connection.execute(
+                    "SELECT sql FROM sqlite_schema WHERE name='d2_frontiers'"
+                ).fetchone()[0],
+            )
+            after_rows = {
+                table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table}")]
+                for table in table_order
+            }
+            self.assertEqual(after_rows, before[2])
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM journal_entries").fetchone(),
+                tuple(before[1]),
+            )
+
     def test_m4_record_mutation_is_detected_fail_closed_on_reopen(self) -> None:
         self.advance_through("SEALED")
         with sqlite3.connect(self.path) as connection:
@@ -1381,6 +1666,30 @@ class M4DurableLifecycleTests(unittest.TestCase):
         reopened = self.store()
         result = reopened.recover()
         self.assertEqual((result.outcome, result.reason), (DurableOutcome.STOP, DurableReason.CORRUPT_STORE))
+
+    def test_stage_authorization_proof_mutation_is_detected_after_valid_rechain(self) -> None:
+        self.chain()
+        with sqlite3.connect(self.path) as connection:
+            sequence, text = connection.execute(
+                "SELECT sequence,payload_json FROM journal_entries "
+                "WHERE event_type='M4_DISPATCH_BOUND'"
+            ).fetchone()
+            payload = json.loads(text)
+            payload["stage_authorization_verification"]["proof"] = m2._digest("f")
+            connection.execute(
+                "UPDATE journal_entries SET payload_json=? WHERE sequence=?",
+                (
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                    sequence,
+                ),
+            )
+            m2.DurableStoreIssueTests(methodName="runTest").rewrite_chains(connection)
+        reopened = self.store()
+        result = reopened.recover()
+        self.assertEqual(
+            (result.outcome, result.reason),
+            (DurableOutcome.STOP, DurableReason.CORRUPT_STORE),
+        )
 
 
 if __name__ == "__main__":

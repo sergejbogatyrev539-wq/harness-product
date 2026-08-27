@@ -82,6 +82,16 @@ class VMRunnerBoundaryTests(unittest.TestCase):
         for forbidden in ("docker", "podman", "libvirt", "terraform", "seal_workspace"):
             self.assertNotIn(forbidden, source.lower())
 
+    def test_m3_runner_cannot_treat_a_claim_as_stage_authority(self) -> None:
+        executor = RUNNER._executor_program("sha256:" + "a" * 64).decode("utf-8")
+        self.assertIn('"stage_authorization_digest"', executor)
+        self.assertIn('"observed_at":claim.observed_at', executor)
+        self.assertIn("result=l0.stage_committed_intent", executor)
+        self.assertNotIn("durable_store=", executor)
+        source = RUNNER_PATH.read_text(encoding="utf-8")
+        self.assertIn('_stop("M4_STAGE_AUTHORIZATION_REQUIRED")', source)
+        self.assertIn('result["reason"] != "STAGE_AUTHORIZATION_REQUIRED"', source)
+
     def test_apparmor_policy_has_real_distinct_domains_without_unconfined_fallback(self) -> None:
         policy = (ROOT / "profiles/l0-lx-a.apparmor").read_text(encoding="utf-8")
         for label in RUNNER.PROFILE_LABELS.values():

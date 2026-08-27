@@ -53,9 +53,10 @@ or perform an effect. The returned digest is a deterministic binding, not a
 signature or attestation.
 
 M2 adds one direct, non-root-exported `harness_product.durable` stdlib SQLite
-store. Its format version remains 1 and its M4-extended schema is v4 (with
-audited atomic migrations from exact v1 through v3). It uses `STRICT` tables,
-foreign keys, `BEGIN IMMEDIATE`,
+store. Its format version remains 1 and its M4-extended schema is v5. Exact v1
+through v3 stores migrate atomically; exact v4 stores migrate only while their
+M4 surface is empty, and otherwise remain unchanged and fail closed. It uses
+`STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
 rollback-journal (`DELETE`) mode, and `synchronous=FULL`. Issue reruns the exact
 M1 decision and stores the complete canonical M1 inputs/bindings and complete
 verifier record; consume checks them again. A single commit consumes the
@@ -121,20 +122,26 @@ later commit. Separately,
 `UNIX_SEQPACKET` messages with exact `SO_PEERCRED` and binding checks. The sole
 effect API can replace one already-existing file beneath a pre-opened 0700
 disposable staging root only after an exact M2 claim, external claim-verifier
-recheck, M1 selector/material match, and immutable descriptor/root/mount/epoch/
-object match. Unknown post-write outcome is quarantined and never retried.
+recheck, M1 selector/material match, immutable descriptor/root/mount/epoch/
+object match, and atomic consumption of the current one-use M4 stage
+authorization from `DurableStore`. A claim or caller binding alone is
+powerless. Unknown post-write outcome is quarantined and never retried.
 
 M4 adds one direct, non-root-exported `harness_product.m4` coordinator and one
 non-root-exported `harness_product.publisher` boundary for that same local
 stageable-file profile. M1 admission, the M2 claim/frontier and the exact
 publication topology bind both the disposable staging inode and the separately
 configured publication target; caller input supplies neither root descriptor.
-External and non-stageable requests are deny-only. The v4 durable schema stores
+External and non-stageable requests are deny-only. The v5 durable schema stores
 the active contract, complete D2 frontier, target-authority digest, and fenced
 canonical records for `STAGED → QUIESCED → SEALED → POSTCHECKED → publication
 authorization/receipt → COMMITTED → JOINED`, plus discard, quarantine and
 reconciliation. Budget escrow becomes `SPENT` only after a verified publication
 receipt, and recovery never resumes or retries an incomplete M4 transaction.
+Each committed D2 frontier is also one irreversible attempt slot; its append-only
+iteration sequence survives discard and reopen, while `joined_iteration`
+continues to mean only the last successful JOIN. The hard `max_iterations`
+ceiling is checked before another capability is issued.
 
 Before sealing, the coordinator re-resolves the canonical path through its
 trusted root and acquires a Linux `F_RDLCK` lease on the exact read-only staged
@@ -144,7 +151,9 @@ a break request, lease loss, unsupported filesystems, rename/substitution, or
 identity mismatch quarantine the transaction. The immutable snapshot is a real
 sealed memfd with `F_SEAL_GROW|F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_WRITE`.
 
-A separate observer child produces a powerless proposal from a read-only
+A separate observer child first closes the complete Linux descriptor range with
+`close_range`, preserving only its exact allowlist; inability to prove closure
+stops the boundary. It then produces a powerless proposal from a read-only
 snapshot; a full externally verified observer receipt is mandatory before a
 separately verified publication authorization can reach the trusted publisher.
 The publisher accepts only that authorization and the sealed descriptor, uses
@@ -152,7 +161,12 @@ its configured descriptor-rooted target, performs one atomic replace plus
 fsync, and returns a mandatory verified publication receipt. Unknown outcome is
 quarantined without retry. The closed topology also requires pairwise-distinct
 worker/controller/executor/observer/publisher subjects, a sole publisher writer,
-and no `.git` authority. These are code-model and local regression properties.
+and no `.git` authority. The publication root is additionally bound to its
+physical mount namespace, mountpoint, absolute root path, basename and complete
+parent ancestry, with continuity checks around atomic replacement and before
+COMMIT/JOIN. Relocation or ancestry drift, including movement under `.git`,
+quarantines rather than publishes. These are code-model and local regression
+properties.
 `DEPLOYMENT_ATTESTED` preflight remains `ABSENT` on a shared developer host; no
 new physical-runtime qualification or production attestation is claimed. The
 actual checkout and `.git` retain their existing host permissions and are not

@@ -51,6 +51,7 @@ _TOPOLOGY_KEYS = frozenset(
         "fencing_epoch",
         "staging_binding",
         "publication_target_binding",
+        "publication_root_anchor",
         "subjects",
         "sole_writer_principal",
         "denied_writer_principals",
@@ -59,6 +60,20 @@ _TOPOLOGY_KEYS = frozenset(
         "topology_digest",
     }
 )
+_ANCHOR_KEYS = frozenset(
+    {
+        "anchor_version",
+        "mount_namespace_id",
+        "mount_id",
+        "mountpoint",
+        "root_path",
+        "basename",
+        "root_identity",
+        "ancestry",
+        "anchor_digest",
+    }
+)
+_ANCESTRY_KEYS = frozenset({"component", "device", "inode", "mode", "mount_id"})
 _SOURCE_KEYS = frozenset({"verifier_id", "issuer_id", "key_id", "proof"})
 _AUTHORIZATION_KEYS = frozenset(
     {
@@ -145,6 +160,49 @@ class SecuritySubject:
 
 
 @dataclass(frozen=True, slots=True)
+class PublicationAncestryEntry:
+    component: str
+    device: int
+    inode: int
+    mode: int
+    mount_id: str
+
+    def data(self) -> dict[str, object]:
+        return {
+            "component": self.component,
+            "device": self.device,
+            "inode": self.inode,
+            "mode": self.mode,
+            "mount_id": self.mount_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationRootAnchor:
+    mount_namespace_id: str
+    mount_id: str
+    mountpoint: str
+    root_path: str
+    basename: str
+    root_identity: str
+    ancestry: tuple[PublicationAncestryEntry, ...]
+    anchor_digest: str
+
+    def data(self) -> dict[str, object]:
+        return {
+            "anchor_version": 1,
+            "mount_namespace_id": self.mount_namespace_id,
+            "mount_id": self.mount_id,
+            "mountpoint": self.mountpoint,
+            "root_path": self.root_path,
+            "basename": self.basename,
+            "root_identity": self.root_identity,
+            "ancestry": [entry.data() for entry in self.ancestry],
+            "anchor_digest": self.anchor_digest,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PublisherTopology:
     assurance_scope: str
     topology_id: str
@@ -157,6 +215,7 @@ class PublisherTopology:
     fencing_epoch: int
     staging_binding: l0.PathBinding
     publication_target_binding: l0.PathBinding
+    publication_root_anchor: PublicationRootAnchor
     subjects: tuple[tuple[str, SecuritySubject], ...]
     sole_writer_principal: str
     denied_writer_principals: tuple[str, ...]
@@ -182,6 +241,7 @@ class PublisherTopology:
             "fencing_epoch": self.fencing_epoch,
             "staging_binding": self.staging_binding.data(),
             "publication_target_binding": self.publication_target_binding.data(),
+            "publication_root_anchor": self.publication_root_anchor.data(),
             "subjects": {name: subject.data() for name, subject in self.subjects},
             "sole_writer_principal": self.sole_writer_principal,
             "denied_writer_principals": list(self.denied_writer_principals),
@@ -285,6 +345,160 @@ def _subject(raw: object) -> SecuritySubject:
     )
 
 
+def _physical_path(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value.startswith("/")
+        or len(value.encode("utf-8")) > 4096
+        or "\x00" in value
+        or value != os.path.normpath(value)
+        or value.endswith(" (deleted)")
+        or ".git" in value.split("/")
+    ):
+        raise _Stop(PublisherReason.TARGET_MISMATCH)
+    return value
+
+
+def _path_component(value: object) -> str:
+    if (
+        type(value) is not str
+        or value in {"", ".", "..", ".git"}
+        or "/" in value
+        or "\x00" in value
+        or len(value.encode("utf-8")) > 255
+    ):
+        raise _Stop(PublisherReason.TARGET_MISMATCH)
+    return value
+
+
+def _parse_anchor(raw: object) -> PublicationRootAnchor:
+    value = _closed(raw, _ANCHOR_KEYS)
+    if value["anchor_version"] != 1:
+        raise _Stop(PublisherReason.MALFORMED_INPUT)
+    root_path = _physical_path(value["root_path"])
+    mountpoint = _physical_path(value["mountpoint"])
+    basename = _path_component(value["basename"])
+    components = tuple(component for component in root_path.split("/") if component)
+    if not components or components[-1] != basename:
+        raise _Stop(PublisherReason.TARGET_MISMATCH)
+    ancestry_raw = value["ancestry"]
+    if type(ancestry_raw) is not list or len(ancestry_raw) != len(components):
+        raise _Stop(PublisherReason.MALFORMED_INPUT)
+    ancestry: list[PublicationAncestryEntry] = []
+    for component, raw_entry in zip(components, ancestry_raw, strict=True):
+        entry = _closed(raw_entry, _ANCESTRY_KEYS)
+        if (
+            _path_component(entry["component"]) != component
+            or entry["mode"] != stat.S_IFDIR
+        ):
+            raise _Stop(PublisherReason.TARGET_MISMATCH)
+        ancestry.append(
+            PublicationAncestryEntry(
+                component,
+                _integer(entry["device"]),
+                _integer(entry["inode"], 1),
+                entry["mode"],
+                _identifier(entry["mount_id"]),
+            )
+        )
+    body = {key: value[key] for key in value if key != "anchor_digest"}
+    anchor_digest = _digest(value["anchor_digest"])
+    if canonical_digest(body) != anchor_digest:
+        raise _Stop(PublisherReason.TOPOLOGY_UNVERIFIED)
+    return PublicationRootAnchor(
+        _identifier(value["mount_namespace_id"]),
+        _identifier(value["mount_id"]),
+        mountpoint,
+        root_path,
+        basename,
+        _digest(value["root_identity"]),
+        tuple(ancestry),
+        anchor_digest,
+    )
+
+
+def _mountpoint(mount_id: int) -> str:
+    def unescape(value: str) -> str:
+        def replacement(match: re.Match[str]) -> str:
+            return chr(int(match.group(1), 8))
+
+        decoded = re.sub(r"\\([0-7]{3})", replacement, value)
+        if "\\" in decoded:
+            raise _Stop(PublisherReason.TARGET_MISMATCH)
+        return decoded
+
+    matches: list[str] = []
+    for line in l0._read_text("/proc/self/mountinfo", 1 << 20).splitlines():
+        fields = line.split()
+        if len(fields) >= 10 and fields[0] == str(mount_id) and "-" in fields:
+            matches.append(unescape(fields[4]))
+    if len(matches) != 1:
+        raise _Stop(PublisherReason.TARGET_MISMATCH)
+    return _physical_path(matches[0])
+
+
+def _measure_publication_root(root_descriptor: int) -> PublicationRootAnchor:
+    if type(root_descriptor) is not int or root_descriptor < 0:
+        raise _Stop(PublisherReason.MALFORMED_INPUT)
+    root_info, mount_id, root_identity, _ = l0._root_identity(root_descriptor)
+    root_path = _physical_path(os.readlink(f"/proc/self/fd/{root_descriptor}"))
+    components = tuple(component for component in root_path.split("/") if component)
+    if not components:
+        raise _Stop(PublisherReason.TARGET_MISMATCH)
+    namespace = os.stat("/proc/self/ns/mnt")
+    parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    ancestry: list[PublicationAncestryEntry] = []
+    try:
+        for component in components:
+            _path_component(component)
+            child = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=parent,
+            )
+            os.close(parent)
+            parent = child
+            info = os.fstat(child)
+            ancestry.append(
+                PublicationAncestryEntry(
+                    component,
+                    info.st_dev,
+                    info.st_ino,
+                    stat.S_IFMT(info.st_mode),
+                    f"mnt:{l0._mount_id(child)}",
+                )
+            )
+        anchored = os.fstat(parent)
+        if (
+            anchored.st_dev != root_info.st_dev
+            or anchored.st_ino != root_info.st_ino
+            or stat.S_IFMT(anchored.st_mode) != stat.S_IFDIR
+        ):
+            raise _Stop(PublisherReason.TARGET_MISMATCH)
+    finally:
+        os.close(parent)
+    body: dict[str, object] = {
+        "anchor_version": 1,
+        "mount_namespace_id": f"mntns:{namespace.st_dev}:{namespace.st_ino}",
+        "mount_id": f"mnt:{mount_id}",
+        "mountpoint": _mountpoint(mount_id),
+        "root_path": root_path,
+        "basename": components[-1],
+        "root_identity": root_identity,
+        "ancestry": [entry.data() for entry in ancestry],
+    }
+    return PublicationRootAnchor(
+        body["mount_namespace_id"],
+        body["mount_id"],
+        body["mountpoint"],
+        root_path,
+        components[-1],
+        root_identity,
+        tuple(ancestry),
+        canonical_digest(body),
+    )
+
+
 def compile_topology(raw: object) -> TopologyResult:
     """Normalize one closed topology record without touching the filesystem."""
 
@@ -326,12 +540,15 @@ def compile_topology(raw: object) -> TopologyResult:
             raise _Stop(PublisherReason.SUBJECT_MISMATCH)
         staging = l0._parse_path_binding(value["staging_binding"])
         publication = l0._parse_path_binding(value["publication_target_binding"])
+        publication_anchor = _parse_anchor(value["publication_root_anchor"])
         if (
             staging.canonical_path != publication.canonical_path
             or ".git" in publication.canonical_path.split("/")
             or staging.root_identity == publication.root_identity
             or staging.root_id == publication.root_id
             or staging.composite_binding_digest == publication.composite_binding_digest
+            or publication_anchor.root_identity != publication.root_identity
+            or publication_anchor.mount_id != publication.mount_id
         ):
             raise _Stop(PublisherReason.TARGET_MISMATCH)
         publisher_subject = dict(subjects)["PUBLISHER"]
@@ -360,6 +577,7 @@ def compile_topology(raw: object) -> TopologyResult:
             _integer(value["fencing_epoch"], 1),
             staging,
             publication,
+            publication_anchor,
             subjects,
             publisher_subject.principal_id,
             denied,
@@ -445,10 +663,27 @@ class TrustedPublisher:
         self._topology = topology
         self._topology_verification = topology_verification
         self._verifier_factory = verifier_factory
+        try:
+            if _measure_publication_root(self._root) != topology.publication_root_anchor:
+                raise ValueError("publication root anchor mismatch")
+        except Exception as error:
+            os.close(self._root)
+            raise ValueError("invalid trusted publication root anchor") from error
 
     @property
     def topology(self) -> PublisherTopology:
         return self._topology
+
+    def continuity(self) -> bool:
+        """Re-measure the deployment-owned physical root and full ancestry."""
+
+        try:
+            return (
+                _measure_publication_root(self._root)
+                == self._topology.publication_root_anchor
+            )
+        except Exception:
+            return False
 
     def _current_target(self) -> tuple[int, l0.PathBinding]:
         binding = self._topology.publication_target_binding
@@ -485,6 +720,7 @@ class TrustedPublisher:
                 or root.st_uid != publisher.uid
                 or root.st_gid != publisher.gid
                 or stat.S_IMODE(root.st_mode) & 0o022
+                or not self.continuity()
             ):
                 return PublicationResult(
                     PublisherOutcome.ABSENT, PublisherReason.DEPLOYMENT_TOPOLOGY_ABSENT
@@ -528,6 +764,8 @@ class TrustedPublisher:
             topology_expires = _time(self._topology.expires_at)
             if not (topology_observed <= observed < topology_expires):
                 raise _Stop(PublisherReason.TOPOLOGY_UNVERIFIED)
+            if not self.continuity():
+                raise _Stop(PublisherReason.TARGET_MISMATCH)
             if self._topology.assurance_scope == "DEPLOYMENT_ATTESTED":
                 preflight = self.deployment_preflight(observed_at)
                 if preflight.outcome is not PublisherOutcome.READY:
@@ -599,6 +837,8 @@ class TrustedPublisher:
             target, before = self._current_target()
             if before != self._topology.publication_target_binding:
                 raise _Stop(PublisherReason.TARGET_MISMATCH)
+            if not self.continuity():
+                raise _Stop(PublisherReason.TARGET_MISMATCH)
             os.close(target)
             target = -1
             _, relative = l0._canonical_stage_path(before.canonical_path)
@@ -630,6 +870,8 @@ class TrustedPublisher:
             os.fsync(temporary)
             if _fault is not None:
                 _fault("publisher_before_replace")
+            if not self.continuity():
+                raise _Stop(PublisherReason.TARGET_MISMATCH)
             current_descriptor, current = self._current_target()
             os.close(current_descriptor)
             if current != before:
@@ -641,12 +883,16 @@ class TrustedPublisher:
                 observed_at,
             ):
                 raise _Stop(PublisherReason.TOPOLOGY_UNVERIFIED)
+            if not self.continuity():
+                raise _Stop(PublisherReason.TARGET_MISMATCH)
             publication_attempted = True
             os.replace(temporary_name, basename, src_dir_fd=parent, dst_dir_fd=parent)
             temporary_name = None
             if _fault is not None:
                 _fault("publisher_after_replace")
             os.fsync(parent)
+            if not self.continuity():
+                raise _Stop(PublisherReason.PUBLICATION_UNCERTAIN)
             target, published = self._current_target()
             if (
                 published.final_digest != value["snapshot_digest"]
@@ -654,6 +900,7 @@ class TrustedPublisher:
                 or published.root_identity != before.root_identity
                 or published.mount_identity != before.mount_identity
                 or published.resolution_epoch != before.resolution_epoch
+                or not self.continuity()
             ):
                 raise _Stop(PublisherReason.PUBLICATION_UNCERTAIN)
             receipt_body = {

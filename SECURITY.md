@@ -38,9 +38,11 @@ The detailed threat model and residual-risk requirements are normative in
 ## Implemented M2 durable-intent boundary
 
 `harness_product.durable` is a direct stdlib SQLite store, not an executor or
-effect route. Format version 1/schema version 4, including exact audited
-v1-to-v2-to-v3-to-v4 migrations, uses `STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
-rollback-journal (`DELETE`) mode, and `synchronous=FULL`. At issue and consume
+effect route. Format version 1/schema version 5 uses `STRICT` tables, foreign
+keys, `BEGIN IMMEDIATE`, and exact fail-closed migrations: v1-v3 migrate
+atomically, while v4 migrates only when its M4 surface is empty and otherwise
+remains unchanged. The store uses rollback-journal (`DELETE`) mode and
+`synchronous=FULL`. At issue and consume
 it reruns/rechecks the exact M1 result, full canonical bindings, and full
 verifier record. Its one durable consume transaction records capability use,
 component-wise reservation, exact dispatch intent, monotonic journal/counters,
@@ -135,6 +137,15 @@ neither root descriptor. ENDPOINT and other non-stageable work is rejected
 before M4 dispatch; no connector, compensation, automatic retry, or M5 route
 exists.
 
+The stage effect additionally requires atomic consumption of a current,
+externally verified, one-use DurableStore authorization bound to the exact
+transaction, claim, capability, contract/frontier iteration, target authority,
+root/object binding, revocation epoch and fence. A previously valid M2 claim,
+caller-selected root, replay, or any `RECONCILING`/terminal state stops before
+the first write. Each append-only D2 frontier consumes one attempt slot;
+discard, restart and success do not return the slot or enlarge
+`max_iterations`.
+
 Quiescence is fail-closed Linux inode enforcement. The controller retains its
 trusted resolver, repeatedly re-resolves the canonical path, and holds and
 checks an `F_RDLCK` lease on the exact read-only staged inode until JOIN.
@@ -144,8 +155,12 @@ prevents COMMIT/JOIN and leaves escrow quarantined. The lease and canonical
 namespace binding are both required; neither substitutes for the other.
 
 The snapshot is a memfd carrying all four Linux write/grow/shrink/seal locks.
-A separate observer child receives only a read-only snapshot descriptor and
-produces no authority; a full externally verified observer receipt is required.
+The stage and observer child boundaries use Linux `close_range` over the full
+kernel FD number space and preserve only exact allowlists; no RLIMIT or `/proc`
+enumeration is treated as closure evidence. Failure to close completely stops
+before stage or postcheck. A separate observer child receives only a read-only
+snapshot descriptor and produces no authority; a full externally verified
+observer receipt is required.
 The trusted publisher then independently verifies a full publication
 authorization, accepts only the sealed descriptor, replaces only its configured
 descriptor-rooted target, fsyncs, and returns a separately verified receipt.
@@ -158,6 +173,10 @@ issue, consume, claim, frontier and M4 begin transitions.
 
 The code-model topology rejects shared worker/controller/executor/observer/
 publisher subjects, any non-publisher writer, and any `.git` authority. Its
+trusted publication anchor binds mount namespace/mountpoint, absolute root,
+basename, root identity and every physical ancestor; continuity is checked
+around replacement and before COMMIT/JOIN, so rename/parent substitution or
+relocation below `.git` quarantines the attempt. Its
 `DEPLOYMENT_ATTESTED` preflight is deliberately `ABSENT` on a shared developer
 host. These local code and regression properties do not requalify the historical
 M3 VM candidate, establish production principals/trust roots or enforcement,

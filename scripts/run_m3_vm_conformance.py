@@ -3790,7 +3790,7 @@ try:
   os.close(duplicate)
  if parsed_binding!=resolved.binding or current!=resolved.binding: fail("PRE_STAGE_OBJECT_MISMATCH")
  content=value["content"]
- stage={{"transaction_id":claim.transaction_id,"claim_digest":claim.claim_digest,"operation":"WRITE_FILE_REPLACE","content":content,"content_digest":"sha256:"+hashlib.sha256(content.encode("utf-8")).hexdigest(),"target_binding":resolved.binding.data()}}
+ stage={{"transaction_id":claim.transaction_id,"claim_digest":claim.claim_digest,"operation":"WRITE_FILE_REPLACE","content":content,"content_digest":"sha256:"+hashlib.sha256(content.encode("utf-8")).hexdigest(),"target_binding":resolved.binding.data(),"stage_authorization_digest":"sha256:"+("0"*64),"observed_at":claim.observed_at}}
  result=l0.stage_committed_intent(compiled.profile,claim,supply,root,stage,executor_claim_verifier=Verifier(),supply_verifier=Verifier())
  output={{"input_digest":digest_bytes(raw),"outcome":result.outcome.value,"reason":result.reason.value,"record":None if result.record is None else asdict(result.record)}}
 finally:
@@ -5961,6 +5961,8 @@ def _pre_stage_negative_oracles(
             "content": material,
             "content_digest": _digest_bytes(material.encode("utf-8")),
             "target_binding": {},
+            "stage_authorization_digest": _digest_bytes(b"absent-m4-authorization"),
+            "observed_at": claim.observed_at,
         },
         executor_claim_verifier=verifier,
         supply_verifier=verifier,
@@ -6269,9 +6271,9 @@ def _execute_executor_stage(
         type(result) is not dict
         or frozenset(result) != {"input_digest", "outcome", "reason", "record"}
         or result["input_digest"] != _digest_bytes(executor_input)
-        or result["outcome"] != "STAGED"
-        or result["reason"] != "STAGED"
-        or type(result["record"]) is not dict
+        or result["outcome"] != "STOP"
+        or result["reason"] != "STAGE_AUTHORIZATION_REQUIRED"
+        or result["record"] is not None
     ):
         _stop(
             "EXECUTOR_RESULT_MISMATCH:"
@@ -6279,11 +6281,7 @@ def _execute_executor_stage(
         )
     after = _read_stage_file(staging["descriptor"], staging["bytes"])
     if (
-        after["digest"] != chain["claim"].material_digest
-        or after["bytes"] != len(chain["content"].encode("utf-8"))
-        or result["record"].get("before_digest") != before["digest"]
-        or result["record"].get("after_digest") != after["digest"]
-        or result["record"].get("claim_digest") != chain["claim"].claim_digest
+        after != before
     ):
         _stop("STAGING_POSTCONDITION_MISMATCH")
     terminal_evidence = {
@@ -7029,6 +7027,14 @@ def _run_phase() -> None:
         role_seccomp["EXECUTOR"],
         manager,
     )
+    if (
+        stage_execution["stage_result"].get("outcome") != "STOP"
+        or stage_execution["stage_result"].get("reason")
+        != "STAGE_AUTHORIZATION_REQUIRED"
+        or stage_execution["stage_result"].get("record") is not None
+    ):
+        _stop("M4_STAGE_AUTHORIZATION_BOUNDARY_MISMATCH")
+    _stop("M4_STAGE_AUTHORIZATION_REQUIRED")
     worker_facts = chain["worker_facts"]
     broker_facts = chain["broker_facts"]
     worker_root_record = chain["worker_root_record"]

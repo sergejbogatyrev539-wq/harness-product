@@ -372,11 +372,12 @@ class DurableLifecycleTests(unittest.TestCase):
             )
         self.assertEqual(self.store().health().reason, DurableReason.CORRUPT_STORE)
 
-    def test_empty_exact_v1_v2_and_v3_schema_migrate_to_v4_without_intermediate_state(self) -> None:
+    def test_empty_exact_v1_through_v4_schema_migrate_to_v5_without_intermediate_state(self) -> None:
         for version, schema in (
             (1, durable_module._SCHEMA_V1),
             (2, durable_module._SCHEMA_V2),
             (3, durable_module._SCHEMA_V3),
+            (4, durable_module._SCHEMA_V4),
         ):
             with self.subTest(version=version):
                 self.path = Path(self.temporary.name) / f"migration-{version}.sqlite3"
@@ -392,8 +393,8 @@ class DurableLifecycleTests(unittest.TestCase):
                 migrated = self.store()
                 self.assertEqual(migrated.health().reason, DurableReason.READY)
                 with sqlite3.connect(self.path) as connection:
-                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (4,))
-                    self.assertEqual(connection.execute("SELECT schema_version FROM store_meta").fetchone(), (4,))
+                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (5,))
+                    self.assertEqual(connection.execute("SELECT schema_version FROM store_meta").fetchone(), (5,))
                     self.assertEqual(connection.execute("SELECT COUNT(*) FROM execution_sessions").fetchone(), (0,))
                     for table in (
                         "active_contracts",
@@ -402,6 +403,67 @@ class DurableLifecycleTests(unittest.TestCase):
                         "m4_transition_records",
                     ):
                         self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone(), (0,))
+
+    def test_v4_migration_preserves_m2_m3_state(self) -> None:
+        store = self.store()
+        raw = self.claimed(store)
+        self.assertTrue(store.prepare_runtime_session(raw).committed)
+        with sqlite3.connect(self.path) as connection:
+            before = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in (
+                    "capabilities",
+                    "dispatch_intents",
+                    "dispatch_attempt_claims",
+                    "execution_sessions",
+                    "journal_entries",
+                )
+            )
+            for table in (
+                "m4_transition_records",
+                "m4_transactions",
+                "d2_frontiers",
+                "active_contracts",
+            ):
+                connection.execute(f"DROP TABLE {table}")
+            connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v5")
+            connection.execute(durable_module._SCHEMA_V4[0])
+            connection.execute(
+                """
+                INSERT INTO store_meta
+                SELECT id, 4, lineage_root, revocation_epoch, fencing_epoch,
+                       dispatch_counter, journal_head_sequence, journal_head_digest,
+                       outbox_head_sequence, outbox_head_digest
+                FROM store_meta_v5
+                """
+            )
+            connection.execute("DROP TABLE store_meta_v5")
+            for statement in durable_module._M4_SCHEMA_V4:
+                connection.execute(statement)
+            connection.execute("PRAGMA user_version=4")
+        migrated = self.store()
+        self.assertEqual(migrated.health().reason, DurableReason.READY)
+        self.assertEqual(migrated.recover().recovery_sessions[0].state, "PREPARED")
+        with sqlite3.connect(self.path) as connection:
+            after = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in (
+                    "capabilities",
+                    "dispatch_intents",
+                    "dispatch_attempt_claims",
+                    "execution_sessions",
+                    "journal_entries",
+                )
+            )
+            self.assertEqual(after, before)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (5,))
+            self.assertIn(
+                "iteration > joined_iteration",
+                connection.execute(
+                    "SELECT sql FROM sqlite_schema WHERE name='d2_frontiers'"
+                ).fetchone()[0],
+            )
+
 
 
 if __name__ == "__main__":

@@ -322,7 +322,16 @@ _BROKER_MESSAGE_KEYS = frozenset(
     }
 )
 _STAGE_REQUEST_KEYS = frozenset(
-    {"transaction_id", "claim_digest", "operation", "content", "content_digest", "target_binding"}
+    {
+        "transaction_id",
+        "claim_digest",
+        "operation",
+        "content",
+        "content_digest",
+        "target_binding",
+        "stage_authorization_digest",
+        "observed_at",
+    }
 )
 _BROKER_EXPECTED_KEYS = frozenset(
     {"operation_id", "worker_principal", "worker_session", "nonce", "fencing_epoch", "binding_digest", "peer"}
@@ -606,6 +615,7 @@ class L0Reason(str, Enum):
     CLAIM_MISMATCH = "CLAIM_MISMATCH"
     MATERIAL_MISMATCH = "MATERIAL_MISMATCH"
     STAGE_LIMIT_EXCEEDED = "STAGE_LIMIT_EXCEEDED"
+    STAGE_AUTHORIZATION_REQUIRED = "STAGE_AUTHORIZATION_REQUIRED"
     STAGED = "STAGED"
     STAGE_OUTCOME_UNKNOWN = "STAGE_OUTCOME_UNKNOWN"
     SUPPLY_VERIFIED = "SUPPLY_VERIFIED"
@@ -3713,6 +3723,7 @@ def stage_committed_intent(
     root_descriptor: object,
     raw: object,
     *,
+    durable_store: object | None = None,
     executor_claim_verifier: object | None = None,
     supply_verifier: object | None = None,
     _fault: object | None = None,
@@ -3749,6 +3760,10 @@ def stage_committed_intent(
         value = _closed_dict(raw, _STAGE_REQUEST_KEYS)
         transaction_id = _identifier(value["transaction_id"])
         claim_digest = _digest(value["claim_digest"])
+        stage_authorization_digest = _digest(value["stage_authorization_digest"])
+        observed_at = value["observed_at"]
+        if type(observed_at) is not str:
+            raise _Stop(L0Reason.MALFORMED_INPUT)
         _exact(value["operation"], "WRITE_FILE_REPLACE")
         content = value["content"]
         content_digest = _digest(value["content_digest"])
@@ -3793,6 +3808,31 @@ def stage_committed_intent(
             raise _Stop(L0Reason.OBJECT_MISMATCH)
         if _fault is not None:
             _fault("stage_before_effect")  # type: ignore[operator]
+        if _binding_for_open_target(
+            profile,
+            root,
+            target,
+            binding.canonical_path,
+            binding.descriptor_id,
+            binding.root_id,
+            binding.resolution_epoch,
+        ) != binding:
+            raise _Stop(L0Reason.OBJECT_MISMATCH)
+        if type(durable_store) is not DurableStore:
+            raise _Stop(L0Reason.STAGE_AUTHORIZATION_REQUIRED)
+        authorization = durable_store.consume_m4_stage_authorization(
+            {
+                "transaction_id": transaction_id,
+                "stage_authorization_digest": stage_authorization_digest,
+                "target_binding": binding.data(),
+                "observed_at": observed_at,
+            }
+        )
+        if (
+            authorization.outcome is not DurableOutcome.COMMITTED
+            or authorization.record_digest != stage_authorization_digest
+        ):
+            raise _Stop(L0Reason.STAGE_AUTHORIZATION_REQUIRED)
         effect_started = True
         offset = 0
         while offset < len(content_bytes):

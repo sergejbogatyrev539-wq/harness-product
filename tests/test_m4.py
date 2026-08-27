@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import resource
 import select
 import signal
 import sqlite3
@@ -283,6 +284,9 @@ class M4CoordinatorTests(unittest.TestCase):
             "fencing_epoch": supply.fencing_epoch,
             "staging_binding": source_binding,
             "publication_target_binding": publication_binding,
+            "publication_root_anchor": publisher._measure_publication_root(
+                publication_root_descriptor
+            ).data(),
             "subjects": subjects,
             "sole_writer_principal": "publisher-1",
             "denied_writer_principals": sorted(
@@ -455,6 +459,7 @@ class M4CoordinatorTests(unittest.TestCase):
             "coordinator": coordinator,
             "raw": raw,
             "target": target,
+            "publication_root": publication_root,
             "publication_target": publication_target,
             "topology": topology,
             "publisher": trusted_publisher,
@@ -483,6 +488,203 @@ class M4CoordinatorTests(unittest.TestCase):
         self.assertNotEqual(result.observer_session, os.getsid(0))
         self.assertEqual(self.row("SELECT remaining, reserved, spent FROM budgets"), (9, 0, 1))
         self.assertEqual(self.row("SELECT state FROM m4_transactions"), ("JOINED",))
+        self.assertEqual(
+            self.row(
+                "SELECT COUNT(*) FROM journal_entries "
+                "WHERE event_type='M4_STAGE_AUTHORIZATION_CONSUMED'"
+            ),
+            (1,),
+        )
+
+    def test_stage_authorization_rejects_alternate_root_and_replay(self) -> None:
+        chain = self.setup_chain()
+        source = chain["topology"].staging_binding
+        begun = chain["store"].begin_m4_transaction(
+            {
+                "transaction_id": chain["claim"].transaction_id,
+                "d2_frontier_digest": chain["raw"]["d2_frontier_digest"],
+                "target_binding": source.data(),
+                "observed_at": chain["raw"]["observed_at"]["BEGIN"],
+                "stage_authorization_verification": chain["raw"]["verifications"][
+                    "STAGED"
+                ],
+            }
+        )
+        self.assertTrue(begun.committed, begun)
+        self.assertIsNotNone(begun.record_digest)
+
+        alternate_root = self.root / "alternate-stage"
+        alternate_root.mkdir(mode=0o700)
+        alternate_target = alternate_root / "artifact.txt"
+        alternate_target.write_text("alternate-old\n", encoding="utf-8")
+        descriptor = os.open(
+            alternate_root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        )
+        try:
+            resolved = l0.resolve_target(
+                chain["profile"],
+                descriptor,
+                {
+                    "canonical_path": source.canonical_path,
+                    "descriptor_id": "alternate-stage-target",
+                    "root_id": "alternate-stage-root",
+                    "resolution_epoch": source.resolution_epoch,
+                },
+            )
+            self.assertIsNotNone(resolved.binding)
+            with sqlite3.connect(self.database) as connection:
+                before = (
+                    connection.execute(
+                        "SELECT remaining,reserved,spent FROM budgets"
+                    ).fetchone(),
+                    connection.execute("SELECT COUNT(*) FROM journal_entries").fetchone(),
+                    connection.execute(
+                        "SELECT COUNT(*) FROM m4_transition_records"
+                    ).fetchone(),
+                )
+            stage_raw = {
+                **chain["raw"]["stage_request"],
+                "target_binding": resolved.binding.data(),
+                "stage_authorization_digest": begun.record_digest,
+                "observed_at": chain["raw"]["observed_at"]["STAGED"],
+            }
+            with patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION):
+                rejected = l0.stage_committed_intent(
+                    chain["profile"],
+                    chain["claim"],
+                    chain["supply"],
+                    descriptor,
+                    stage_raw,
+                    durable_store=chain["store"],
+                    executor_claim_verifier=m2.ExactVerifier(),
+                    supply_verifier=ExactSupplyVerifier(),
+                )
+            with sqlite3.connect(self.database) as connection:
+                after = (
+                    connection.execute(
+                        "SELECT remaining,reserved,spent FROM budgets"
+                    ).fetchone(),
+                    connection.execute("SELECT COUNT(*) FROM journal_entries").fetchone(),
+                    connection.execute(
+                        "SELECT COUNT(*) FROM m4_transition_records"
+                    ).fetchone(),
+                )
+            self.assertEqual(rejected.outcome, l0.L0Outcome.STOP)
+            self.assertEqual(alternate_target.read_text(encoding="utf-8"), "alternate-old\n")
+            self.assertEqual(after, before)
+
+            consumed = chain["store"].consume_m4_stage_authorization(
+                {
+                    "transaction_id": chain["claim"].transaction_id,
+                    "stage_authorization_digest": begun.record_digest,
+                    "target_binding": source.data(),
+                    "observed_at": chain["raw"]["observed_at"]["STAGED"],
+                }
+            )
+            self.assertTrue(consumed.committed, consumed)
+            journal_before_replay = self.row(
+                "SELECT COUNT(*) FROM journal_entries"
+            )
+            replay = chain["store"].consume_m4_stage_authorization(
+                {
+                    "transaction_id": chain["claim"].transaction_id,
+                    "stage_authorization_digest": begun.record_digest,
+                    "target_binding": source.data(),
+                    "observed_at": chain["raw"]["observed_at"]["STAGED"],
+                }
+            )
+            self.assertFalse(replay.committed)
+            self.assertEqual(
+                self.row("SELECT COUNT(*) FROM journal_entries"), journal_before_replay
+            )
+        finally:
+            os.close(descriptor)
+
+    def test_reconciling_transaction_blocks_direct_stage_without_mutation(self) -> None:
+        chain = self.setup_chain()
+
+        def fault(point: str) -> None:
+            if point == "after_commit":
+                raise RuntimeError(point)
+
+        with patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION):
+            result = chain["coordinator"].execute(
+                chain["claim"], chain["supply"], chain["raw"], _fault=fault
+            )
+        self.assertEqual((result.outcome, result.state), (m4.M4Outcome.QUARANTINED, "RECONCILING"))
+
+        dispatch_event = json.loads(
+            self.row(
+                "SELECT payload_json FROM journal_entries "
+                "WHERE event_type='M4_DISPATCH_BOUND'"
+            )[0]
+        )
+        authorization_digest = dispatch_event["stage_authorization"][
+            "authorization_digest"
+        ]
+        alternate_root = self.root / "reconciling-alternate"
+        alternate_root.mkdir(mode=0o700)
+        alternate_target = alternate_root / "artifact.txt"
+        alternate_target.write_text("reconciling-old\n", encoding="utf-8")
+        descriptor = os.open(
+            alternate_root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        )
+        try:
+            resolved = l0.resolve_target(
+                chain["profile"],
+                descriptor,
+                {
+                    "canonical_path": chain["topology"].staging_binding.canonical_path,
+                    "descriptor_id": "reconciling-stage-target",
+                    "root_id": "reconciling-stage-root",
+                    "resolution_epoch": 1,
+                },
+            )
+            self.assertIsNotNone(resolved.binding)
+            with sqlite3.connect(self.database) as connection:
+                before = (
+                    connection.execute(
+                        "SELECT remaining,reserved,spent FROM budgets"
+                    ).fetchone(),
+                    connection.execute("SELECT COUNT(*) FROM journal_entries").fetchone(),
+                    connection.execute(
+                        "SELECT COUNT(*) FROM m4_transition_records"
+                    ).fetchone(),
+                )
+            stage_raw = {
+                **chain["raw"]["stage_request"],
+                "target_binding": resolved.binding.data(),
+                "stage_authorization_digest": authorization_digest,
+                "observed_at": chain["raw"]["observed_at"]["STAGED"],
+            }
+            with patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION):
+                rejected = l0.stage_committed_intent(
+                    chain["profile"],
+                    chain["claim"],
+                    chain["supply"],
+                    descriptor,
+                    stage_raw,
+                    durable_store=chain["store"],
+                    executor_claim_verifier=m2.ExactVerifier(),
+                    supply_verifier=ExactSupplyVerifier(),
+                )
+            with sqlite3.connect(self.database) as connection:
+                after = (
+                    connection.execute(
+                        "SELECT remaining,reserved,spent FROM budgets"
+                    ).fetchone(),
+                    connection.execute("SELECT COUNT(*) FROM journal_entries").fetchone(),
+                    connection.execute(
+                        "SELECT COUNT(*) FROM m4_transition_records"
+                    ).fetchone(),
+                )
+            self.assertEqual(rejected.outcome, l0.L0Outcome.STOP)
+            self.assertEqual(
+                alternate_target.read_text(encoding="utf-8"), "reconciling-old\n"
+            )
+            self.assertEqual(after, before)
+        finally:
+            os.close(descriptor)
 
     def test_deployment_scope_requires_physical_publisher_preflight(self) -> None:
         chain = self.setup_chain(assurance_scope="DEPLOYMENT_ATTESTED")
@@ -570,6 +772,58 @@ class M4CoordinatorTests(unittest.TestCase):
                 self.assertEqual(result.outcome, publisher.PublisherOutcome.STOP)
                 self.assertIsNone(result.topology)
 
+    def test_trusted_publisher_rejects_physical_anchor_substitution(self) -> None:
+        chain = self.setup_chain()
+        baseline = chain["topology"].data()
+        mutations = {
+            "mount-namespace": lambda anchor: anchor.update(
+                mount_namespace_id="mntns:1:1"
+            ),
+            "mountpoint": lambda anchor: anchor.update(mountpoint="/relocated"),
+            "basename": lambda anchor: anchor.update(basename="other-root"),
+            "root-identity": lambda anchor: anchor.update(
+                root_identity=m2._digest("9")
+            ),
+            "mount-id": lambda anchor: anchor.update(mount_id="mnt:999999"),
+            "parent-ancestry": lambda anchor: anchor["ancestry"][0].update(
+                inode=anchor["ancestry"][0]["inode"] + 1
+            ),
+            "physical-git-ancestry": lambda anchor: anchor.update(
+                root_path=anchor["root_path"] + "/.git/publication",
+                basename="publication",
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name):
+                raw = deepcopy(baseline)
+                anchor = raw["publication_root_anchor"]
+                mutate(anchor)
+                anchor["anchor_digest"] = canonical_digest(
+                    {key: anchor[key] for key in anchor if key != "anchor_digest"}
+                )
+                raw["topology_digest"] = canonical_digest(
+                    {key: raw[key] for key in raw if key != "topology_digest"}
+                )
+                compiled = publisher.compile_topology(raw)
+                if compiled.outcome is publisher.PublisherOutcome.STOP:
+                    continue
+                self.assertIsNotNone(compiled.topology)
+                root_descriptor = os.open(
+                    chain["publication_root"],
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+                )
+                try:
+                    with self.assertRaises(ValueError):
+                        publisher.TrustedPublisher(
+                            profile=chain["profile"],
+                            root_descriptor=root_descriptor,
+                            topology=compiled.topology,
+                            topology_verification=m2._verification_source(),
+                            verifier_factory=m2.ExactVerifier,
+                        )
+                finally:
+                    os.close(root_descriptor)
+
     def test_read_only_observer_descriptor_reports_kernel_write_denial(self) -> None:
         target = self.root / "read-only-snapshot"
         target.write_bytes(b"sealed")
@@ -581,7 +835,7 @@ class M4CoordinatorTests(unittest.TestCase):
             os.close(descriptor)
 
     def test_m4_sec_004_high_fd_is_closed_without_proc_inventory(self) -> None:
-        self.assertGreater(m4.resource.getrlimit(m4.resource.RLIMIT_NOFILE)[1], 2048)
+        self.assertGreater(resource.getrlimit(resource.RLIMIT_NOFILE)[1], 2048)
         read_descriptor, write_descriptor = os.pipe2(os.O_CLOEXEC)
         pid = os.fork()
         if pid == 0:
@@ -613,14 +867,80 @@ class M4CoordinatorTests(unittest.TestCase):
         self.assertTrue(os.WIFEXITED(status))
         self.assertEqual(os.WEXITSTATUS(status), 0)
 
-    def test_m4_sec_004_unbounded_fd_table_blocks_stage_and_observer(self) -> None:
+    def test_m4_sec_004_fd_above_lowered_hard_limit_is_closed(self) -> None:
+        self.assertGreater(resource.getrlimit(resource.RLIMIT_NOFILE)[1], 2048)
+        original_close = m4._close_except
+
+        def close_after_lowering_limit(keep: set[int]) -> None:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 1024))
+            original_close(keep)
+            for descriptor in keep:
+                fcntl.fcntl(descriptor, fcntl.F_GETFD)
+            try:
+                fcntl.fcntl(2048, fcntl.F_GETFD)
+            except OSError as error:
+                if error.errno != errno.EBADF:
+                    raise
+            else:
+                raise OSError(errno.EBADF, "inherited descriptor survived closure")
+
+        chain = self.setup_chain()
+        source = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+        os.dup2(source, 2048, inheritable=False)
+        try:
+            with (
+                patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION),
+                patch.object(m4, "_close_except", side_effect=close_after_lowering_limit),
+            ):
+                stage_result = chain["coordinator"].execute(
+                    chain["claim"], chain["supply"], chain["raw"]
+                )
+        finally:
+            os.close(2048)
+            os.close(source)
+        self.assertEqual(
+            (stage_result.outcome, stage_result.state),
+            (m4.M4Outcome.JOINED, "JOINED"),
+        )
+
+        fixture = M4CoordinatorTests(methodName="runTest")
+        fixture.setUp()
+        try:
+            chain = fixture.setup_chain()
+            original_postcheck = m4._postcheck_child
+
+            def postcheck_with_high_fd(*args: object) -> object:
+                source = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+                os.dup2(source, 2048, inheritable=False)
+                try:
+                    return original_postcheck(*args)
+                finally:
+                    os.close(2048)
+                    os.close(source)
+
+            with (
+                patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION),
+                patch.object(m4, "_close_except", side_effect=close_after_lowering_limit),
+                patch.object(m4, "_postcheck_child", side_effect=postcheck_with_high_fd),
+            ):
+                observer_result = chain["coordinator"].execute(
+                    chain["claim"], chain["supply"], chain["raw"]
+                )
+            self.assertEqual(
+                (observer_result.outcome, observer_result.state),
+                (m4.M4Outcome.JOINED, "JOINED"),
+            )
+        finally:
+            fixture.tearDown()
+
+    def test_m4_sec_004_close_range_failure_blocks_stage_and_observer(self) -> None:
         chain = self.setup_chain()
         with (
             patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION),
             patch.object(
-                m4.resource,
-                "getrlimit",
-                return_value=(1024, m4.resource.RLIM_INFINITY),
+                m4,
+                "_linux_close_range",
+                side_effect=OSError(errno.ENOSYS, "close_range unavailable"),
             ),
         ):
             stage_result = chain["coordinator"].execute(
@@ -647,9 +967,9 @@ class M4CoordinatorTests(unittest.TestCase):
 
             def fail_closed_postcheck(*args: object) -> object:
                 with patch.object(
-                    m4.resource,
-                    "getrlimit",
-                    return_value=(1024, m4.resource.RLIM_INFINITY),
+                    m4,
+                    "_linux_close_range",
+                    side_effect=OSError(errno.ENOSYS, "close_range unavailable"),
                 ):
                     return original_postcheck(*args)
 
@@ -1123,6 +1443,87 @@ class M4CoordinatorTests(unittest.TestCase):
                     )
                 finally:
                     fixture.tearDown()
+
+    def test_m4_sec_002_publication_root_relocation_under_git_quarantines(self) -> None:
+        chain = self.setup_chain()
+        git_directory = self.root / "synthetic-repository" / ".git"
+        git_directory.mkdir(parents=True, mode=0o700)
+        relocated_root = git_directory / "publication"
+        os.rename(chain["publication_root"], relocated_root)
+
+        with patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION):
+            result = chain["coordinator"].execute(
+                chain["claim"], chain["supply"], chain["raw"]
+            )
+
+        self.assertEqual(
+            (result.outcome, result.state),
+            (m4.M4Outcome.QUARANTINED, "QUARANTINED"),
+        )
+        self.assertEqual(
+            (relocated_root / "artifact.txt").read_text(encoding="utf-8"),
+            "published-old\n",
+        )
+        self.assertEqual(
+            self.row(
+                "SELECT COUNT(*) FROM m4_transition_records "
+                "WHERE state IN ('COMMITTED','JOINED')"
+            ),
+            (0,),
+        )
+        self.assertEqual(
+            self.row("SELECT remaining, reserved, spent FROM budgets"),
+            (9, 1, 0),
+        )
+
+        race = M4CoordinatorTests(methodName="runTest")
+        race.setUp()
+        try:
+            racing = race.setup_chain()
+            git_directory = race.root / "race-repository" / ".git"
+            git_directory.mkdir(parents=True, mode=0o700)
+            relocated_root = git_directory / "publication"
+
+            def relocate_before_replace(point: str) -> None:
+                if point == "publisher_before_replace":
+                    os.rename(racing["publication_root"], relocated_root)
+
+            with patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION):
+                racing_result = racing["coordinator"].execute(
+                    racing["claim"],
+                    racing["supply"],
+                    racing["raw"],
+                    _fault=relocate_before_replace,
+                )
+            self.assertEqual(
+                (racing_result.outcome, racing_result.state),
+                (m4.M4Outcome.QUARANTINED, "QUARANTINED"),
+            )
+            self.assertEqual(
+                (relocated_root / "artifact.txt").read_text(encoding="utf-8"),
+                "published-old\n",
+            )
+            self.assertEqual(
+                race.row("SELECT remaining, reserved, spent FROM budgets"),
+                (9, 1, 0),
+            )
+        finally:
+            race.tearDown()
+
+        fixture = M4CoordinatorTests(methodName="runTest")
+        fixture.setUp()
+        try:
+            unchanged = fixture.setup_chain()
+            with patch.object(l0, "_runtime_output", return_value=l0.RUNTIME_VERSION):
+                unchanged_result = unchanged["coordinator"].execute(
+                    unchanged["claim"], unchanged["supply"], unchanged["raw"]
+                )
+            self.assertEqual(
+                (unchanged_result.outcome, unchanged_result.state),
+                (m4.M4Outcome.JOINED, "JOINED"),
+            )
+        finally:
+            fixture.tearDown()
 
     def test_publication_unknown_after_replace_quarantines_without_retry(self) -> None:
         chain = self.setup_chain()
