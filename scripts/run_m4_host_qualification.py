@@ -23,12 +23,16 @@ from typing import BinaryIO, Callable, NamedTuple, NoReturn
 
 ROOT = Path(__file__).resolve().parents[1]
 LAB = Path("/home/a1/Загрузки/harness/harness-m4-lab")
+DIAGNOSTIC_LAB = Path("/home/a1/Загрузки/harness/harness-m4-diagnostic-lab")
 IMAGE_LAB = Path("/home/a1/Загрузки/harness/harness-m3-lab")
 EVIDENCE_ROOT = Path("/home/a1/Загрузки/harness/harness-m4-evidence")
 USER_GOAL = Path(
     "/home/a1/.codex/attachments/a1d7db13-d210-4875-b261-a086d01fca5a/goal-objective.md"
 )
 LEDGER_NAME = "m4-attempt-ledger.jsonl"
+DIAGNOSTIC_LEDGER_NAME = "m4-key-ready-diagnostic-ledger.jsonl"
+OLD_LEDGER = LAB / LEDGER_NAME
+OLD_LEDGER_DIGEST = "sha256:719505206caf364c6c0d40983687416bcca5644f879a46254714621cb070d5f9"
 _QEMU_PATH = "/usr/bin/qemu-system-x86_64"
 _QEMU_DIGEST = "sha256:8a35ccba41582fc6c38b9df85fc9e35fa1d42f414d2d7d8090ee9b2f5e7c0854"
 _OVERLAY_VIRTUAL_BYTES = 3758096384
@@ -79,6 +83,21 @@ _LEDGER_EXTRA = {
     ),
 }
 _TERMINAL_RESULTS = frozenset({"BUNDLE_EXPORTED", "FAILED", "BLOCKED", "QUARANTINED"})
+_DIAGNOSTIC_REASONS = frozenset(
+    {
+        "PROVISION_FAILED", "QEMU_EXITED", "SERVICE_FAILED_PRE_KEY_READY",
+        "KEY_READY_TIMEOUT", "KEY_READY_REACHED", "CLEANUP_FAILED",
+    }
+)
+_SERVICE_PROPERTIES = (
+    "ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus",
+)
+_DIAGNOSTIC_DISPOSABLE_NAMES = (
+    "overlay.qcow2", "seed.iso", "ssh-client", "ssh-client.pub", "ssh-host",
+    "ssh-host.pub", "known_hosts", "user-data", "meta-data", "source.tgz",
+    "host-provenance.json", "qualification.json", "provision.qemu.log",
+    "provision.serial.log", "run.qemu.log", "run.serial.log",
+)
 
 
 class QualificationStop(Exception):
@@ -169,12 +188,12 @@ def _digest_file(path: Path, maximum: int) -> str:
     return _digest_bytes(_read_regular(path, maximum))
 
 
-def _qemu_argv(attempt: int, phase: str) -> list[str]:
+def _qemu_argv(attempt: int, phase: str, *, lab: Path = LAB) -> list[str]:
     if type(attempt) is not int or isinstance(attempt, bool) or attempt not in {1, 2}:
         _stop("ATTEMPT_MISMATCH")
     if phase not in {"provision", "run", "recover"}:
         _stop("VM_PHASE_MISMATCH")
-    attempt_root = LAB / "runs" / f"attempt-{attempt}"
+    attempt_root = lab / "runs" / f"attempt-{attempt}"
     argv = [
         _QEMU_PATH,
         "-name", f"harness-m4-disposable-attempt-{attempt}-{phase}",
@@ -203,8 +222,13 @@ def _qemu_argv(attempt: int, phase: str) -> list[str]:
     return argv
 
 
-def _qemu_lifecycle(attempt: int) -> dict[str, list[str]]:
-    return {phase: _qemu_argv(attempt, phase) for phase in ("provision", "run", "recover")}
+def _qemu_lifecycle(
+    attempt: int,
+    *,
+    lab: Path = LAB,
+    phases: tuple[str, ...] = ("provision", "run", "recover"),
+) -> dict[str, list[str]]:
+    return {phase: _qemu_argv(attempt, phase, lab=lab) for phase in phases}
 
 
 def _validate_qemu_phase_outcomes(value: object, attempt: int) -> dict[str, object]:
@@ -631,6 +655,344 @@ class AttemptLedger:
         return digest
 
 
+class DiagnosticStart(NamedTuple):
+    candidate: str
+    tree: str
+    environment: str
+    digest: str
+
+
+def _verify_diagnostic_predecessor(path: Path, expected_digest: str) -> str:
+    raw = _read_regular(path, 4 << 20)
+    if _DIGEST.fullmatch(expected_digest) is None or _digest_bytes(raw) != expected_digest:
+        _stop("DIAGNOSTIC_PREDECESSOR_DIGEST_MISMATCH")
+    if not raw.endswith(b"\n") or b"\n\n" in raw:
+        _stop("DIAGNOSTIC_PREDECESSOR_MALFORMED")
+    rows = [_strict_json(line, 1 << 20) for line in raw[:-1].split(b"\n")]
+    if len(rows) != 4:
+        _stop("DIAGNOSTIC_PREDECESSOR_NOT_EXHAUSTED")
+    previous: str | None = None
+    for sequence, row in enumerate(rows, 1):
+        if (
+            type(row) is not dict
+            or row.get("ledger_version") != "1.0.0"
+            or row.get("sequence") != sequence
+            or row.get("previous_entry_digest") != previous
+            or row.get("max_attempts") != 2
+            or row.get("attempt") != (sequence + 1) // 2
+            or row.get("entry_type")
+            != ("ATTEMPT_STARTED" if sequence % 2 else "ATTEMPT_TERMINAL")
+            or (sequence % 2 == 0 and row.get("result") != "QUARANTINED")
+        ):
+            _stop("DIAGNOSTIC_PREDECESSOR_NOT_EXHAUSTED")
+        previous = _digest_bytes(_canonical(row))
+    return expected_digest
+
+
+class DiagnosticLedger:
+    """One-use append-only ledger for the non-authorizing pre-key diagnostic."""
+
+    def __init__(
+        self,
+        lab: Path,
+        *,
+        goal_reference: str,
+        goal_digest: str,
+        predecessor_digest: str,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.lab = lab
+        self.goal_reference = goal_reference
+        self.goal_digest = goal_digest
+        self.predecessor_digest = predecessor_digest
+        self.clock = (lambda: datetime.now(UTC)) if clock is None else clock
+        self._directory_descriptor = -1
+        self._descriptor = -1
+        self._rows: list[tuple[dict[str, object], str]] = []
+        self._active: DiagnosticStart | None = None
+
+    def __enter__(self) -> DiagnosticLedger:
+        _mkdir_exact(self.lab, 0o700)
+        _fsync_directory(self.lab.parent)
+        try:
+            self._directory_descriptor = os.open(
+                self.lab,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+            try:
+                self._descriptor = os.open(
+                    DIAGNOSTIC_LEDGER_NAME,
+                    os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL
+                    | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=self._directory_descriptor,
+                )
+                os.fsync(self._descriptor)
+                os.fsync(self._directory_descriptor)
+            except FileExistsError:
+                self._descriptor = os.open(
+                    DIAGNOSTIC_LEDGER_NAME,
+                    os.O_RDWR | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=self._directory_descriptor,
+                )
+            fcntl.flock(self._descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            info = os.fstat(self._descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_size > 2 << 20
+            ):
+                _stop("DIAGNOSTIC_LEDGER_UNTRUSTED")
+            self._rows = self._read_rows()
+            return self
+        except (OSError, BlockingIOError) as error:
+            self.__exit__(None, None, None)
+            raise QualificationStop("DIAGNOSTIC_LEDGER_UNTRUSTED") from error
+        except Exception:
+            self.__exit__(None, None, None)
+            raise
+
+    def __exit__(self, _kind: object, _value: object, _traceback: object) -> None:
+        if self._descriptor >= 0:
+            try:
+                fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(self._descriptor)
+            self._descriptor = -1
+        if self._directory_descriptor >= 0:
+            os.close(self._directory_descriptor)
+            self._directory_descriptor = -1
+
+    def _read_rows(self) -> list[tuple[dict[str, object], str]]:
+        size = os.fstat(self._descriptor).st_size
+        os.lseek(self._descriptor, 0, os.SEEK_SET)
+        raw = b""
+        while len(raw) < size:
+            chunk = os.read(self._descriptor, min(65536, size - len(raw)))
+            if not chunk:
+                _stop("DIAGNOSTIC_LEDGER_MALFORMED")
+            raw += chunk
+        if not raw:
+            return []
+        if not raw.endswith(b"\n") or b"\n\n" in raw:
+            _stop("DIAGNOSTIC_LEDGER_MALFORMED")
+        if len(raw[:-1].split(b"\n")) not in {1, 2}:
+            _stop("DIAGNOSTIC_LEDGER_MALFORMED")
+        rows: list[tuple[dict[str, object], str]] = []
+        previous: str | None = None
+        for sequence, line in enumerate(raw[:-1].split(b"\n"), 1):
+            row = _strict_json(line, 1 << 20)
+            self._validate_row(row, sequence, previous)
+            digest = _digest_bytes(line)
+            rows.append((row, digest))
+            previous = digest
+        if len(rows) == 1:
+            _stop("DIAGNOSTIC_PRIOR_ATTEMPT_UNRESOLVED")
+        if rows[1][0]["diagnostic_start_digest"] != rows[0][1]:
+            _stop("DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+        if any(
+            rows[1][0][name] != rows[0][0][name]
+            for name in (
+                "candidate", "tree", "environment", "user_scope_reference",
+                "user_goal_digest", "predecessor_qualification_ledger_digest",
+                "attempt",
+            )
+        ):
+            _stop("DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+        return rows
+
+    def _validate_row(self, row: object, sequence: int, previous: str | None) -> None:
+        common = {
+            "diagnostic_ledger_version", "sequence", "previous_entry_digest",
+            "entry_type", "recorded_at", "diagnostic_kind", "candidate", "tree",
+            "environment", "user_scope_reference", "user_goal_digest",
+            "predecessor_qualification_ledger_digest", "max_attempts",
+            "success_target", "attempt",
+        }
+        terminal = {
+            "diagnostic_start_digest", "terminal_reason",
+            "diagnostic_bundle_digest", "key_ready_digest",
+            "systemd_properties_digest", "cleanup_digest", "qemu_phase_outcomes",
+        }
+        if type(row) is not dict or row.get("entry_type") not in {
+            "DIAGNOSTIC_STARTED", "DIAGNOSTIC_TERMINAL"
+        }:
+            _stop("DIAGNOSTIC_LEDGER_MALFORMED")
+        expected = common | (terminal if row["entry_type"] == "DIAGNOSTIC_TERMINAL" else set())
+        if frozenset(row) != expected:
+            _stop("DIAGNOSTIC_LEDGER_MALFORMED")
+        if (
+            row["diagnostic_ledger_version"] != "1.0.0"
+            or type(row["sequence"]) is not int
+            or isinstance(row["sequence"], bool)
+            or row["sequence"] != sequence
+            or row["previous_entry_digest"] != previous
+            or row["entry_type"]
+            != ("DIAGNOSTIC_STARTED" if sequence == 1 else "DIAGNOSTIC_TERMINAL")
+            or row["diagnostic_kind"] != "M4_KEY_READY_PRE_ADMISSION"
+            or type(row["candidate"]) is not str
+            or _COMMIT.fullmatch(row["candidate"]) is None
+            or type(row["tree"]) is not str
+            or _COMMIT.fullmatch(row["tree"]) is None
+            or type(row["environment"]) is not str
+            or _DIGEST.fullmatch(row["environment"]) is None
+            or row["user_scope_reference"] != self.goal_reference
+            or row["user_goal_digest"] != self.goal_digest
+            or row["predecessor_qualification_ledger_digest"] != self.predecessor_digest
+            or row["max_attempts"] != 1
+            or row["success_target"] != 1
+            or type(row["attempt"]) is not int
+            or isinstance(row["attempt"], bool)
+            or row["attempt"] != 1
+            or type(row["recorded_at"]) is not str
+            or _TIME.fullmatch(row["recorded_at"]) is None
+        ):
+            _stop("DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+        recorded = datetime.strptime(row["recorded_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        if recorded > self.clock().astimezone(UTC).replace(microsecond=0):
+            _stop("DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+        if row["entry_type"] == "DIAGNOSTIC_TERMINAL":
+            values = (
+                row["diagnostic_start_digest"], row["diagnostic_bundle_digest"],
+                row["systemd_properties_digest"], row["cleanup_digest"],
+            )
+            if (
+                row["terminal_reason"] not in _DIAGNOSTIC_REASONS
+                or any(type(value) is not str or _DIGEST.fullmatch(value) is None for value in values)
+                or (
+                    row["key_ready_digest"] is not None
+                    and (
+                        type(row["key_ready_digest"]) is not str
+                        or _DIGEST.fullmatch(row["key_ready_digest"]) is None
+                    )
+                )
+            ):
+                _stop("DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+            _validate_diagnostic_phase_outcomes(row["qemu_phase_outcomes"])
+
+    def _append(self, entry_type: str, start: DiagnosticStart, extra: dict[str, object]) -> str:
+        row = {
+            "diagnostic_ledger_version": "1.0.0",
+            "sequence": len(self._rows) + 1,
+            "previous_entry_digest": None if not self._rows else self._rows[-1][1],
+            "entry_type": entry_type,
+            "recorded_at": self.clock().astimezone(UTC).replace(microsecond=0).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "diagnostic_kind": "M4_KEY_READY_PRE_ADMISSION",
+            "candidate": start.candidate,
+            "tree": start.tree,
+            "environment": start.environment,
+            "user_scope_reference": self.goal_reference,
+            "user_goal_digest": self.goal_digest,
+            "predecessor_qualification_ledger_digest": self.predecessor_digest,
+            "max_attempts": 1,
+            "success_target": 1,
+            "attempt": 1,
+            **extra,
+        }
+        raw = _canonical(row)
+        digest = _digest_bytes(raw)
+        try:
+            if os.write(self._descriptor, raw + b"\n") != len(raw) + 1:
+                _stop("DIAGNOSTIC_LEDGER_APPEND_FAILED")
+            os.fsync(self._descriptor)
+        except OSError as error:
+            raise QualificationStop("DIAGNOSTIC_LEDGER_APPEND_FAILED") from error
+        self._rows.append((row, digest))
+        return digest
+
+    def begin(self, candidate: str, tree: str, environment: str) -> DiagnosticStart:
+        self.ensure_available()
+        if (
+            type(candidate) is not str
+            or _COMMIT.fullmatch(candidate) is None
+            or type(tree) is not str
+            or _COMMIT.fullmatch(tree) is None
+            or type(environment) is not str
+            or _DIGEST.fullmatch(environment) is None
+        ):
+            _stop("DIAGNOSTIC_ATTEMPT_BINDING_MISMATCH")
+        provisional = DiagnosticStart(candidate, tree, environment, "")
+        digest = self._append("DIAGNOSTIC_STARTED", provisional, {})
+        self._active = DiagnosticStart(candidate, tree, environment, digest)
+        return self._active
+
+    def ensure_available(self) -> None:
+        if self._rows or self._active is not None:
+            _stop("DIAGNOSTIC_ATTEMPT_LIMIT_REACHED")
+
+    def terminalize(
+        self,
+        start: DiagnosticStart,
+        terminal_reason: str,
+        *,
+        diagnostic_bundle_digest: str,
+        key_ready_digest: str | None,
+        systemd_properties_digest: str,
+        cleanup_digest: str,
+        qemu_phase_outcomes: dict[str, object],
+    ) -> str:
+        values = (
+            diagnostic_bundle_digest, systemd_properties_digest, cleanup_digest,
+        )
+        if (
+            start != self._active
+            or terminal_reason not in _DIAGNOSTIC_REASONS
+            or any(type(value) is not str or _DIGEST.fullmatch(value) is None for value in values)
+            or (
+                key_ready_digest is not None
+                and (
+                    type(key_ready_digest) is not str
+                    or _DIGEST.fullmatch(key_ready_digest) is None
+                )
+            )
+        ):
+            _stop("DIAGNOSTIC_TERMINAL_ORDER_MISMATCH")
+        _validate_diagnostic_phase_outcomes(qemu_phase_outcomes)
+        digest = self._append(
+            "DIAGNOSTIC_TERMINAL",
+            start,
+            {
+                "diagnostic_start_digest": start.digest,
+                "terminal_reason": terminal_reason,
+                "diagnostic_bundle_digest": diagnostic_bundle_digest,
+                "key_ready_digest": key_ready_digest,
+                "systemd_properties_digest": systemd_properties_digest,
+                "cleanup_digest": cleanup_digest,
+                "qemu_phase_outcomes": qemu_phase_outcomes,
+            },
+        )
+        self._active = None
+        return digest
+
+
+def _validate_diagnostic_phase_outcomes(value: object) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != {"provision", "run"}:
+        _stop("DIAGNOSTIC_QEMU_OUTCOME_MISMATCH")
+    for phase, row in value.items():
+        if row is None:
+            continue
+        if (
+            type(row) is not dict
+            or frozenset(row) != {"argv_digest", "return_code"}
+            or type(row["argv_digest"]) is not str
+            or _DIGEST.fullmatch(row["argv_digest"]) is None
+            or row["argv_digest"]
+            != _digest_bytes(
+                _canonical(_qemu_argv(1, phase, lab=DIAGNOSTIC_LAB))
+            )
+            or type(row["return_code"]) is not int
+            or isinstance(row["return_code"], bool)
+            or not -255 <= row["return_code"] <= 255
+        ):
+            _stop("DIAGNOSTIC_QEMU_OUTCOME_MISMATCH")
+    return value
+
+
 def _run(
     argv: list[str],
     *,
@@ -1050,6 +1412,8 @@ def _host_provenance(
     qemu_version: str,
     seed_digest: str,
     attempt: int,
+    lab: Path = LAB,
+    phases: tuple[str, ...] = ("provision", "run", "recover"),
 ) -> dict[str, object]:
     return {
         "image": image,
@@ -1065,7 +1429,9 @@ def _host_provenance(
             "seed_digest": seed_digest,
             "management_address": "127.0.0.1:22227",
             "shared_host_mounts": 0,
-            "qemu_argv_digest": _digest_bytes(_canonical(_qemu_lifecycle(attempt))),
+            "qemu_argv_digest": _digest_bytes(
+                _canonical(_qemu_lifecycle(attempt, lab=lab, phases=phases))
+            ),
         },
     }
 
@@ -1139,6 +1505,197 @@ def _ssh(
     return result.stdout
 
 
+def _service_properties(
+    client_key: Path, known_hosts: Path, unit: str
+) -> dict[str, str]:
+    command = ["sudo", "/usr/bin/systemctl", "show", unit, "--no-pager"]
+    for name in _SERVICE_PROPERTIES:
+        command.extend(("--property", name))
+    raw = _ssh(client_key, known_hosts, command, maximum=4096)
+    try:
+        lines = raw.decode("ascii").splitlines()
+    except UnicodeDecodeError as error:
+        raise QualificationStop("SYSTEMD_PROPERTIES_MALFORMED") from error
+    result: dict[str, str] = {}
+    for line in lines:
+        if "=" not in line:
+            _stop("SYSTEMD_PROPERTIES_MALFORMED")
+        name, value = line.split("=", 1)
+        if name not in _SERVICE_PROPERTIES or name in result or len(value) > 128:
+            _stop("SYSTEMD_PROPERTIES_MALFORMED")
+        result[name] = value
+    if frozenset(result) != frozenset(_SERVICE_PROPERTIES):
+        _stop("SYSTEMD_PROPERTIES_MALFORMED")
+    return result
+
+
+def _service_finished_before_key_ready(properties: dict[str, str]) -> bool:
+    return (
+        properties["ActiveState"] == "failed"
+        or properties["Result"] not in {"", "success"}
+        or (
+            properties["ActiveState"] in {"inactive", "active"}
+            and properties["SubState"] in {"dead", "failed", "exited"}
+            and properties["ExecMainCode"] != "0"
+        )
+    )
+
+
+def _wait_key_ready_diagnostic(
+    qemu: QemuProcess,
+    client_key: Path,
+    known_hosts: Path,
+    unit: str,
+    *,
+    timeout: float = 90,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, object]:
+    deadline = clock() + timeout
+    last_properties = {name: "UNAVAILABLE" for name in _SERVICE_PROPERTIES}
+    while clock() < deadline:
+        try:
+            qemu.require_alive()
+        except QualificationStop:
+            process = getattr(qemu, "process", None)
+            return {
+                "terminal_reason": "QEMU_EXITED",
+                "key_ready": None,
+                "systemd_properties": last_properties,
+                "qemu_return_code": getattr(process, "returncode", None),
+            }
+        last_properties = _service_properties(client_key, known_hosts, unit)
+        marker = _ssh_try(
+            client_key,
+            known_hosts,
+            ["sudo", "/usr/bin/cat", "/var/lib/harness-m4-runtime/key-ready.json"],
+            timeout=10,
+        )
+        if marker.returncode == 0:
+            ready = _strict_json(marker.stdout, 1 << 20)
+            if type(ready) is not dict:
+                _stop("KEY_READY_MALFORMED")
+            return {
+                "terminal_reason": "KEY_READY_REACHED",
+                "key_ready": ready,
+                "systemd_properties": last_properties,
+                "qemu_return_code": None,
+            }
+        if _service_finished_before_key_ready(last_properties):
+            return {
+                "terminal_reason": "SERVICE_FAILED_PRE_KEY_READY",
+                "key_ready": None,
+                "systemd_properties": last_properties,
+                "qemu_return_code": None,
+            }
+        time.sleep(0.5)
+    return {
+        "terminal_reason": "KEY_READY_TIMEOUT",
+        "key_ready": None,
+        "systemd_properties": last_properties,
+        "qemu_return_code": None,
+    }
+
+
+def _guest_boot_id(client_key: Path, known_hosts: Path) -> str:
+    try:
+        value = _ssh(
+            client_key,
+            known_hosts,
+            ["/usr/bin/cat", "/proc/sys/kernel/random/boot_id"],
+            maximum=128,
+        ).decode("ascii").strip()
+    except UnicodeDecodeError as error:
+        raise QualificationStop("GUEST_BOOT_ID_MALFORMED") from error
+    if re.fullmatch(r"[0-9a-f-]{36}", value) is None:
+        _stop("GUEST_BOOT_ID_MALFORMED")
+    return value
+
+
+def _journal_lines(raw: bytes) -> list[str]:
+    try:
+        lines = raw.decode("utf-8", "replace").splitlines()
+    except (AttributeError, UnicodeError) as error:
+        raise QualificationStop("DIAGNOSTIC_JOURNAL_MALFORMED") from error
+    if len(lines) > 512:
+        _stop("DIAGNOSTIC_JOURNAL_UNBOUNDED")
+    return lines
+
+
+def _stage_markers(lines: list[str]) -> list[dict[str, object]]:
+    order = (
+        "SERVICE_ENTERED", "REQUEST_VALIDATED", "PRE_KEY_CHECKS_COMPLETE",
+        "KEY_GENERATION_STARTED", "KEY_GENERATION_COMPLETE",
+        "RUNTIME_TRUST_READY", "KEY_READY_WRITTEN",
+    )
+    result: list[dict[str, object]] = []
+    for line in lines:
+        try:
+            value = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            type(value) is dict
+            and frozenset(value) == {"record_type", "stage", "non_authorizing"}
+            and value["record_type"] == "M4_PRE_KEY_STAGE"
+            and value["stage"] in order
+            and value["non_authorizing"] is True
+            and value["stage"] not in {item["stage"] for item in result}
+        ):
+            result.append(value)
+    if [item["stage"] for item in result] != sorted(
+        [item["stage"] for item in result], key=order.index
+    ):
+        _stop("DIAGNOSTIC_STAGE_ORDER_MISMATCH")
+    return result
+
+
+def _collect_pre_key_diagnostics(
+    qemu: QemuProcess,
+    client_key: Path,
+    known_hosts: Path,
+    unit: str,
+) -> tuple[list[str], list[str], list[dict[str, object]]]:
+    try:
+        qemu.require_alive()
+    except QualificationStop:
+        unavailable = ["UNAVAILABLE:QEMU_EXITED"]
+        return unavailable, unavailable, []
+    try:
+        unit_raw = _ssh(
+            client_key,
+            known_hosts,
+            [
+                "sudo", "/usr/bin/journalctl", "--boot=0", "--unit", unit,
+                "--no-pager", "--output=cat", "--lines=512",
+            ],
+            timeout=20,
+            maximum=1 << 20,
+        )
+        kernel_raw = _ssh(
+            client_key,
+            known_hosts,
+            [
+                "sudo", "/usr/bin/journalctl", "--boot=0", "--dmesg",
+                "--no-pager", "--output=cat", "--lines=512",
+            ],
+            timeout=20,
+            maximum=1 << 20,
+        )
+    except QualificationStop:
+        unavailable = ["UNAVAILABLE:SSH_DIAGNOSTIC_COLLECTION_FAILED"]
+        return unavailable, unavailable, []
+    unit_lines = _journal_lines(unit_raw)
+    kernel_lines = [
+        line
+        for line in _journal_lines(kernel_raw)
+        if any(
+            token in line.casefold()
+            for token in ("apparmor", "oom", "out of memory", "killed process")
+        )
+    ]
+    return unit_lines, kernel_lines, _stage_markers(unit_lines)
+
+
 def _scp_to_guest(
     client_key: Path,
     known_hosts: Path,
@@ -1191,10 +1748,13 @@ def _install_guest_file(
 
 
 class QemuProcess:
-    def __init__(self, attempt_root: Path, attempt: int, phase: str) -> None:
+    def __init__(
+        self, attempt_root: Path, attempt: int, phase: str, *, lab: Path = LAB
+    ) -> None:
         self.attempt_root = attempt_root
         self.attempt = attempt
         self.phase = phase
+        self.lab = lab
         self.process: subprocess.Popen[bytes] | None = None
         self._log: BinaryIO | None = None
 
@@ -1208,7 +1768,7 @@ class QemuProcess:
         self._log = os.fdopen(descriptor, "wb", closefd=True)
         try:
             self.process = subprocess.Popen(
-                _qemu_argv(self.attempt, self.phase),
+                _qemu_argv(self.attempt, self.phase, lab=self.lab),
                 shell=False,
                 close_fds=True,
                 stdin=subprocess.DEVNULL,
@@ -1280,7 +1840,7 @@ class QemuProcess:
             raise VMCleanupUnproven("VM_CLEANUP_UNPROVEN")
 
     def successful_outcome(self) -> dict[str, object]:
-        expected = _qemu_argv(self.attempt, self.phase)
+        expected = _qemu_argv(self.attempt, self.phase, lab=self.lab)
         if (
             self.process is None
             or self.process.poll() is None
@@ -1438,9 +1998,10 @@ def _provision_vm(
     *,
     host_provenance: dict[str, object],
     request: dict[str, object],
+    lab: Path = LAB,
 ) -> tuple[list[Path], dict[str, object]]:
     created: list[Path] = []
-    with QemuProcess(attempt_root, attempt, "provision") as qemu:
+    with QemuProcess(attempt_root, attempt, "provision", lab=lab) as qemu:
         _wait_for_ssh(qemu, client_key, known_hosts)
         _ssh(
             client_key,
@@ -1547,6 +2108,61 @@ def _run_vm_phase(
     return result, admission_digest, created, outcome
 
 
+def _diagnostic_qemu_outcome(
+    qemu: QemuProcess, phase: str
+) -> dict[str, object] | None:
+    process = qemu.process
+    if process is None or process.returncode is None:
+        return None
+    return {
+        "argv_digest": _digest_bytes(
+            _canonical(_qemu_argv(1, phase, lab=DIAGNOSTIC_LAB))
+        ),
+        "return_code": process.returncode,
+    }
+
+
+def _run_diagnostic_vm_phase(
+    attempt_root: Path,
+    client_key: Path,
+    known_hosts: Path,
+) -> tuple[
+    dict[str, object], str, list[str], list[str], list[dict[str, object]],
+    dict[str, object] | None,
+]:
+    unit = "harness-m4-controller@run.service"
+    with QemuProcess(
+        attempt_root, 1, "run", lab=DIAGNOSTIC_LAB
+    ) as qemu:
+        _wait_for_ssh(qemu, client_key, known_hosts)
+        boot_id = _guest_boot_id(client_key, known_hosts)
+        _ssh(
+            client_key,
+            known_hosts,
+            ["sudo", "/usr/bin/systemctl", "start", "--no-block", unit],
+        )
+        observation = _wait_key_ready_diagnostic(
+            qemu, client_key, known_hosts, unit
+        )
+        unit_lines, kernel_lines, markers = _collect_pre_key_diagnostics(
+            qemu, client_key, known_hosts, unit
+        )
+        if qemu.alive():
+            try:
+                _poweroff(qemu, client_key, known_hosts)
+            except QualificationStop:
+                observation = {
+                    **observation,
+                    "terminal_reason": "QEMU_EXITED",
+                    "qemu_return_code": getattr(qemu.process, "returncode", None),
+                }
+    _verify_management_port_free()
+    return (
+        observation, boot_id, unit_lines, kernel_lines, markers,
+        _diagnostic_qemu_outcome(qemu, "run"),
+    )
+
+
 def _export_bundle(
     attempt_root: Path,
     attempt: int,
@@ -1636,6 +2252,184 @@ def _verify_host_tools() -> dict[str, str]:
     return result
 
 
+def _sanitize_diagnostic_line(line: object) -> str:
+    if type(line) is not str:
+        _stop("DIAGNOSTIC_RECORD_MALFORMED")
+    value = "".join(character for character in line[:1024] if character in "\t" or ord(character) >= 32)
+    lowered = value.casefold()
+    if any(
+        token in lowered
+        for token in (
+            "private key", "-----begin", "ssh-ed25519 ", "password",
+            "credential", "authorized_keys", "key-admission", "authorization",
+            "signature", "proof", "secret",
+        )
+    ):
+        return "[REDACTED]"
+    return value
+
+
+def _sanitize_diagnostic_record(record: object) -> dict[str, object]:
+    if type(record) is not dict:
+        _stop("DIAGNOSTIC_RECORD_MALFORMED")
+    value = dict(record)
+    for name in ("unit_journal", "kernel_events"):
+        rows = value.get(name)
+        if type(rows) is not list or len(rows) > 512:
+            _stop("DIAGNOSTIC_RECORD_MALFORMED")
+        value[name] = [_sanitize_diagnostic_line(line) for line in rows]
+    return _validate_diagnostic_record(value)
+
+
+def _validate_diagnostic_record(value: object) -> dict[str, object]:
+    expected = {
+        "diagnostic_version", "claim", "status", "candidate", "tree",
+        "environment", "user_scope_reference", "user_goal_digest",
+        "predecessor_qualification_ledger_digest", "diagnostic_start_digest",
+        "attempt", "boot_id", "terminal_reason", "systemd_properties",
+        "unit_journal", "kernel_events", "stage_markers", "artifact_digests",
+        "qemu_phase_outcomes",
+    }
+    if type(value) is not dict or frozenset(value) != expected:
+        _stop("DIAGNOSTIC_RECORD_MALFORMED")
+    digests = (
+        value["environment"], value["user_goal_digest"],
+        value["predecessor_qualification_ledger_digest"],
+        value["diagnostic_start_digest"],
+    )
+    properties = value["systemd_properties"]
+    artifacts = value["artifact_digests"]
+    markers = value["stage_markers"]
+    if (
+        value["diagnostic_version"] != "1.0.0"
+        or value["claim"] != "M4_KEY_READY_PRE_ADMISSION_DIAGNOSTIC_ONLY"
+        or value["status"] != "NOT_ATTESTED"
+        or type(value["candidate"]) is not str
+        or _COMMIT.fullmatch(value["candidate"]) is None
+        or type(value["tree"]) is not str
+        or _COMMIT.fullmatch(value["tree"]) is None
+        or any(type(item) is not str or _DIGEST.fullmatch(item) is None for item in digests)
+        or type(value["user_scope_reference"]) is not str
+        or not value["user_scope_reference"].startswith("/")
+        or len(value["user_scope_reference"]) > 4096
+        or value["attempt"] != 1
+        or type(value["boot_id"]) is not str
+        or (
+            value["boot_id"] != "UNAVAILABLE"
+            and re.fullmatch(r"[0-9a-f-]{36}", value["boot_id"]) is None
+        )
+        or value["terminal_reason"] not in _DIAGNOSTIC_REASONS
+        or type(properties) is not dict
+        or frozenset(properties) != frozenset(_SERVICE_PROPERTIES)
+        or any(type(item) is not str or len(item) > 128 for item in properties.values())
+        or type(artifacts) is not dict
+        or frozenset(artifacts) != {"runner", "service", "profile"}
+        or any(type(item) is not str or _DIGEST.fullmatch(item) is None for item in artifacts.values())
+        or type(value["unit_journal"]) is not list
+        or type(value["kernel_events"]) is not list
+        or len(value["unit_journal"]) > 512
+        or len(value["kernel_events"]) > 512
+        or any(
+            type(line) is not str or len(line) > 1024
+            for line in [*value["unit_journal"], *value["kernel_events"]]
+        )
+        or type(markers) is not list
+        or len(markers) > 7
+    ):
+        _stop("DIAGNOSTIC_RECORD_MALFORMED")
+    order = (
+        "SERVICE_ENTERED", "REQUEST_VALIDATED", "PRE_KEY_CHECKS_COMPLETE",
+        "KEY_GENERATION_STARTED", "KEY_GENERATION_COMPLETE",
+        "RUNTIME_TRUST_READY", "KEY_READY_WRITTEN",
+    )
+    seen: list[str] = []
+    for marker in markers:
+        if (
+            type(marker) is not dict
+            or frozenset(marker) != {"record_type", "stage", "non_authorizing"}
+            or marker["record_type"] != "M4_PRE_KEY_STAGE"
+            or marker["stage"] not in order
+            or marker["non_authorizing"] is not True
+            or marker["stage"] in seen
+        ):
+            _stop("DIAGNOSTIC_RECORD_MALFORMED")
+        seen.append(marker["stage"])
+    if seen != sorted(seen, key=order.index):
+        _stop("DIAGNOSTIC_RECORD_MALFORMED")
+    _validate_diagnostic_phase_outcomes(value["qemu_phase_outcomes"])
+    raw = _canonical(value)
+    if len(raw) > 1 << 20 or any(
+        token in raw.lower()
+        for token in (
+            b"private key", b"-----begin", b"ssh-ed25519 ", b"password",
+            b"credential", b"authorized_keys", b"key-admission",
+            b"authorization", b"signature", b"proof", b"secret",
+        )
+    ):
+        _stop("DIAGNOSTIC_SECRET_PRESENT")
+    return value
+
+
+def _read_diagnostic_bundle(path: Path) -> dict[str, object]:
+    value = _strict_json(_read_regular(path, 1 << 20), 1 << 20)
+    return _validate_diagnostic_record(value)
+
+
+def _materialize_diagnostic_bundle(lab: Path, record: dict[str, object]) -> Path:
+    value = _validate_diagnostic_record(record)
+    _mkdir_exact(lab, 0o700)
+    diagnostics = lab / "diagnostics"
+    _mkdir_exact(diagnostics, 0o700)
+    attempt = diagnostics / "attempt-1"
+    if attempt.exists() or attempt.is_symlink():
+        _stop("DIAGNOSTIC_DESTINATION_REUSE_FORBIDDEN")
+    attempt.mkdir(mode=0o700)
+    path = attempt / "diagnostic.json"
+    _write_exact(path, _canonical(value), 0o444)
+    _fsync_directory(attempt)
+    _fsync_directory(diagnostics)
+    _fsync_directory(lab)
+    if _read_diagnostic_bundle(path) != value:
+        _stop("DIAGNOSTIC_RECORD_MISMATCH")
+    return path
+
+
+def _cleanup_diagnostic_attempt(attempt_root: Path, *, lab: Path = DIAGNOSTIC_LAB) -> list[str]:
+    if attempt_root.parent != lab / "runs" or attempt_root.name != "attempt-1":
+        _stop("CLEANUP_TARGET_MISMATCH")
+    try:
+        root_info = os.lstat(attempt_root)
+        if (
+            not stat.S_ISDIR(root_info.st_mode)
+            or root_info.st_uid != os.geteuid()
+            or stat.S_IMODE(root_info.st_mode) != 0o700
+        ):
+            _stop("CLEANUP_TARGET_MISMATCH")
+        present = {path.name for path in attempt_root.iterdir()}
+    except OSError as error:
+        raise QualificationStop("ATTEMPT_CLEANUP_FAILED") from error
+    if not present.issubset(_DIAGNOSTIC_DISPOSABLE_NAMES):
+        _stop("CLEANUP_TARGET_MISMATCH")
+    removed: list[str] = []
+    try:
+        for name in _DIAGNOSTIC_DISPOSABLE_NAMES:
+            path = attempt_root / name
+            try:
+                info = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                _stop("CLEANUP_TARGET_MISMATCH")
+            os.unlink(path)
+            removed.append(name)
+        _fsync_directory(attempt_root)
+        os.rmdir(attempt_root)
+        _fsync_directory(attempt_root.parent)
+    except OSError as error:
+        raise QualificationStop("ATTEMPT_CLEANUP_FAILED") from error
+    return removed
+
+
 def _cleanup_attempt(attempt_root: Path, *, require_complete: bool) -> list[str]:
     if attempt_root.parent != LAB / "runs" or not re.fullmatch(r"attempt-[12]", attempt_root.name):
         _stop("CLEANUP_TARGET_MISMATCH")
@@ -1683,6 +2477,234 @@ def _verify_bundle(bundle: Path) -> dict[str, object]:
     if type(value) is not dict or value.get("outcome") != "VERIFIED":
         _stop("FINAL_EVIDENCE_VERIFICATION_FAILED")
     return value
+
+
+def _key_ready_diagnostic(goal: Path) -> dict[str, object]:
+    goal_digest = _digest_file(goal, 1 << 20)
+    predecessor_digest = _verify_diagnostic_predecessor(
+        OLD_LEDGER, OLD_LEDGER_DIGEST
+    )
+    source = _source_state()
+    _, profile_digest = _profile()
+    image, qemu_version = _verify_host_assets()
+    tools = _verify_host_tools()
+    _verify_kvm()
+    _verify_management_port_free()
+    remaining = _verify_disk_budget(IMAGE_LAB.parent)
+    artifact_digests = {
+        "runner": _digest_file(
+            ROOT / "scripts/run_m4_vm_conformance.py", 16 << 20
+        ),
+        "service": _digest_file(
+            ROOT / "profiles/harness-m4-controller@.service", 1 << 20
+        ),
+        "profile": _digest_file(ROOT / "profiles/m4-lx-a.json", 1 << 20),
+    }
+    start: DiagnosticStart | None = None
+    phase_outcomes: dict[str, object] = {"provision": None, "run": None}
+    observation: dict[str, object] = {
+        "terminal_reason": "PROVISION_FAILED",
+        "key_ready": None,
+        "systemd_properties": {
+            name: "UNAVAILABLE" for name in _SERVICE_PROPERTIES
+        },
+        "qemu_return_code": None,
+    }
+    boot_id = "UNAVAILABLE"
+    unit_lines = ["UNAVAILABLE:PROVISION_FAILED"]
+    kernel_lines = ["UNAVAILABLE:PROVISION_FAILED"]
+    markers: list[dict[str, object]] = []
+    cleanup_complete = False
+    removed: list[str] = []
+    bundle: Path | None = None
+    cleanup_error: QualificationStop | None = None
+    with DiagnosticLedger(
+        DIAGNOSTIC_LAB,
+        goal_reference=str(goal),
+        goal_digest=goal_digest,
+        predecessor_digest=predecessor_digest,
+    ) as ledger:
+        ledger.ensure_available()
+        runs = DIAGNOSTIC_LAB / "runs"
+        _mkdir_exact(runs, 0o700)
+        if (DIAGNOSTIC_LAB / "diagnostics").exists() or (
+            DIAGNOSTIC_LAB / "diagnostics"
+        ).is_symlink():
+            _stop("DIAGNOSTIC_DESTINATION_REUSE_FORBIDDEN")
+        attempt_root = runs / "attempt-1"
+        if attempt_root.exists() or attempt_root.is_symlink():
+            _stop("DIAGNOSTIC_ATTEMPT_ROOT_REUSE_FORBIDDEN")
+        attempt_root.mkdir(mode=0o700)
+        try:
+            seed, client_key, host_key = _create_seed(
+                attempt_root, attempt=1, source=source
+            )
+            known_hosts = attempt_root / "known_hosts"
+            _known_hosts(host_key.with_suffix(".pub"), known_hosts)
+            provenance = _host_provenance(
+                image,
+                qemu_version=qemu_version,
+                seed_digest=_digest_file(seed, _MAX_SEED_BYTES),
+                attempt=1,
+                lab=DIAGNOSTIC_LAB,
+                phases=("provision", "run"),
+            )
+            environment = _digest_bytes(
+                _canonical(
+                    {
+                        "host_provenance": provenance,
+                        "profile_digest": profile_digest,
+                        "diagnostic_contract": {
+                            "kind": "M4_KEY_READY_PRE_ADMISSION",
+                            "user_goal_digest": goal_digest,
+                            "predecessor_qualification_ledger_digest": predecessor_digest,
+                            "max_attempts": 1,
+                            "success_target": 1,
+                            "success_target_authorizing": False,
+                            "phases": ["provision", "run"],
+                        },
+                    }
+                )
+            )
+            request = {
+                "request_version": "1.1.0",
+                "mode": "KEY_READY_DIAGNOSTIC",
+                "candidate": source["commit"],
+                "tree": source["tree"],
+                "environment": environment,
+                "attempt": 1,
+                "user_goal_digest": goal_digest,
+                "predecessor_qualification_ledger_digest": predecessor_digest,
+            }
+            start = ledger.begin(
+                str(source["commit"]), str(source["tree"]), environment
+            )
+            try:
+                _create_overlay(attempt_root)
+                _, phase_outcomes["provision"] = _provision_vm(
+                    attempt_root,
+                    1,
+                    client_key,
+                    known_hosts,
+                    host_provenance=provenance,
+                    request=request,
+                    lab=DIAGNOSTIC_LAB,
+                )
+            except QualificationStop:
+                observation["terminal_reason"] = "PROVISION_FAILED"
+            else:
+                try:
+                    (
+                        observation,
+                        boot_id,
+                        unit_lines,
+                        kernel_lines,
+                        markers,
+                        phase_outcomes["run"],
+                    ) = _run_diagnostic_vm_phase(
+                        attempt_root, client_key, known_hosts
+                    )
+                except QualificationStop as error:
+                    reason = "QEMU_EXITED" if "QEMU" in str(error) else "SERVICE_FAILED_PRE_KEY_READY"
+                    observation = {
+                        **observation,
+                        "terminal_reason": reason,
+                    }
+                    unit_lines = ["UNAVAILABLE:" + reason]
+                    kernel_lines = ["UNAVAILABLE:" + reason]
+            terminal_reason = str(observation["terminal_reason"])
+            record = _sanitize_diagnostic_record(
+                {
+                    "diagnostic_version": "1.0.0",
+                    "claim": "M4_KEY_READY_PRE_ADMISSION_DIAGNOSTIC_ONLY",
+                    "status": "NOT_ATTESTED",
+                    "candidate": source["commit"],
+                    "tree": source["tree"],
+                    "environment": environment,
+                    "user_scope_reference": str(goal),
+                    "user_goal_digest": goal_digest,
+                    "predecessor_qualification_ledger_digest": predecessor_digest,
+                    "diagnostic_start_digest": start.digest,
+                    "attempt": 1,
+                    "boot_id": boot_id,
+                    "terminal_reason": terminal_reason,
+                    "systemd_properties": observation["systemd_properties"],
+                    "unit_journal": unit_lines,
+                    "kernel_events": kernel_lines,
+                    "stage_markers": markers,
+                    "artifact_digests": artifact_digests,
+                    "qemu_phase_outcomes": phase_outcomes,
+                }
+            )
+            bundle = _materialize_diagnostic_bundle(DIAGNOSTIC_LAB, record)
+            bundle_digest = _digest_file(bundle, 1 << 20)
+            try:
+                removed = _cleanup_diagnostic_attempt(
+                    attempt_root, lab=DIAGNOSTIC_LAB
+                )
+                cleanup_complete = True
+                try:
+                    os.rmdir(runs)
+                except OSError:
+                    pass
+                _fsync_directory(DIAGNOSTIC_LAB)
+            except QualificationStop as error:
+                cleanup_error = error
+                terminal_reason = "CLEANUP_FAILED"
+            cleanup_digest = _digest_bytes(
+                _canonical(
+                    {
+                        "complete": cleanup_complete,
+                        "removed": sorted(removed),
+                    }
+                )
+            )
+            key_ready = observation["key_ready"]
+            key_ready_digest = (
+                _digest_bytes(_canonical(key_ready)) if key_ready is not None else None
+            )
+            ledger.terminalize(
+                start,
+                terminal_reason,
+                diagnostic_bundle_digest=bundle_digest,
+                key_ready_digest=key_ready_digest,
+                systemd_properties_digest=_digest_bytes(
+                    _canonical(observation["systemd_properties"])
+                ),
+                cleanup_digest=cleanup_digest,
+                qemu_phase_outcomes=phase_outcomes,
+            )
+            if cleanup_error is not None:
+                raise cleanup_error
+            ledger_path = DIAGNOSTIC_LAB / DIAGNOSTIC_LEDGER_NAME
+            return {
+                "outcome": "DIAGNOSTIC_COMPLETE",
+                "claim": "M4_KEY_READY_PRE_ADMISSION_DIAGNOSTIC_ONLY",
+                "status": "NOT_ATTESTED",
+                "terminal_reason": terminal_reason,
+                "last_stage": markers[-1]["stage"] if markers else "NONE",
+                "systemd_properties": observation["systemd_properties"],
+                "qemu_return_code": observation["qemu_return_code"],
+                "candidate": source["commit"],
+                "tree": source["tree"],
+                "environment": environment,
+                "diagnostic_ledger": str(ledger_path),
+                "diagnostic_ledger_digest": _digest_file(ledger_path, 2 << 20),
+                "diagnostic_bundle": str(bundle),
+                "diagnostic_bundle_digest": bundle_digest,
+                "preserved_base_image": str(IMAGE_LAB / _IMAGE_NAME),
+                "preserved_base_image_digest": _IMAGE_DIGEST,
+                "removed_disposable_files": sorted(removed),
+                "host_tool_digests": tools,
+                "disk_bytes_remaining_after_worst_case": remaining,
+            }
+        except BaseException:
+            if start is None:
+                try:
+                    _cleanup_diagnostic_attempt(attempt_root, lab=DIAGNOSTIC_LAB)
+                except QualificationStop:
+                    pass
+            raise
 
 
 def _qualification() -> dict[str, object]:
@@ -1826,11 +2848,14 @@ def _absent(reason: str) -> dict[str, object]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    if argv not in (None, []):
-        sys.stdout.buffer.write(_canonical(_absent("M4_HOST_ARGUMENTS_FORBIDDEN")) + b"\n")
-        return 1
+    arguments = sys.argv[1:] if argv is None else argv
     try:
-        result = _qualification()
+        if not arguments:
+            result = _qualification()
+        elif len(arguments) == 2 and arguments[0] == "--key-ready-diagnostic":
+            result = _key_ready_diagnostic(Path(arguments[1]))
+        else:
+            _stop("M4_HOST_ARGUMENTS_FORBIDDEN")
     except (OSError, ValueError, QualificationStop) as error:
         reason = str(error) if str(error) else "M4_HOST_QUALIFICATION_FAILED"
         sys.stdout.buffer.write(_canonical(_absent(reason)) + b"\n")

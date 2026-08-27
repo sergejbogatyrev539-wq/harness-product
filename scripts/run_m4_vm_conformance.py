@@ -75,6 +75,15 @@ LIBCRYPTO = "/usr/lib/x86_64-linux-gnu/libcrypto.so.3"
 APPARMOR_PARSER = "/usr/sbin/apparmor_parser"
 ALLOWED_PHASES = ("run", "recover")
 INTERNAL_ROLES = ("controller", "executor", "observer", "publisher", "relocator")
+PRE_KEY_STAGES = (
+    "SERVICE_ENTERED",
+    "REQUEST_VALIDATED",
+    "PRE_KEY_CHECKS_COMPLETE",
+    "KEY_GENERATION_STARTED",
+    "KEY_GENERATION_COMPLETE",
+    "RUNTIME_TRUST_READY",
+    "KEY_READY_WRITTEN",
+)
 MAX_JSON = 8 << 20
 MAX_REPORT = 1 << 20
 PR_SET_NO_NEW_PRIVS = 38
@@ -191,6 +200,23 @@ def _canonical(value: object) -> bytes:
         raise QualificationStop("MALFORMED_VALUE") from error
 
 
+def _diagnostic_stage(stage: str) -> None:
+    if stage not in PRE_KEY_STAGES:
+        _stop("M4_DIAGNOSTIC_STAGE_MISMATCH")
+    raw = _canonical(
+        {
+            "record_type": "M4_PRE_KEY_STAGE",
+            "stage": stage,
+            "non_authorizing": True,
+        }
+    ) + b"\n"
+    try:
+        if os.write(1, raw) != len(raw):
+            _stop("M4_DIAGNOSTIC_STAGE_WRITE_FAILED")
+    except OSError as error:
+        raise QualificationStop("M4_DIAGNOSTIC_STAGE_WRITE_FAILED") from error
+
+
 def _pairs(rows: list[tuple[object, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in rows:
@@ -295,6 +321,51 @@ def _fsync_directory(path: Path) -> None:
 
 def _is_digest(value: object) -> bool:
     return type(value) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
+def _validate_launch_request(request: object) -> str:
+    qualification_keys = frozenset(
+        {"request_version", "candidate", "environment", "attempt"}
+    )
+    diagnostic_keys = frozenset(
+        {
+            "request_version", "mode", "candidate", "tree", "environment",
+            "attempt", "user_goal_digest",
+            "predecessor_qualification_ledger_digest",
+        }
+    )
+    if type(request) is not dict:
+        _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
+    if frozenset(request) == qualification_keys:
+        if (
+            request["request_version"] != "1.0.0"
+            or type(request["candidate"]) is not str
+            or re.fullmatch(r"[0-9a-f]{40}", request["candidate"]) is None
+            or not _is_digest(request["environment"])
+            or type(request["attempt"]) is not int
+            or isinstance(request["attempt"], bool)
+            or request["attempt"] not in {1, 2}
+        ):
+            _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
+        return "QUALIFICATION"
+    if frozenset(request) == diagnostic_keys:
+        if (
+            request["request_version"] != "1.1.0"
+            or request["mode"] != "KEY_READY_DIAGNOSTIC"
+            or type(request["candidate"]) is not str
+            or re.fullmatch(r"[0-9a-f]{40}", request["candidate"]) is None
+            or type(request["tree"]) is not str
+            or re.fullmatch(r"[0-9a-f]{40}", request["tree"]) is None
+            or not _is_digest(request["environment"])
+            or type(request["attempt"]) is not int
+            or isinstance(request["attempt"], bool)
+            or request["attempt"] != 1
+            or not _is_digest(request["user_goal_digest"])
+            or not _is_digest(request["predecessor_qualification_ledger_digest"])
+        ):
+            _stop("M4_DIAGNOSTIC_REQUEST_MISMATCH")
+        return "KEY_READY_DIAGNOSTIC"
+    _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
 
 
 def _validate_run_state(value: object) -> dict[str, object]:
@@ -3008,6 +3079,7 @@ def _await_key_admission(
         "runtime_trust_digest": _digest_bytes(_canonical(runtime_trust)),
     }
     _write_exact(RUNTIME / "key-ready.json", _canonical(ready), 0o444)
+    _diagnostic_stage("KEY_READY_WRITTEN")
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         if KEY_ADMISSION.is_file() and not KEY_ADMISSION.is_symlink():
@@ -4571,6 +4643,7 @@ def _finalize_m4_evidence(bundle: dict[str, bytes]) -> list[str]:
 
 
 def _run_phase() -> None:
+    _diagnostic_stage("SERVICE_ENTERED")
     if os.geteuid() != 0:
         _stop("ROOT_SUPERVISOR_REQUIRED")
     profile = _profile()
@@ -4583,6 +4656,16 @@ def _run_phase() -> None:
     ).strip()
     if re.fullmatch(r"[0-9a-f-]{36}", boot_id) is None:
         _stop("BOOT_ID_MALFORMED")
+    request = _strict_bytes(
+        _read_regular(Path("/etc/harness-m4/qualification.json"), 1 << 20),
+        1 << 20,
+    )
+    request_mode = _validate_launch_request(request)
+    if request["candidate"] != source["commit"] or (
+        request_mode == "KEY_READY_DIAGNOSTIC" and request["tree"] != source["tree"]
+    ):
+        _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
+    _diagnostic_stage("REQUEST_VALIDATED")
     if (
         RUNTIME.exists()
         or CONTROLLER.exists()
@@ -4600,32 +4683,24 @@ def _run_phase() -> None:
     os.chmod(m3.CONTROLLER, 0o700)
     m3_policy = m3._load_apparmor()
     _load_apparmor()
-    keys = _prepare_keys(profile)
-    supply_key = _prepare_supply_key(profile)
-    runtime_trust = _write_runtime_trust(profile, keys, supply_key)
     publication_descriptor = _prepare_publication_root()
     publication_parent_descriptor = os.open(
         PUBLICATION_PARENT,
         os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
     )
+    _diagnostic_stage("PRE_KEY_CHECKS_COMPLETE")
+    _diagnostic_stage("KEY_GENERATION_STARTED")
+    keys = _prepare_keys(profile)
+    supply_key = _prepare_supply_key(profile)
+    _diagnostic_stage("KEY_GENERATION_COMPLETE")
+    runtime_trust = _write_runtime_trust(profile, keys, supply_key)
+    _diagnostic_stage("RUNTIME_TRUST_READY")
     manager: object | None = None
     controller: ControllerSession | None = None
     publisher_session: PublisherSession | None = None
     chain: dict[str, object] | None = None
     denial_events: list[dict[str, object]] = []
     try:
-        # The remainder of the actual chain is deliberately entered through a
-        # root-owned, canonical launch request written by the host candidate.
-        # No boolean or digest can substitute for that request.  A missing
-        # request stops before a worker, executor, observer or publisher exists.
-        request_path = Path("/etc/harness-m4/qualification.json")
-        request = _strict_file(
-            request_path,
-            frozenset({"request_version", "candidate", "environment", "attempt"}),
-            1 << 20,
-        )
-        if request["request_version"] != "1.0.0" or request["attempt"] not in {1, 2}:
-            _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
         key_admission = _await_key_admission(
             request, keys, supply_key, runtime_trust
         )

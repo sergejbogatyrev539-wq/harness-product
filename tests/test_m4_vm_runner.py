@@ -500,6 +500,60 @@ class M4VMRunnerContractTests(unittest.TestCase):
         module = _module()
         self.assertEqual(module.ALLOWED_PHASES, ("run", "recover"))
 
+    def test_pre_key_diagnostic_markers_are_closed_ordered_and_non_authorizing(self) -> None:
+        module = _module()
+        expected = (
+            "SERVICE_ENTERED",
+            "REQUEST_VALIDATED",
+            "PRE_KEY_CHECKS_COMPLETE",
+            "KEY_GENERATION_STARTED",
+            "KEY_GENERATION_COMPLETE",
+            "RUNTIME_TRUST_READY",
+            "KEY_READY_WRITTEN",
+        )
+        self.assertEqual(module.PRE_KEY_STAGES, expected)
+        with mock.patch.object(module.os, "write", side_effect=lambda _fd, raw: len(raw)) as write:
+            module._diagnostic_stage("KEY_GENERATION_STARTED")
+        raw = write.call_args.args[1]
+        self.assertEqual(
+            json.loads(raw),
+            {
+                "non_authorizing": True,
+                "record_type": "M4_PRE_KEY_STAGE",
+                "stage": "KEY_GENERATION_STARTED",
+            },
+        )
+        with self.assertRaises(module.QualificationStop):
+            module._diagnostic_stage("KEY_ADMITTED")
+
+        source = inspect.getsource(module._run_phase) + inspect.getsource(module._await_key_admission)
+        positions = [source.index(f'_diagnostic_stage("{stage}")') for stage in expected]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn('_diagnostic_stage("KEY_ADMITTED")', source)
+
+    def test_launch_request_accepts_only_closed_single_attempt_diagnostic_shape(self) -> None:
+        module = _module()
+        digest = "sha256:" + "a" * 64
+        request = {
+            "request_version": "1.1.0",
+            "mode": "KEY_READY_DIAGNOSTIC",
+            "candidate": "b" * 40,
+            "tree": "c" * 40,
+            "environment": digest,
+            "attempt": 1,
+            "user_goal_digest": digest,
+            "predecessor_qualification_ledger_digest": digest,
+        }
+        self.assertEqual(module._validate_launch_request(request), "KEY_READY_DIAGNOSTIC")
+        for mutation in (
+            {**request, "attempt": 2},
+            {**request, "mode": "QUALIFICATION"},
+            {**request, "unknown": True},
+            {**request, "user_goal_digest": "sha256:" + "d" * 63},
+        ):
+            with self.subTest(mutation=mutation), self.assertRaises(module.QualificationStop):
+                module._validate_launch_request(mutation)
+
     def test_run_state_writer_and_recovery_share_one_closed_schema(self) -> None:
         module = _module()
         valid = self._run_state(module)

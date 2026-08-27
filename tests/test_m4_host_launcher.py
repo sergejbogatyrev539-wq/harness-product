@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import importlib.util
+import inspect
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -270,6 +273,352 @@ class M4HostLauncherTests(unittest.TestCase):
                 clock=lambda: self.now,
             ):
                 pass
+
+    def test_diagnostic_ledger_is_separate_single_use_and_binds_terminal_reason(self) -> None:
+        predecessor = self.root / "old-ledger.jsonl"
+        old_rows = []
+        previous = None
+        sequence = 0
+        for attempt in (1, 2):
+            sequence += 1
+            start = {
+                "ledger_version": "1.0.0",
+                "sequence": sequence,
+                "previous_entry_digest": previous,
+                "entry_type": "ATTEMPT_STARTED",
+                "max_attempts": 2,
+                "attempt": attempt,
+            }
+            raw = self.launcher._canonical(start)
+            previous = self.launcher._digest_bytes(raw)
+            old_rows.append(raw)
+            sequence += 1
+            terminal = {
+                "ledger_version": "1.0.0",
+                "sequence": sequence,
+                "previous_entry_digest": previous,
+                "entry_type": "ATTEMPT_TERMINAL",
+                "max_attempts": 2,
+                "attempt": attempt,
+                "result": "QUARANTINED",
+            }
+            raw = self.launcher._canonical(terminal)
+            previous = self.launcher._digest_bytes(raw)
+            old_rows.append(raw)
+        old_raw = b"\n".join(old_rows) + b"\n"
+        predecessor.write_bytes(old_raw)
+        os.chmod(predecessor, 0o600)
+        old_digest = self.launcher._digest_bytes(old_raw)
+        self.assertEqual(
+            self.launcher._verify_diagnostic_predecessor(predecessor, old_digest),
+            old_digest,
+        )
+
+        lab = self.root / "diagnostic-lab"
+        goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
+        with self.launcher.DiagnosticLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            predecessor_digest=old_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            started = ledger.begin("a" * 40, "b" * 40, "sha256:" + "c" * 64)
+            terminal_digest = ledger.terminalize(
+                started,
+                "SERVICE_FAILED_PRE_KEY_READY",
+                diagnostic_bundle_digest="sha256:" + "d" * 64,
+                key_ready_digest=None,
+                systemd_properties_digest="sha256:" + "e" * 64,
+                cleanup_digest="sha256:" + "f" * 64,
+                qemu_phase_outcomes={
+                    phase: {
+                        "argv_digest": self.launcher._digest_bytes(
+                            self.launcher._canonical(
+                                self.launcher._qemu_argv(
+                                    1, phase, lab=self.launcher.DIAGNOSTIC_LAB
+                                )
+                            )
+                        ),
+                        "return_code": 0 if phase == "provision" else 1,
+                    }
+                    for phase in ("provision", "run")
+                },
+            )
+        rows = [
+            json.loads(line)
+            for line in (lab / "m4-key-ready-diagnostic-ledger.jsonl").read_bytes().splitlines()
+        ]
+        self.assertEqual([row["entry_type"] for row in rows], ["DIAGNOSTIC_STARTED", "DIAGNOSTIC_TERMINAL"])
+        self.assertEqual(rows[-1]["terminal_reason"], "SERVICE_FAILED_PRE_KEY_READY")
+        self.assertEqual(rows[-1]["previous_entry_digest"], started.digest)
+        self.assertEqual(terminal_digest, self.launcher._digest_bytes(self.launcher._canonical(rows[-1])))
+        self.assertEqual(predecessor.read_bytes(), old_raw)
+
+        with self.launcher.DiagnosticLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            predecessor_digest=old_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop, "DIAGNOSTIC_ATTEMPT_LIMIT_REACHED"
+            ):
+                ledger.begin("d" * 40, "e" * 40, "sha256:" + "f" * 64)
+
+    def test_diagnostic_wait_distinguishes_service_timeout_qemu_and_ready_without_sleep(self) -> None:
+        active = {
+            "ActiveState": "activating",
+            "SubState": "start",
+            "Result": "success",
+            "ExecMainCode": "0",
+            "ExecMainStatus": "0",
+        }
+        failed = {
+            "ActiveState": "failed",
+            "SubState": "failed",
+            "Result": "exit-code",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "2",
+        }
+        ready = {
+            "ready_version": "1.0.0",
+            "candidate": "a" * 40,
+            "environment": "sha256:" + "b" * 64,
+            "attempt": 1,
+            "receipt_public_key_digests": {
+                role: "sha256:" + character * 64
+                for role, character in (("M4_AUTHORITY", "1"), ("OBSERVER", "2"), ("PUBLISHER", "3"))
+            },
+            "supply_public_key_digest": "sha256:" + "4" * 64,
+            "runtime_trust_digest": "sha256:" + "5" * 64,
+        }
+
+        class FakeQemu:
+            def __init__(self, error: Exception | None = None) -> None:
+                self.error = error
+                self.process = mock.Mock(returncode=17)
+
+            def require_alive(self) -> None:
+                if self.error is not None:
+                    raise self.error
+
+        with (
+            mock.patch.object(self.launcher, "_service_properties", return_value=failed),
+            mock.patch.object(
+                self.launcher,
+                "_ssh_try",
+                return_value=subprocess.CompletedProcess([], 1, b"", b"absent"),
+            ),
+            mock.patch.object(self.launcher.time, "sleep") as sleep,
+        ):
+            observed = self.launcher._wait_key_ready_diagnostic(
+                FakeQemu(), Path("client"), Path("known"), "unit",
+                timeout=90, clock=lambda: 0.0,
+            )
+        self.assertEqual(observed["terminal_reason"], "SERVICE_FAILED_PRE_KEY_READY")
+        self.assertEqual(observed["systemd_properties"], failed)
+        sleep.assert_not_called()
+
+        clock_values = iter((0.0, 0.0, 91.0))
+        with (
+            mock.patch.object(self.launcher, "_service_properties", return_value=active),
+            mock.patch.object(
+                self.launcher,
+                "_ssh_try",
+                return_value=subprocess.CompletedProcess([], 1, b"", b"absent"),
+            ),
+            mock.patch.object(self.launcher.time, "sleep") as sleep,
+        ):
+            observed = self.launcher._wait_key_ready_diagnostic(
+                FakeQemu(), Path("client"), Path("known"), "unit",
+                timeout=90, clock=lambda: next(clock_values),
+            )
+        self.assertEqual(observed["terminal_reason"], "KEY_READY_TIMEOUT")
+        self.assertEqual(observed["systemd_properties"], active)
+        sleep.assert_called_once_with(0.5)
+
+        with mock.patch.object(self.launcher, "_service_properties") as properties:
+            observed = self.launcher._wait_key_ready_diagnostic(
+                FakeQemu(self.launcher.QualificationStop("QEMU_EXITED_EARLY")),
+                Path("client"), Path("known"), "unit", timeout=90, clock=lambda: 0.0,
+            )
+        self.assertEqual(observed["terminal_reason"], "QEMU_EXITED")
+        self.assertEqual(observed["qemu_return_code"], 17)
+        properties.assert_not_called()
+
+        with (
+            mock.patch.object(self.launcher, "_service_properties", return_value=active),
+            mock.patch.object(
+                self.launcher,
+                "_ssh_try",
+                return_value=subprocess.CompletedProcess([], 0, self.launcher._canonical(ready), b""),
+            ),
+            mock.patch.object(self.launcher.time, "sleep") as sleep,
+        ):
+            observed = self.launcher._wait_key_ready_diagnostic(
+                FakeQemu(), Path("client"), Path("known"), "unit",
+                timeout=90, clock=lambda: 0.0,
+            )
+        self.assertEqual(observed["terminal_reason"], "KEY_READY_REACHED")
+        self.assertEqual(observed["key_ready"], ready)
+        sleep.assert_not_called()
+
+    def test_systemd_properties_are_fetched_in_one_closed_query(self) -> None:
+        raw = b"\n".join(
+            f"{name}=value-{index}".encode("ascii")
+            for index, name in enumerate(self.launcher._SERVICE_PROPERTIES)
+        ) + b"\n"
+        with mock.patch.object(self.launcher, "_ssh", return_value=raw) as ssh:
+            value = self.launcher._service_properties(Path("client"), Path("known"), "unit")
+        self.assertEqual(frozenset(value), frozenset(self.launcher._SERVICE_PROPERTIES))
+        command = ssh.call_args.args[2]
+        self.assertEqual(command.count("--property"), 5)
+        self.assertEqual(ssh.call_count, 1)
+        with mock.patch.object(self.launcher, "_ssh", return_value=b"ActiveState=failed\n"):
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop, "SYSTEMD_PROPERTIES_MALFORMED"
+            ):
+                self.launcher._service_properties(Path("client"), Path("known"), "unit")
+
+    def test_diagnostic_bundle_is_closed_bounded_and_secret_free(self) -> None:
+        digest = "sha256:" + "a" * 64
+        record = {
+            "diagnostic_version": "1.0.0",
+            "claim": "M4_KEY_READY_PRE_ADMISSION_DIAGNOSTIC_ONLY",
+            "status": "NOT_ATTESTED",
+            "candidate": "b" * 40,
+            "tree": "c" * 40,
+            "environment": digest,
+            "user_scope_reference": str(self.goal),
+            "user_goal_digest": digest,
+            "predecessor_qualification_ledger_digest": digest,
+            "diagnostic_start_digest": digest,
+            "attempt": 1,
+            "boot_id": "12345678-1234-1234-1234-123456789abc",
+            "terminal_reason": "SERVICE_FAILED_PRE_KEY_READY",
+            "systemd_properties": {
+                "ActiveState": "failed", "SubState": "failed", "Result": "exit-code",
+                "ExecMainCode": "1", "ExecMainStatus": "2",
+            },
+            "unit_journal": ["normal line", "-----BEGIN PRIVATE KEY----- secret"],
+            "kernel_events": ["apparmor=DENIED profile=harness-m4-lx-a.publisher"],
+            "stage_markers": [
+                {"record_type": "M4_PRE_KEY_STAGE", "stage": "SERVICE_ENTERED", "non_authorizing": True}
+            ],
+            "artifact_digests": {"runner": digest, "service": digest, "profile": digest},
+            "qemu_phase_outcomes": {
+                phase: {
+                    "argv_digest": self.launcher._digest_bytes(
+                        self.launcher._canonical(
+                            self.launcher._qemu_argv(
+                                1, phase, lab=self.launcher.DIAGNOSTIC_LAB
+                            )
+                        )
+                    ),
+                    "return_code": 0 if phase == "provision" else 1,
+                }
+                for phase in ("provision", "run")
+            },
+        }
+        sanitized = self.launcher._sanitize_diagnostic_record(record)
+        bundle = self.launcher._materialize_diagnostic_bundle(self.root / "diagnostic", sanitized)
+        raw = bundle.read_bytes()
+        self.assertNotIn(b"PRIVATE KEY", raw)
+        self.assertNotIn(b"secret", raw.lower())
+        self.assertEqual(self.launcher._read_diagnostic_bundle(bundle), sanitized)
+        self.assertEqual(oct(os.stat(bundle).st_mode & 0o777), "0o444")
+
+        malformed = self.root / "malformed.json"
+        malformed.write_bytes(b"{")
+        os.chmod(malformed, 0o444)
+        with self.assertRaises(self.launcher.QualificationStop):
+            self.launcher._read_diagnostic_bundle(malformed)
+        oversized = self.root / "oversized.json"
+        oversized.write_bytes(b"x" * ((1 << 20) + 1))
+        os.chmod(oversized, 0o444)
+        with self.assertRaises(self.launcher.QualificationStop):
+            self.launcher._read_diagnostic_bundle(oversized)
+        linked = self.root / "linked.json"
+        linked.symlink_to(bundle)
+        with self.assertRaises(self.launcher.QualificationStop):
+            self.launcher._read_diagnostic_bundle(linked)
+
+    def test_diagnostic_cleanup_removes_all_disposable_inputs_but_preserves_bundle(self) -> None:
+        lab = self.root / "diagnostic-lab"
+        runs = lab / "runs"
+        runs.mkdir(parents=True)
+        attempt_root = runs / "attempt-1"
+        attempt_root.mkdir(mode=0o700)
+        for name in self.launcher._DIAGNOSTIC_DISPOSABLE_NAMES:
+            (attempt_root / name).write_bytes(b"disposable")
+        preserved = lab / "diagnostics" / "attempt-1" / "diagnostic.json"
+        preserved.parent.mkdir(parents=True)
+        preserved.write_bytes(b"preserved")
+        removed = self.launcher._cleanup_diagnostic_attempt(attempt_root, lab=lab)
+        self.assertEqual(set(removed), set(self.launcher._DIAGNOSTIC_DISPOSABLE_NAMES))
+        self.assertFalse(attempt_root.exists())
+        self.assertEqual(preserved.read_bytes(), b"preserved")
+
+        outside = self.root / "outside"
+        outside.write_bytes(b"keep")
+        attempt_root.mkdir(mode=0o700)
+        (attempt_root / self.launcher._DIAGNOSTIC_DISPOSABLE_NAMES[0]).symlink_to(outside)
+        with self.assertRaisesRegex(self.launcher.QualificationStop, "CLEANUP_TARGET_MISMATCH"):
+            self.launcher._cleanup_diagnostic_attempt(attempt_root, lab=lab)
+        self.assertEqual(outside.read_bytes(), b"keep")
+
+    def test_diagnostic_collection_is_unit_scoped_bounded_and_extracts_only_stage_markers(self) -> None:
+        unit = "harness-m4-controller@run.service"
+
+        class FakeQemu:
+            def require_alive(self) -> None:
+                return None
+
+        service = b"\n".join(
+            (
+                self.launcher._canonical(
+                    {
+                        "record_type": "M4_PRE_KEY_STAGE",
+                        "stage": "SERVICE_ENTERED",
+                        "non_authorizing": True,
+                    }
+                ),
+                b"Traceback: apparmor_parser failed",
+            )
+        )
+        kernel = b"ordinary kernel line\napparmor=DENIED profile=harness\nOOM killed process\n"
+        with mock.patch.object(
+            self.launcher, "_ssh", side_effect=(service, kernel)
+        ) as ssh:
+            unit_lines, kernel_lines, markers = self.launcher._collect_pre_key_diagnostics(
+                FakeQemu(), Path("client"), Path("known"), unit
+            )
+        self.assertEqual(len(ssh.call_args_list), 2)
+        self.assertIn("--unit", ssh.call_args_list[0].args[2])
+        self.assertIn(unit, ssh.call_args_list[0].args[2])
+        self.assertIn("--lines=512", ssh.call_args_list[0].args[2])
+        self.assertEqual(ssh.call_args_list[0].kwargs["maximum"], 1 << 20)
+        self.assertIn("Traceback: apparmor_parser failed", unit_lines)
+        self.assertEqual(kernel_lines, ["apparmor=DENIED profile=harness", "OOM killed process"])
+        self.assertEqual([item["stage"] for item in markers], ["SERVICE_ENTERED"])
+
+    def test_diagnostic_mode_has_only_provision_run_and_never_admits_or_recovers(self) -> None:
+        lifecycle = self.launcher._qemu_lifecycle(
+            1,
+            lab=self.root / "diagnostic-lab",
+            phases=("provision", "run"),
+        )
+        self.assertEqual(frozenset(lifecycle), {"provision", "run"})
+        self.assertIn("restrict=off", " ".join(lifecycle["provision"]))
+        self.assertIn("restrict=on", " ".join(lifecycle["run"]))
+        source = inspect.getsource(self.launcher._key_ready_diagnostic)
+        self.assertIn("_provision_vm", source)
+        self.assertIn("_run_diagnostic_vm_phase", source)
+        self.assertNotIn(".admit(", source)
+        self.assertNotIn("key-admission.json", source)
+        self.assertNotIn('"recover"', source)
 
 
 if __name__ == "__main__":
