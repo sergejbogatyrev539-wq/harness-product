@@ -290,14 +290,14 @@ def make_candidate(reference, manifest: dict, policy: dict, isolation: dict) -> 
     descriptor_binding_digest = reference.canonical_digest({"descriptor_id": target["descriptor_id"], "root_identity": target["root_identity"], "mount_identity": target["mount_identity"], "epoch": target["resolution_epoch"]})
     selector = {"kind": "PATH_DESCRIPTOR", "descriptor_id": target["descriptor_id"], "canonical_path": target["canonical_path"], "resolution": "DESCRIPTOR_PROVEN_BENEATH_NO_MAGICLINKS", "descriptor_binding_digest": descriptor_binding_digest, "physical_target_digest": target["composite_binding_digest"]}
     candidate = {
-        "schema_version": "1.0.0", "request_id": "request:write-report", "request_digest": digest("a"), "evaluated_at": "2026-08-24T00:00:05Z", "principal": "broker:pep", "audience": "executor:workspace", "purpose": "TASK", "operation_id": "write-file",
+        "schema_version": "2.0.0", "request_id": "request:write-report", "request_digest": digest("a"), "evaluated_at": "2026-08-24T00:00:05Z", "principal": "broker:pep", "audience": "executor:workspace", "purpose": "TASK", "operation_id": "write-file",
         "bindings": {"manifest_digest": reference.canonical_digest(manifest), "policy_digest": policy["policy_digest"], "contract_id": "contract:write", "contract_digest": digest("d"), "registry_digest": policy["registry_snapshot"]["digest"], "isolation_profile_digest": isolation["profile_digest"], "placement_attestation_digest": placement["attestation_digest"], "session_attestation_digest": session["attestation_digest"], "broker_ipc_attestation_digest": ipc["attestation_digest"], "broker_ipc_binding_digest": ipc["broker_ipc_binding_digest"], "resource_vector_digest": reference.canonical_digest(isolation["resources"]), "supply_chain_measurement_digest": supply_digest},
         "authority_alternatives": [
             {"alternative_id": "alt:write", "entries": [{"entry_id": "auth:create", "effect": "MUTATE", "resource_kind": "FILE", "operation": "CREATE", "selector": deepcopy(selector), "facets": ["EXECUTE_EFFECT"], "constraints": authority_constraints()}, {"entry_id": "auth:write", "effect": "MUTATE", "resource_kind": "FILE", "operation": "WRITE", "selector": deepcopy(selector), "facets": ["EXECUTE_EFFECT"], "constraints": authority_constraints()}]},
             {"alternative_id": "alt:other", "entries": [{"entry_id": "auth:other-create", "effect": "MUTATE", "resource_kind": "FILE", "operation": "CREATE", "selector": {**deepcopy(selector), "descriptor_id": "fd:output2", "canonical_path": "/workspace/output/other.txt"}, "facets": ["EXECUTE_EFFECT"], "constraints": authority_constraints()}, {"entry_id": "auth:other", "effect": "MUTATE", "resource_kind": "FILE", "operation": "WRITE", "selector": {**deepcopy(selector), "descriptor_id": "fd:output2", "canonical_path": "/workspace/output/other.txt"}, "facets": ["EXECUTE_EFFECT"], "constraints": authority_constraints()}]},
         ],
         "selected_alternative_id": "alt:write", "budget_demands": [{"name": "CALLS", "unit": "CALLS", "amount": 1, "scope_digest": digest("1"), "lineage_root": "lineage:root"}, {"name": "WRITE_BYTES", "unit": "BYTES", "amount": 1024, "scope_digest": digest("2"), "lineage_root": "lineage:root"}], "iteration": 1,
-        "d2_frontier": {"definition_status": "PROVISIONAL_OPERATIONAL", "contract_digest": digest("d"), "contract_version": "1.0.0", "authority_domain_id": "authority-domain:workspace", "journal_lineage_id": "journal:contract.write", "root_contract_digest": digest("d"), "parent_contract_digest": None, "journal_sequence": 0, "fencing_epoch": 3, "frontier_record_digest": digest("0"), "joined_iteration": 0, "max_iteration": 4, "durable_state_digest": reference.canonical_digest([{"artifact_id": "artifact:iteration1", "class": "PLAN", "iteration": 1, "controller_visible": True, "persisted": False, "staged": False, "tool_bound": False, "budgeted": False, "reusable": False}]), "inventory": [{"artifact_id": "artifact:iteration1", "class": "PLAN", "iteration": 1, "controller_visible": True, "persisted": False, "staged": False, "tool_bound": False, "budgeted": False, "reusable": False}]},
+        "d2_frontier": {"definition_status": "PROVISIONAL_OPERATIONAL", "contract_digest": digest("d"), "contract_version": "2.0.0", "authority_domain_id": "authority-domain:workspace", "journal_lineage_id": "journal:contract.write", "root_contract_digest": digest("d"), "parent_contract_digest": None, "journal_sequence": 0, "fencing_epoch": 3, "frontier_record_digest": digest("0"), "attempt_cursor": 0, "joined_iteration": 0, "iteration": 1, "max_iteration": 4, "durable_state_digest": reference.canonical_digest([{"artifact_id": "artifact:iteration1", "class": "PLAN", "iteration": 1, "controller_visible": True, "persisted": False, "staged": False, "tool_bound": False, "budgeted": False, "reusable": False}]), "inventory": [{"artifact_id": "artifact:iteration1", "class": "PLAN", "iteration": 1, "controller_visible": True, "persisted": False, "staged": False, "tool_bound": False, "budgeted": False, "reusable": False}]},
         "placement_attestation": placement, "session_attestation": session, "broker_ipc_attestation": ipc,
         "supply_chain": {"composite_measurement_digest": supply_digest, "components": components, "trusted_roots_digest": trusted_roots_digest, "required_revocation_epoch": 3, "required_rollback_floor": 7, "verified_at": "2026-08-24T00:00:04Z"}, "approval_receipt": None,
     }
@@ -316,12 +316,12 @@ def make_loop_contract(reference, candidate: dict, manifest: dict, policy: dict,
     scope_kind = "ENDPOINT" if selector.get("canonical_endpoint") else "PATH"
     effects = sorted({entry["effect"] for entry in candidate["authority_alternatives"][0]["entries"]})
     contract = {
-        "schema_version": "1.0.0", "contract_id": "contract:write", "contract_version": 1, "contract_digest": digest("0"), "status": "ACTIVE", "principal": candidate["principal"], "audience": candidate["audience"],
+        "schema_version": "2.0.0", "contract_id": "contract:write", "contract_version": 2, "contract_digest": digest("0"), "status": "ACTIVE", "principal": candidate["principal"], "audience": candidate["audience"],
         "authority_domain": {"domain_id": candidate["d2_frontier"]["authority_domain_id"], "definition_status": "PROVISIONAL", "journal_lineage_id": candidate["d2_frontier"]["journal_lineage_id"]},
         "allowed_effects": effects, "allowed_operations": [{"operation_id": candidate["operation_id"], "manifest_digest": candidate["bindings"]["manifest_digest"], "effects": effects, "scopes": [{"kind": scope_kind, "values": [scope_value]}], "approval_class": "NONE"}],
         "aggregate_budgets": [{"name": item["name"], "unit": item["unit"], "limit": item["amount"], "scope": "CONTRACT", "reset": "NEVER", "scope_digest": item["scope_digest"], "lineage_root": item["lineage_root"]} for item in candidate["budget_demands"]],
         "iteration_bound": {"max_iterations": 4, "counter_source": "CANONICAL_DURABLE_JOURNAL", "monotonic": True, "durable": True, "reset_on_restart": False, "reset_on_retry": False, "reset_on_nested_contract": False},
-        "d2": {"definition_status": "PROVISIONAL", "operational_bound": "NO_CONTROLLER_VISIBLE_PERSISTED_STAGED_TOOL_BOUND_BUDGETED_REUSABLE_N_PLUS_2_BEFORE_JOIN_N_PLUS_1", "private_ephemeral_tokens_excluded": True},
+        "d2": {"definition_status": "PROVISIONAL", "operational_bound": "NO_CONTROLLER_VISIBLE_PERSISTED_STAGED_TOOL_BOUND_BUDGETED_REUSABLE_BEYOND_ATTEMPT_CURSOR_PLUS_ONE", "private_ephemeral_tokens_excluded": True},
         "artifact_bindings": {"policy_digest": candidate["bindings"]["policy_digest"], "registry_digest": candidate["bindings"]["registry_digest"], "isolation_profile_digest": candidate["bindings"]["isolation_profile_digest"], "prompt_digest": digest("1"), "context_digest": digest("2"), "model_digest": digest("3"), "toolset_digest": digest("4")},
         "postcheck": {"required_each_iteration": True, "plan_digest": digest("5"), "independent_observer": True, "failure_result": "STOPPED_NEW_TRANSACTION_REQUIRED"},
         "human_confirmation": {"mode": "NOT_REQUIRED", "receipt_digest": None, "machine_join_each_iteration": True, "may_expand_physical_ceiling": False},
@@ -413,7 +413,56 @@ def check_canonical_chain(reference) -> tuple[dict, dict, dict, dict, dict, dict
     assertion("T-Q84-ITERATION-SLOT-CONFLICT", reference.decide(contender, manifest, policy, isolation, facts)["reason_codes"] == ["LOOP_CONTRACT_TRUST_INVALID"])
     assertion("T-Q86-FULL-CONTRACT-POSITIVE", schema_valid("loop-contract.schema.json", contract) and reference.validate_loop_contract(contract, facts))
     success_target = deepcopy(contract); success_target["iteration_bound"]["success_target"] = 8; success_target["contract_digest"] = reference.canonical_digest({key: value for key, value in success_target.items() if key != "contract_digest"})
-    assertion("T-LOOP-SUCCESS-TARGET-NONAUTHORIZING", not schema_valid("loop-contract.schema.json", success_target) and not reference.validate_loop_contract(success_target, facts))
+    success_facts = deepcopy(facts)
+    success_facts["verified_loop_contracts"] = {
+        success_target["contract_digest"]: {
+            "contract": deepcopy(success_target),
+            "signature_verified": True,
+            "not_revoked": True,
+            "freshness_verified": True,
+            "current_key": True,
+            "current_revocation_epoch": success_facts["current_revocation_epoch"],
+        }
+    }
+    assertion(
+        "T-LOOP-SUCCESS-TARGET-NONAUTHORIZING",
+        schema_valid("loop-contract.schema.json", success_target)
+        and reference.validate_loop_contract(success_target, success_facts)
+        and success_target["iteration_bound"]["max_iterations"]
+        == contract["iteration_bound"]["max_iterations"],
+    )
+    next_attempt = deepcopy(candidate)
+    next_attempt["iteration"] = 2
+    next_frontier = next_attempt["d2_frontier"]
+    next_artifact = deepcopy(next_frontier["inventory"][0])
+    next_artifact.update(artifact_id="artifact:iteration2", iteration=2)
+    next_frontier.update(attempt_cursor=1, joined_iteration=0, iteration=2)
+    next_frontier["inventory"].append(next_artifact)
+    next_frontier["durable_state_digest"] = canonical_digest_for_test(
+        next_frontier["inventory"]
+    )
+    next_frontier["frontier_record_digest"] = canonical_digest_for_test(
+        {
+            key: value
+            for key, value in next_frontier.items()
+            if key != "frontier_record_digest"
+        }
+    )
+    next_facts = deepcopy(facts)
+    next_facts["d2_frontier_digest"] = next_frontier["frontier_record_digest"]
+    next_facts["authoritative_d2_frontier"] = {
+        **deepcopy(next_frontier),
+        "signature_verified": True,
+        "not_revoked": True,
+        "freshness_verified": True,
+        "verified_by": "verifier:d2-frontier",
+    }
+    assertion(
+        "T-ATTEMPT-CURSOR-DISCARDED-NEXT-FRONTIER",
+        next_frontier["attempt_cursor"] == 1
+        and next_frontier["joined_iteration"] == 0
+        and reference.validate_d2_frontier(next_attempt, next_facts),
+    )
     retry_reset = deepcopy(contract); retry_reset["iteration_bound"]["reset_on_retry"] = True; retry_reset["contract_digest"] = reference.canonical_digest({key: value for key, value in retry_reset.items() if key != "contract_digest"})
     assertion("T-LOOP-RETRY-COUNTS-AS-ATTEMPT", not schema_valid("loop-contract.schema.json", retry_reset) and not reference.validate_loop_contract(retry_reset, facts))
     raised_attempts = deepcopy(contract); raised_attempts["iteration_bound"]["max_iterations"] += 1; raised_attempts["contract_digest"] = reference.canonical_digest({key: value for key, value in raised_attempts.items() if key != "contract_digest"})
@@ -773,7 +822,7 @@ def advance(reference, branch: str, decision: dict, capability: dict, events: li
     broker_ipc_record = {"attestation": broker_ipc, "current_fencing_epoch": broker_ipc["session_fencing_epoch"], "current_revocation_epoch": broker_ipc["revocation_epoch"], **ipc_verifier_record(broker_ipc)}
     store = {"trusted_time": capability["issued_at"], "capabilities": {capability["capability_id"]: deepcopy(capability_record)}, "dispatch": {capability["capability_digest"]: dispatch_record}, "broker_ipc_attestations": {broker_ipc["attestation_digest"]: broker_ipc_record}, "verified_filesystem_targets": verified_filesystem_targets, "verified_endpoint_bindings": verified_endpoint_bindings, "delegations": delegation_records, "parent_capabilities": parent_capabilities, "parent_statuses": parent_statuses, "parent_status_verifiers": parent_status_verifiers, "current_parent_fencing_epochs": current_parent_fencing_epochs, "current_parent_revocation_epochs": current_parent_revocation_epochs, "iteration_slot_verifications": runtime_iteration_slot_verifications(capability, decision), "d2_frontier_verifications": runtime_d2_verifications(capability, decision), "d2_frontier_verifiers": {"verifier:d2-frontier": {"verified_by": "verifier:d2-frontier", "verifier_key_id": "key:d2-frontier", "verifier_trust_root": "trust:root", "verifier_algorithm": "ED25519", "signature_verified": True, "not_revoked": True, "current_key": True}}, "reconciliation": reconciliation, "reconciliation_verifiers": reconciliation_verifiers, "compensation_authorizations": compensation_authorizations, "compensation_authorization_verifiers": compensation_authorization_verifiers, "stage_evidence": stage_evidence, "commit": {"commit:one": commit}, "join": {"join:one": join}}
     state = reference.initial_state(branch, trusted_store=store, budget_vector=budget_vector or decision["reservations"])
-    state.update(journal_sequence=frontier_record["journal_sequence"], fencing_epoch=frontier_record["fencing_epoch"], joined_iteration=frontier_record["joined_iteration"])
+    state.update(journal_sequence=frontier_record["journal_sequence"], fencing_epoch=frontier_record["fencing_epoch"], attempt_cursor=frontier_record["attempt_cursor"], joined_iteration=frontier_record["joined_iteration"])
     records = []
     for kind in events:
         result = reference.reduce_transition(state, event_for(kind, decision, capability))
@@ -822,7 +871,7 @@ def check_budget_and_lifecycle(reference, candidate, manifest, policy, isolation
     denied = reference.decide(candidate, manifest, duplicate_bound, isolation, facts)
     assertion("T-BUDGET-DUPLICATE-BOUND-REJECTED", denied["decision"] == "DENY")
     state = reference.initial_state("STAGEABLE", trusted_store={"iteration_slot_verifications": runtime_iteration_slot_verifications(capability, decision), "d2_frontier_verifications": runtime_d2_verifications(capability, decision), "d2_frontier_verifiers": {"verifier:d2-frontier": {"verified_by": "verifier:d2-frontier", "verifier_key_id": "key:d2-frontier", "verifier_trust_root": "trust:root", "verifier_algorithm": "ED25519", "signature_verified": True, "not_revoked": True, "current_key": True}}, "trusted_time": capability["issued_at"]}, budget_vector=decision["reservations"])
-    state.update(journal_sequence=decision["evaluation"]["d2_frontier_record"]["journal_sequence"], fencing_epoch=decision["evaluation"]["d2_frontier_record"]["fencing_epoch"], joined_iteration=decision["evaluation"]["d2_frontier_record"]["joined_iteration"])
+    state.update(journal_sequence=decision["evaluation"]["d2_frontier_record"]["journal_sequence"], fencing_epoch=decision["evaluation"]["d2_frontier_record"]["fencing_epoch"], attempt_cursor=decision["evaluation"]["d2_frontier_record"]["attempt_cursor"], joined_iteration=decision["evaluation"]["d2_frontier_record"]["joined_iteration"])
     for kind in ("PROPOSE", "NORMALIZE", "CLASSIFY"):
         state = reference.reduce_transition(state, event_for(kind, decision, capability))["state"]
     assertion("T-ADMIT-NULL-DECISION", not reference.reduce_transition(state, {"type": "ADMIT", "decision": None})["accepted"])
@@ -834,6 +883,62 @@ def check_budget_and_lifecycle(reference, candidate, manifest, policy, isolation
     lifecycle_limits = [{**deepcopy(item), "amount": item["amount"] * 2} for item in decision["reservations"]]
     stopped, records = advance(reference, "STAGEABLE", decision, capability, full_events, budget_vector=lifecycle_limits)
     assertion("T-CAPABILITY-DURABLE-CONSUME", capability["capability_digest"] in stopped["consumed_capability_digests"] and len(records) == 1)
+    assertion(
+        "T-ATTEMPT-CURSOR-JOIN-ONLY-UPDATES-JOINED",
+        stopped["attempt_cursor"] == 1 and stopped["joined_iteration"] == 1,
+    )
+    sealed_for_discard, _ = advance(
+        reference,
+        "STAGEABLE",
+        decision,
+        capability,
+        [
+            "PROPOSE",
+            "NORMALIZE",
+            "CLASSIFY",
+            "ADMIT",
+            "CALCULATE_RESERVATION",
+            "ISSUE_CAPABILITY",
+            "DURABLE_DISPATCH",
+            "QUIESCE",
+            "SEAL",
+        ],
+        budget_vector=lifecycle_limits,
+    )
+    discarded_result = reference.reduce_transition(
+        sealed_for_discard,
+        {
+            "type": "POSTCHECK_FAIL",
+            "no_effect_proven": True,
+            "no_effect_proof": {
+                "verified_by": "observer:runtime",
+                "signature_verified": True,
+                "payload_digest": digest("a"),
+                "observed_effects": [],
+                "observed_effects_digest": canonical_digest_for_test([]),
+            },
+        },
+    )
+    assertion(
+        "T-LTS-STEP-POSTCHECK_FAIL",
+        discarded_result["accepted"],
+        discarded_result["reason_code"],
+    )
+    discarded = discarded_result["state"]
+    assertion("T-BUDGET-CONSERVATION-POSTCHECK_FAIL", reference._conserved(discarded))
+    assertion(
+        "T-ATTEMPT-CURSOR-DISCARD-DOES-NOT-ROLL-BACK",
+        discarded["phase"] == "DISCARDED"
+        and discarded["attempt_cursor"] == 1
+        and discarded["joined_iteration"] == 0,
+    )
+    crashed_discard = reference.reduce_transition(discarded, {"type": "CRASH"})
+    assertion(
+        "T-ATTEMPT-CURSOR-CRASH-DOES-NOT-RESET",
+        crashed_discard["accepted"]
+        and crashed_discard["state"]["attempt_cursor"] == 1
+        and crashed_discard["state"]["joined_iteration"] == 0,
+    )
     conflicted_admission = deepcopy(state); slot_key = f"{capability['bindings']['iteration_slot_digest']}:{state['fencing_epoch']}"; conflicted_admission["trusted_store"]["iteration_slot_verifications"][slot_key]["owner_request_digest"] = digest("b")
     assertion("T-Q84-ADMIT-CONFLICTING-SLOT-OWNER", not reference.reduce_transition(conflicted_admission, event_for("ADMIT", decision, capability))["accepted"])
     issued, _ = advance(reference, "STAGEABLE", decision, capability, ["PROPOSE", "NORMALIZE", "CLASSIFY", "ADMIT", "CALCULATE_RESERVATION", "ISSUE_CAPABILITY"])
@@ -860,7 +965,27 @@ def check_budget_and_lifecycle(reference, candidate, manifest, policy, isolation
     mismatch_state, _ = advance(reference, "STAGEABLE", decision, capability, ["PROPOSE", "NORMALIZE", "CLASSIFY", "ADMIT", "CALCULATE_RESERVATION", "ISSUE_CAPABILITY"])
     bad_dispatch = event_for("DURABLE_DISPATCH", decision, capability); bad_dispatch["execution_binding"] = deepcopy(bad_dispatch["execution_binding"]); bad_dispatch["execution_binding"]["session_epoch"] += 1
     assertion("T-DISPATCH-PLACEMENT-SESSION-MISMATCH", not reference.reduce_transition(mismatch_state, bad_dispatch)["accepted"])
-    admitted_for_reservation = reference.reduce_transition(state, event_for("ADMIT", decision, capability))["state"]
+    cursor_pre_admit, _ = advance(
+        reference,
+        "STAGEABLE",
+        decision,
+        capability,
+        ["PROPOSE", "NORMALIZE", "CLASSIFY"],
+        budget_vector=lifecycle_limits,
+    )
+    admitted_result = reference.reduce_transition(
+        cursor_pre_admit, event_for("ADMIT", decision, capability)
+    )
+    assertion(
+        "T-ATTEMPT-CURSOR-ADMIT-ATOMIC-ADVANCE",
+        admitted_result["accepted"]
+        and admitted_result["state"]["attempt_cursor"] == 1
+        and admitted_result["state"]["joined_iteration"] == 0
+        and admitted_result["durable_record"]["attempt_cursor_before"] == 0
+        and admitted_result["durable_record"]["attempt_cursor_after"] == 1,
+        admitted_result["reason_code"],
+    )
+    admitted_for_reservation = admitted_result["state"]
     for name, mutate in (("DIMENSION_SWAP", lambda x: x["reservation_vector"].__setitem__(0, {**x["reservation_vector"][0], "unit": "BYTES"})), ("DUPLICATE", lambda x: x["reservation_vector"].append(deepcopy(x["reservation_vector"][0]))), ("SCOPE", lambda x: x["reservation_vector"].__setitem__(0, {**x["reservation_vector"][0], "scope_digest": digest("0")}))):
         bad = event_for("CALCULATE_RESERVATION", decision, capability); mutate(bad)
         assertion("T-RESERVATION-EXACT-" + name, not reference.reduce_transition(admitted_for_reservation, bad)["accepted"])
@@ -1019,7 +1144,7 @@ def check_authority_d2_path(reference, candidate, manifest, policy, isolation, f
         assertion("T-D2-ARTIFACT-" + artifact_class, result["reason_codes"] == ["D2_TYPED_FRONTIER_VIOLATION"]); count += 1
     mutated = deepcopy(candidate); artifact = deepcopy(mutated["d2_frontier"]["inventory"][0]); artifact.update({name: False for name in reference.D2_FLAGS}); artifact.update(iteration=2, artifact_id="artifact:future"); mutated["d2_frontier"]["inventory"].append(artifact)
     assertion("T-D2-CLASS-BASED-ALL-FLAGS-FALSE", reference.decide(mutated, manifest, policy, isolation, facts)["reason_codes"] == ["D2_TYPED_FRONTIER_VIOLATION"]); count += 1
-    mutated = deepcopy(candidate); mutated["iteration"] = 5; mutated["d2_frontier"]["joined_iteration"] = 4
+    mutated = deepcopy(candidate); mutated["iteration"] = 5; mutated["d2_frontier"].update(attempt_cursor=4, joined_iteration=4, iteration=5)
     assertion("T-D2-MAX-ITERATION", reference.decide(mutated, manifest, policy, isolation, facts)["reason_codes"] == ["D2_TYPED_FRONTIER_VIOLATION"]); count += 1
     mutated = deepcopy(candidate); mutated["d2_frontier"]["durable_state_digest"] = digest("0")
     assertion("T-D2-DURABLE-SNAPSHOT-BINDING", reference.decide(mutated, manifest, policy, isolation, facts)["reason_codes"] == ["D2_TYPED_FRONTIER_VIOLATION"]); count += 1
@@ -2318,6 +2443,46 @@ def check_round7a_remediation(reference, candidate, manifest, policy, isolation,
     stale_decision = deepcopy(decision); stale_frontier = stale_decision["evaluation"]["d2_frontier_record"]; stale_frontier["joined_iteration"] = 1; stale_frontier["frontier_record_digest"] = canonical_digest_for_test({key: value for key, value in stale_frontier.items() if key != "frontier_record_digest"}); stale_decision["evaluation"]["d2_frontier_digest"] = stale_frontier["frontier_record_digest"]; stale_decision["decision_digest"] = canonical_digest_for_test({key: value for key, value in stale_decision.items() if key != "decision_digest"})
     stale_event = event_for("ADMIT", decision, capability); stale_event["decision"] = stale_decision; stale_event["trusted_pep_verification"]["decision_digest"] = stale_decision["decision_digest"]; stale_event["trusted_pep_verification"]["receipt_digest"] = canonical_digest_for_test({key: value for key, value in stale_event["trusted_pep_verification"].items() if key != "receipt_digest"}); stale_state = deepcopy(pre_admit); stale_state["trusted_pep_receipts"] = {stale_event["trusted_pep_verification"]["receipt_digest"]: stale_event["trusted_pep_verification"]}
     assertion("T-Q92-ADMIT-STALE-JOINED-FRONTIER-REJECT", reference.reduce_transition(stale_state, stale_event)["reason_code"] == "ADMIT_D2_FRONTIER_REDUCER_STATE_MISMATCH")
+    for name, cursor, iteration in (
+        ("STALE", 1, 2),
+        ("GAP", 2, 3),
+    ):
+        cursor_decision = deepcopy(decision)
+        cursor_frontier = cursor_decision["evaluation"]["d2_frontier_record"]
+        cursor_frontier.update(attempt_cursor=cursor, iteration=iteration)
+        cursor_frontier["frontier_record_digest"] = canonical_digest_for_test(
+            {
+                key: value
+                for key, value in cursor_frontier.items()
+                if key != "frontier_record_digest"
+            }
+        )
+        cursor_decision["evaluation"]["d2_frontier_digest"] = cursor_frontier[
+            "frontier_record_digest"
+        ]
+        cursor_decision["decision_digest"] = canonical_digest_for_test(
+            {
+                key: value
+                for key, value in cursor_decision.items()
+                if key != "decision_digest"
+            }
+        )
+        cursor_event = event_for("ADMIT", cursor_decision, capability)
+        cursor_state = deepcopy(pre_admit)
+        cursor_state["trusted_pep_receipts"] = {
+            cursor_event["trusted_pep_verification"]["receipt_digest"]: cursor_event[
+                "trusted_pep_verification"
+            ]
+        }
+        cursor_result = reference.reduce_transition(cursor_state, cursor_event)
+        assertion(
+            "T-ATTEMPT-CURSOR-" + name + "-DENY-NO-MUTATION",
+            not cursor_result["accepted"]
+            and cursor_result["reason_code"]
+            == "ADMIT_D2_FRONTIER_REDUCER_STATE_MISMATCH"
+            and cursor_result["state"]["attempt_cursor"] == 0
+            and cursor_result["state"]["joined_iteration"] == 0,
+        )
     fence_decision = deepcopy(decision); fence_frontier = fence_decision["evaluation"]["d2_frontier_record"]; fence_frontier["fencing_epoch"] = 4; fence_frontier["frontier_record_digest"] = canonical_digest_for_test({key: value for key, value in fence_frontier.items() if key != "frontier_record_digest"}); fence_decision["evaluation"]["d2_frontier_digest"] = fence_frontier["frontier_record_digest"]; fence_decision["decision_digest"] = canonical_digest_for_test({key: value for key, value in fence_decision.items() if key != "decision_digest"})
     fence_event = event_for("ADMIT", decision, capability); fence_event["decision"] = fence_decision; fence_event["trusted_pep_verification"]["decision_digest"] = fence_decision["decision_digest"]; fence_event["trusted_pep_verification"]["receipt_digest"] = canonical_digest_for_test({key: value for key, value in fence_event["trusted_pep_verification"].items() if key != "receipt_digest"}); fence_state = deepcopy(pre_admit); fence_state["trusted_pep_receipts"] = {fence_event["trusted_pep_verification"]["receipt_digest"]: fence_event["trusted_pep_verification"]}
     assertion("T-Q92-ADMIT-EMBEDDED-FENCE-REJECT", reference.reduce_transition(fence_state, fence_event)["reason_code"] == "ADMIT_D2_FRONTIER_REDUCER_STATE_MISMATCH")

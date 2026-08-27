@@ -567,7 +567,7 @@ class DurableStoreIssueTests(unittest.TestCase):
             self.assertTrue(strict)
             self.assertTrue(all(strict.values()))
             version = connection.execute("SELECT schema_version FROM store_meta").fetchone()
-            self.assertEqual(version, (5,))
+            self.assertEqual(version, (6,))
 
         reopened = self.store()
         self.assert_result(reopened.health(), committed=False)
@@ -1778,10 +1778,10 @@ class DurableClaimDispatchTests(unittest.TestCase):
                     self.assertEqual(reopened.health().reason, DurableReason.READY)
                     self.assertEqual(reopened.recover().recovery_intents[0].state, "PENDING")
                     with sqlite3.connect(self.db_path) as connection:
-                        self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (5,))
+                        self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (6,))
                         self.assertEqual(
                             connection.execute("SELECT schema_version FROM store_meta").fetchone(),
-                            (5,),
+                            (6,),
                         )
 
 

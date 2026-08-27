@@ -25,7 +25,7 @@ class _Fault:
 
 def _contract(issue: dict[str, object]) -> dict[str, object]:
     body: dict[str, object] = {
-        "contract_version": "1.0.0",
+        "contract_version": "2.0.0",
         "authority_domain_id": "dev-stageable-local",
         "journal_lineage_id": "journal-lineage-1",
         "root_contract_digest": m2._digest("b"),
@@ -208,19 +208,23 @@ def _frontier(
     claimed: dict[str, object],
     row: object,
     *,
+    attempt_cursor: int | None = None,
     joined_iteration: int = 0,
     iteration: int = 1,
 ) -> dict[str, object]:
+    if attempt_cursor is None:
+        attempt_cursor = iteration - 1
     contract = claimed["contract"]
     frontier: dict[str, object] = {
-        "frontier_version": "1.0.0",
+        "frontier_version": "2.0.0",
         "contract_digest": contract["contract_digest"],
-        "contract_version": "1.0.0",
+        "contract_version": "2.0.0",
         "authority_domain_id": contract["authority_domain_id"],
         "journal_lineage_id": contract["journal_lineage_id"],
         "root_contract_digest": contract["root_contract_digest"],
         "parent_contract_digest": None,
         "journal_sequence": row("SELECT journal_head_sequence FROM store_meta")[0],
+        "attempt_cursor": attempt_cursor,
         "joined_iteration": joined_iteration,
         "iteration": iteration,
         "fencing_epoch": 11,
@@ -618,6 +622,12 @@ class M4DurableLifecycleTests(unittest.TestCase):
     def test_contract_and_d2_records_fail_closed_on_q40_q44_mutations(self) -> None:
         contract_cases = {
             "missing": lambda value: value.pop("external_branch"),
+            "old-contract-version": lambda value: value.update(
+                contract_version="1.0.0"
+            ),
+            "success-target-cannot-expand-authority": lambda value: value.update(
+                success_target=99
+            ),
             "external": lambda value: value.update(operation_kind="ENDPOINT", external_branch="ALLOW"),
             "stale": lambda value: value.update(expires_at="2026-08-25T12:00:00Z"),
             "T-Q44-CONTRACT-SUBSTITUTION": lambda value: value.update(
@@ -650,6 +660,13 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 self.assertEqual(self.row_at(path, "SELECT COUNT(*) FROM active_contracts"), (0,))
 
         frontier_cases = {
+            "old-frontier-version": lambda value: value.update(
+                frontier_version="1.0.0"
+            ),
+            "stale-attempt-cursor": lambda value: value.update(attempt_cursor=1),
+            "gap-attempt-cursor": lambda value: value.update(
+                attempt_cursor=2, iteration=3
+            ),
             "T-Q40-D2-EMPTY": lambda value: value.update(
                 inventory={key: [] for key in durable_module._D2_CLASSES}
             ),
@@ -687,6 +704,120 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 self.assertEqual(
                     self.row_at(path, "SELECT journal_head_sequence FROM store_meta"),
                     (before_sequence,),
+                )
+
+    def test_cursor_rollback_gap_and_transaction_alias_fail_without_mutation(self) -> None:
+        first = self.advance_through("SEALED")
+        self.assertTrue(self.advance(first, "DISCARDED").committed)
+        store = self.store()
+        transaction_id = "transaction-0002"
+        issue = m2._issue_raw(
+            nonce="nonce-cursor-mutation-0002",
+            idempotency_key_digest=m2._digest("b"),
+        )
+        issue["contract_digest"] = first["contract"]["contract_digest"]
+        issue["target_authority_digest"] = first["contract"][
+            "target_authority_digest"
+        ]
+        issued = store.issue(issue)
+        self.assertTrue(issued.committed)
+        payload = json.loads(
+            self.row(
+                "SELECT payload_json FROM capabilities WHERE capability_id=?",
+                (issued.capability_id,),
+            )[0]
+        )
+        self.assertTrue(
+            store.consume(
+                m2._consume_from_payload(
+                    issued.capability_id,
+                    payload,
+                    transaction_id=transaction_id,
+                )
+            ).committed
+        )
+        claimed = store.claim_dispatch(
+            {
+                "transaction_id": transaction_id,
+                "observed_at": "2026-08-25T12:02:00Z",
+                "executor_verification": m2._verification_source(),
+            }
+        )
+        self.assertTrue(claimed.committed)
+        intent_text, intent_digest, claim_digest = self.row(
+            "SELECT i.intent_json,i.intent_digest,c.claim_digest "
+            "FROM dispatch_intents AS i JOIN dispatch_attempt_claims AS c "
+            "USING (transaction_id) WHERE i.transaction_id=?",
+            (transaction_id,),
+        )
+        second = {
+            "contract": first["contract"],
+            "payload": payload,
+            "capability_id": issued.capability_id,
+            "claim_digest": claim_digest,
+            "intent": json.loads(intent_text),
+            "intent_digest": intent_digest,
+        }
+        before = (
+            self.row(
+                "SELECT attempt_cursor,joined_iteration FROM active_contracts"
+            ),
+            self.row("SELECT COUNT(*) FROM d2_frontiers"),
+            self.row("SELECT journal_head_sequence FROM store_meta"),
+        )
+        cases = {
+            "rollback": (
+                transaction_id,
+                _frontier(
+                    second,
+                    self.row,
+                    attempt_cursor=0,
+                    joined_iteration=0,
+                    iteration=1,
+                ),
+            ),
+            "gap": (
+                transaction_id,
+                _frontier(
+                    second,
+                    self.row,
+                    attempt_cursor=2,
+                    joined_iteration=0,
+                    iteration=3,
+                ),
+            ),
+            "alias": (
+                "transaction-0001",
+                _frontier(
+                    second,
+                    self.row,
+                    attempt_cursor=1,
+                    joined_iteration=0,
+                    iteration=2,
+                ),
+            ),
+        }
+        for name, (raw_transaction_id, frontier) in cases.items():
+            with self.subTest(name=name):
+                denied = store.bind_m4_frontier(
+                    {
+                        "transaction_id": raw_transaction_id,
+                        "observed_at": "2026-08-25T12:02:01Z",
+                        "frontier": frontier,
+                        "frontier_verification": m2._verification_source(),
+                    }
+                )
+                self.assertIn(denied.outcome, {DurableOutcome.DENY, DurableOutcome.STOP})
+                self.assertEqual(
+                    (
+                        self.row(
+                            "SELECT attempt_cursor,joined_iteration "
+                            "FROM active_contracts"
+                        ),
+                        self.row("SELECT COUNT(*) FROM d2_frontiers"),
+                        self.row("SELECT journal_head_sequence FROM store_meta"),
+                    ),
+                    before,
                 )
 
     def test_same_object_writer_observer_and_typed_chain_mutations_are_denied(self) -> None:
@@ -1249,6 +1380,86 @@ class M4DurableLifecycleTests(unittest.TestCase):
                             (9, 0, 1),
                         )
 
+    def test_frontier_cursor_is_atomic_and_lost_ack_never_double_counts(self) -> None:
+        for boundary in (
+            "m4_frontier_after_event",
+            "m4_frontier_after_commit_before_ack",
+        ):
+            with self.subTest(boundary=boundary):
+                path, normal = self.store_at("cursor-" + boundary)
+                fetch = lambda statement: self.row_at(path, statement)
+                claimed = _claimed_chain(normal, fetch)
+                frontier = _frontier(claimed, fetch)
+                before = self.row_at(
+                    path,
+                    "SELECT attempt_cursor,joined_iteration,journal_head_sequence "
+                    "FROM active_contracts JOIN store_meta ON store_meta.id=1",
+                )
+                _, faulted = self.store_at(
+                    "cursor-" + boundary,
+                    fault=_Fault(boundary),
+                )
+                result = faulted.bind_m4_frontier(
+                    {
+                        "transaction_id": "transaction-0001",
+                        "observed_at": "2026-08-25T12:02:01Z",
+                        "frontier": frontier,
+                        "frontier_verification": m2._verification_source(),
+                    }
+                )
+                self.assertEqual(result.outcome, DurableOutcome.STOP)
+                reopened = DurableStore(
+                    str(path),
+                    m2.ExactVerifier(),
+                    executor_claim_verifier=m2.ExactVerifier(),
+                    m4_verifier=m2.ExactVerifier(),
+                )
+                self.assertEqual(reopened.health().reason, DurableReason.READY)
+                if boundary == "m4_frontier_after_event":
+                    self.assertEqual(
+                        self.row_at(
+                            path,
+                            "SELECT attempt_cursor,joined_iteration,journal_head_sequence "
+                            "FROM active_contracts JOIN store_meta ON store_meta.id=1",
+                        ),
+                        before,
+                    )
+                    self.assertEqual(
+                        self.row_at(path, "SELECT COUNT(*) FROM d2_frontiers"),
+                        (0,),
+                    )
+                else:
+                    self.assertEqual(
+                        self.row_at(
+                            path,
+                            "SELECT attempt_cursor,joined_iteration FROM active_contracts",
+                        ),
+                        (1, 0),
+                    )
+                    self.assertEqual(
+                        self.row_at(path, "SELECT COUNT(*) FROM d2_frontiers"),
+                        (1,),
+                    )
+                    replay = reopened.bind_m4_frontier(
+                        {
+                            "transaction_id": "transaction-0001",
+                            "observed_at": "2026-08-25T12:02:01Z",
+                            "frontier": frontier,
+                            "frontier_verification": m2._verification_source(),
+                        }
+                    )
+                    self.assertEqual(
+                        (replay.outcome, replay.reason),
+                        (DurableOutcome.DENY, DurableReason.REPLAY),
+                    )
+                    self.assertEqual(
+                        self.row_at(
+                            path,
+                            "SELECT attempt_cursor,joined_iteration FROM active_contracts",
+                        ),
+                        (1, 0),
+                    )
+
     def test_dispatch_fault_and_stage_crash_quarantine_without_retry(self) -> None:
         for boundary in ("m4_begin_after_event", "m4_begin_after_commit_before_ack"):
             with self.subTest(boundary=boundary):
@@ -1425,8 +1636,19 @@ class M4DurableLifecycleTests(unittest.TestCase):
             (discarded.outcome, discarded.m4_state),
             (DurableOutcome.COMMITTED, "DISCARDED"),
         )
-        self.assertEqual(self.row("SELECT joined_iteration FROM active_contracts"), (0,))
-        self.assertEqual(self.row("SELECT iteration FROM d2_frontiers"), (1,))
+        self.assertEqual(
+            self.row(
+                "SELECT attempt_cursor,joined_iteration FROM active_contracts"
+            ),
+            (1, 0),
+        )
+        self.assertEqual(
+            self.row(
+                "SELECT attempt_cursor,iteration,joined_iteration "
+                "FROM d2_frontiers"
+            ),
+            (0, 1, 0),
+        )
 
         store = self.store()
         transaction_id = "transaction-0002"
@@ -1522,7 +1744,12 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 (advanced.outcome, advanced.m4_state),
                 (DurableOutcome.COMMITTED, state),
             )
-        self.assertEqual(self.row("SELECT joined_iteration FROM active_contracts"), (2,))
+        self.assertEqual(
+            self.row(
+                "SELECT attempt_cursor,joined_iteration FROM active_contracts"
+            ),
+            (2, 2),
+        )
         self.assertEqual(
             self.row("SELECT group_concat(iteration, ',') FROM d2_frontiers"),
             ("1,2",),
@@ -1554,7 +1781,13 @@ class M4DurableLifecycleTests(unittest.TestCase):
             self.row("SELECT journal_head_sequence FROM store_meta"),
         )
         self.assertEqual(after_third, before_third)
-        self.assertEqual(self.row("SELECT max_iterations FROM active_contracts"), (2,))
+        self.assertEqual(
+            self.row(
+                "SELECT max_iterations,attempt_cursor,joined_iteration "
+                "FROM active_contracts"
+            ),
+            (2, 2, 2),
+        )
 
     def test_unfinished_attempt_blocks_next_capability_across_reopen(self) -> None:
         first = self.chain()
@@ -1585,7 +1818,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(after, before)
 
-    def test_nonempty_valid_v4_m4_state_refuses_partial_v5_migration(self) -> None:
+    def test_nonempty_valid_v5_m4_state_refuses_partial_v6_migration(self) -> None:
         self.chain()
         table_order = (
             "active_contracts",
@@ -1595,48 +1828,52 @@ class M4DurableLifecycleTests(unittest.TestCase):
         )
         with sqlite3.connect(self.path) as connection:
             connection.row_factory = sqlite3.Row
+            source_rows = {
+                table: [dict(row) for row in connection.execute(f"SELECT * FROM {table}")]
+                for table in table_order
+            }
+            for table in reversed(table_order):
+                connection.execute(f"DROP TABLE {table}")
+            for statement in durable_module._M4_SCHEMA_V5:
+                connection.execute(statement)
+            for table in table_order:
+                columns = [
+                    row[1] for row in connection.execute(f"PRAGMA table_info({table})")
+                ]
+                placeholders = ",".join("?" for _ in columns)
+                connection.executemany(
+                    f"INSERT INTO {table} VALUES ({placeholders})",
+                    [tuple(row[column] for column in columns) for row in source_rows[table]],
+                )
+            connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v6")
+            connection.execute(durable_module._SCHEMA_V5[0])
+            connection.execute(
+                """
+                INSERT INTO store_meta
+                SELECT id, 5, lineage_root, revocation_epoch, fencing_epoch,
+                       dispatch_counter, journal_head_sequence, journal_head_digest,
+                       outbox_head_sequence, outbox_head_digest
+                FROM store_meta_v6
+                """
+            )
+            connection.execute("DROP TABLE store_meta_v6")
+            connection.execute("PRAGMA user_version=5")
             rows = {
                 table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table}")]
                 for table in table_order
             }
-            columns = {
-                table: [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
-                for table in table_order
-            }
             before = (
-                connection.execute("SELECT * FROM store_meta").fetchone(),
+                tuple(connection.execute("SELECT * FROM store_meta").fetchone()),
                 connection.execute("SELECT COUNT(*) FROM journal_entries").fetchone(),
                 rows,
             )
-            for table in reversed(table_order):
-                connection.execute(f"DROP TABLE {table}")
-            for statement in durable_module._M4_SCHEMA_V4:
-                connection.execute(statement)
-            for table in table_order:
-                placeholders = ",".join("?" for _ in columns[table])
-                connection.executemany(
-                    f"INSERT INTO {table} VALUES ({placeholders})", rows[table]
-                )
-            connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v5")
-            connection.execute(durable_module._SCHEMA_V4[0])
-            connection.execute(
-                """
-                INSERT INTO store_meta
-                SELECT id, 4, lineage_root, revocation_epoch, fencing_epoch,
-                       dispatch_counter, journal_head_sequence, journal_head_digest,
-                       outbox_head_sequence, outbox_head_digest
-                FROM store_meta_v5
-                """
-            )
-            connection.execute("DROP TABLE store_meta_v5")
-            connection.execute("PRAGMA user_version=4")
         refused = self.store()
         self.assertEqual(refused.health().reason, DurableReason.CORRUPT_STORE)
         with sqlite3.connect(self.path) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (4,))
-            self.assertEqual(connection.execute("SELECT schema_version FROM store_meta").fetchone(), (4,))
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone(), (5,))
+            self.assertEqual(connection.execute("SELECT schema_version FROM store_meta").fetchone(), (5,))
             self.assertIn(
-                "iteration = joined_iteration + 1",
+                "iteration > joined_iteration",
                 connection.execute(
                     "SELECT sql FROM sqlite_schema WHERE name='d2_frontiers'"
                 ).fetchone()[0],
@@ -1666,6 +1903,27 @@ class M4DurableLifecycleTests(unittest.TestCase):
         reopened = self.store()
         result = reopened.recover()
         self.assertEqual((result.outcome, result.reason), (DurableOutcome.STOP, DurableReason.CORRUPT_STORE))
+
+    def test_persisted_attempt_cursor_rollback_and_gap_are_corruption(self) -> None:
+        for name, cursor in (("rollback", 0), ("gap", 2)):
+            with self.subTest(name=name):
+                path, store = self.store_at("cursor-corrupt-" + name)
+                _begin_chain(store, lambda statement: self.row_at(path, statement))
+                with sqlite3.connect(path) as connection:
+                    connection.execute(
+                        "UPDATE active_contracts SET attempt_cursor=?",
+                        (cursor,),
+                    )
+                reopened = DurableStore(
+                    str(path),
+                    m2.ExactVerifier(),
+                    executor_claim_verifier=m2.ExactVerifier(),
+                    m4_verifier=m2.ExactVerifier(),
+                )
+                self.assertEqual(
+                    reopened.health().reason,
+                    DurableReason.CORRUPT_STORE,
+                )
 
     def test_stage_authorization_proof_mutation_is_detected_after_valid_rechain(self) -> None:
         self.chain()

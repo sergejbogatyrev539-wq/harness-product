@@ -41,7 +41,7 @@ from .model import (
 
 
 FORMAT_VERSION = 1
-STORE_SCHEMA_VERSION = 5
+STORE_SCHEMA_VERSION = 6
 _APPLICATION_ID = 0x48524E53
 _MAX_INTEGER = (1 << 63) - 1
 _MAX_VECTOR = 256
@@ -142,6 +142,7 @@ _D2_FRONTIER_KEYS = frozenset(
         "root_contract_digest",
         "parent_contract_digest",
         "journal_sequence",
+        "attempt_cursor",
         "joined_iteration",
         "iteration",
         "fencing_epoch",
@@ -1298,7 +1299,7 @@ def _verification_for(
 def _parse_active_contract(raw: object, observed_at: str) -> tuple[dict[str, object], tuple[_BudgetRow, ...]]:
     if not _closed_dict(raw, _ACTIVE_CONTRACT_KEYS):
         raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
-    if raw["contract_version"] != "1.0.0":
+    if raw["contract_version"] != "2.0.0":
         raise _Rejected(DurableOutcome.STOP, DurableReason.UNKNOWN_INPUT)
     if not all(
         _valid_identifier(raw[field])
@@ -2042,7 +2043,7 @@ _M4_SCHEMA_V4 = (
     "CREATE INDEX m4_frontiers_contract_iteration ON d2_frontiers(contract_digest, iteration)",
 )
 
-_M4_SCHEMA = tuple(
+_M4_SCHEMA_V5 = tuple(
     statement.replace(
         "CHECK (iteration = joined_iteration + 1)",
         "CHECK (iteration > joined_iteration)",
@@ -2053,8 +2054,39 @@ _SCHEMA_V4 = tuple(
     statement.replace("schema_version = 3", "schema_version = 4")
     for statement in _SCHEMA_V3
 ) + _M4_SCHEMA_V4
-_SCHEMA = tuple(
+_SCHEMA_V5 = tuple(
     statement.replace("schema_version = 3", "schema_version = 5")
+    for statement in _SCHEMA_V3
+) + _M4_SCHEMA_V5
+_M4_SCHEMA = tuple(
+    statement.replace(
+        "max_iterations INTEGER NOT NULL CHECK (max_iterations > 0),\n"
+        "        joined_iteration INTEGER NOT NULL CHECK (joined_iteration >= 0),",
+        "max_iterations INTEGER NOT NULL CHECK (max_iterations > 0),\n"
+        "        attempt_cursor INTEGER NOT NULL CHECK (attempt_cursor >= 0),\n"
+        "        joined_iteration INTEGER NOT NULL CHECK (joined_iteration >= 0),",
+    )
+    .replace(
+        "CHECK (joined_iteration <= max_iterations)",
+        "CHECK (joined_iteration <= attempt_cursor),\n"
+        "        CHECK (attempt_cursor <= max_iterations)",
+    )
+    .replace(
+        "iteration INTEGER NOT NULL CHECK (iteration > 0),\n"
+        "        joined_iteration INTEGER NOT NULL CHECK (joined_iteration >= 0),",
+        "iteration INTEGER NOT NULL CHECK (iteration > 0),\n"
+        "        attempt_cursor INTEGER NOT NULL CHECK (attempt_cursor >= 0),\n"
+        "        joined_iteration INTEGER NOT NULL CHECK (joined_iteration >= 0),",
+    )
+    .replace(
+        "CHECK (iteration > joined_iteration)",
+        "CHECK (iteration = attempt_cursor + 1),\n"
+        "        CHECK (joined_iteration <= attempt_cursor)",
+    )
+    for statement in _M4_SCHEMA_V5
+)
+_SCHEMA = tuple(
+    statement.replace("schema_version = 3", "schema_version = 6")
     for statement in _SCHEMA_V3
 ) + _M4_SCHEMA
 
@@ -2156,17 +2188,21 @@ class DurableStore:
         if version == 1 and application_id == _APPLICATION_ID and tables == _TABLES_V1:
             self._migrate_v1_to_v2(connection)
             self._migrate_v2_to_v3(connection)
-            self._migrate_v3_to_v5(connection)
+            self._migrate_v3_to_v6(connection)
             return
         if version == 2 and application_id == _APPLICATION_ID and tables == _TABLES_V2:
             self._migrate_v2_to_v3(connection)
-            self._migrate_v3_to_v5(connection)
+            self._migrate_v3_to_v6(connection)
             return
         if version == 3 and application_id == _APPLICATION_ID and tables == _TABLES_V3:
-            self._migrate_v3_to_v5(connection)
+            self._migrate_v3_to_v6(connection)
             return
         if version == 4 and application_id == _APPLICATION_ID and tables == _TABLES:
             self._migrate_v4_to_v5(connection)
+            self._migrate_v5_to_v6(connection)
+            return
+        if version == 5 and application_id == _APPLICATION_ID and tables == _TABLES:
+            self._migrate_v5_to_v6(connection)
             return
         if version != STORE_SCHEMA_VERSION or application_id != _APPLICATION_ID or tables != _TABLES:
             raise _StoreCorrupt("unknown durable store schema")
@@ -2225,7 +2261,7 @@ class DurableStore:
             connection.rollback()
             raise
 
-    def _migrate_v3_to_v5(self, connection: sqlite3.Connection) -> None:
+    def _migrate_v3_to_v6(self, connection: sqlite3.Connection) -> None:
         """Add the current M4 contract/frontier/lifecycle tables after a v3 audit."""
 
         self._audit_legacy_v3(connection)
@@ -2268,7 +2304,7 @@ class DurableStore:
             ):
                 connection.execute("DROP TABLE " + table)
             connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v4")
-            connection.execute(_SCHEMA[0])
+            connection.execute(_SCHEMA_V5[0])
             connection.execute(
                 """
                 INSERT INTO store_meta
@@ -2277,9 +2313,44 @@ class DurableStore:
                        outbox_head_sequence, outbox_head_digest
                 FROM store_meta_v4
                 """,
-                (STORE_SCHEMA_VERSION,),
+                (5,),
             )
             connection.execute("DROP TABLE store_meta_v4")
+            for statement in _M4_SCHEMA_V5:
+                connection.execute(statement)
+            connection.execute("PRAGMA user_version=5")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def _migrate_v5_to_v6(self, connection: sqlite3.Connection) -> None:
+        """Replace only an exact-empty v5 M4 surface with cursor-separated v6."""
+
+        self._audit_legacy_v5(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._audit_legacy_v5(connection)
+            for table in (
+                "m4_transition_records",
+                "m4_transactions",
+                "d2_frontiers",
+                "active_contracts",
+            ):
+                connection.execute("DROP TABLE " + table)
+            connection.execute("ALTER TABLE store_meta RENAME TO store_meta_v5")
+            connection.execute(_SCHEMA[0])
+            connection.execute(
+                """
+                INSERT INTO store_meta
+                SELECT id, ?, lineage_root, revocation_epoch, fencing_epoch,
+                       dispatch_counter, journal_head_sequence, journal_head_digest,
+                       outbox_head_sequence, outbox_head_digest
+                FROM store_meta_v5
+                """,
+                (STORE_SCHEMA_VERSION,),
+            )
+            connection.execute("DROP TABLE store_meta_v5")
             for statement in _M4_SCHEMA:
                 connection.execute(statement)
             connection.execute(f"PRAGMA user_version={STORE_SCHEMA_VERSION}")
@@ -2415,6 +2486,48 @@ class DurableStore:
         lineage = meta["lineage_root"]
         if lineage is not None and not _valid_digest(lineage):
             raise _StoreCorrupt("invalid legacy v4 lineage")
+        self._audit_budgets(connection, lineage)
+        self._audit_chains(connection, meta)
+        self._audit_history(connection, meta)
+        self._audit_capabilities(connection, lineage)
+        self._audit_dispatch(connection, meta)
+        self._audit_claims(connection, meta)
+        self._audit_sessions(connection, meta)
+
+    def _audit_legacy_v5(self, connection: sqlite3.Connection) -> None:
+        if connection.execute("PRAGMA user_version").fetchone()[0] != 5:
+            raise _StoreCorrupt("legacy v5 schema version mismatch")
+        if connection.execute("PRAGMA application_id").fetchone()[0] != _APPLICATION_ID:
+            raise _StoreCorrupt("legacy v5 application id mismatch")
+        self._audit_schema(connection, schema=_SCHEMA_V5, tables=_TABLES)
+        if tuple(connection.execute("PRAGMA quick_check").fetchone()) != ("ok",):
+            raise _StoreCorrupt("legacy v5 SQLite quick check failed")
+        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise _StoreCorrupt("legacy v5 foreign key mismatch")
+        if any(
+            connection.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+            for table in (
+                "active_contracts",
+                "d2_frontiers",
+                "m4_transactions",
+                "m4_transition_records",
+            )
+        ) or connection.execute(
+            "SELECT 1 FROM journal_entries WHERE event_type='ACTIVE_CONTRACT_BOUND' "
+            "OR event_type='D2_FRONTIER_BOUND' OR event_type LIKE 'M4_%' LIMIT 1"
+        ).fetchone() is not None:
+            raise _StoreCorrupt("legacy v5 M4 state cannot be migrated")
+        meta_rows = connection.execute("SELECT * FROM store_meta").fetchall()
+        if (
+            len(meta_rows) != 1
+            or meta_rows[0]["id"] != 1
+            or meta_rows[0]["schema_version"] != 5
+        ):
+            raise _StoreCorrupt("invalid legacy v5 metadata")
+        meta = meta_rows[0]
+        lineage = meta["lineage_root"]
+        if lineage is not None and not _valid_digest(lineage):
+            raise _StoreCorrupt("invalid legacy v5 lineage")
         self._audit_budgets(connection, lineage)
         self._audit_chains(connection, meta)
         self._audit_history(connection, meta)
@@ -3525,8 +3638,10 @@ class DurableStore:
                 or contract["parent_contract_digest"] != row["parent_contract_digest"]
                 or contract["lineage_root"] != row["lineage_root"]
                 or contract["max_iterations"] != row["max_iterations"]
+                or row["attempt_cursor"] < 0
                 or row["joined_iteration"] < contract["joined_iteration"]
-                or row["joined_iteration"] > row["max_iterations"]
+                or row["joined_iteration"] > row["attempt_cursor"]
+                or row["attempt_cursor"] > row["max_iterations"]
                 or contract["revocation_epoch"] != row["revocation_epoch"]
                 or contract["fencing_epoch"] != row["fencing_epoch"]
                 or contract["budget_vector"] != [item.data("limit") for item in budgets]
@@ -3579,6 +3694,7 @@ class DurableStore:
                 "d2_frontier_digest": row["d2_frontier_digest"],
                 "frontier_record_digest": frontier.get("frontier_record_digest"),
                 "source_journal_sequence": row["source_journal_sequence"],
+                "attempt_cursor": row["attempt_cursor"],
                 "iteration": row["iteration"],
                 "revocation_epoch": capability["revocation_epoch"],
                 "fencing_epoch": row["fencing_epoch"],
@@ -3595,18 +3711,28 @@ class DurableStore:
             ).fetchone()[0]
             if prior_joined is None:
                 prior_joined = 0
+            prior_cursor = connection.execute(
+                "SELECT MAX(iteration) FROM d2_frontiers "
+                "WHERE contract_digest=? AND event_journal_sequence<?",
+                (row["contract_digest"], row["event_journal_sequence"]),
+            ).fetchone()[0]
+            if prior_cursor is None:
+                prior_cursor = 0
             if (
                 not _closed_dict(frontier, _D2_FRONTIER_KEYS)
-                or frontier["frontier_version"] != "1.0.0"
+                or frontier["frontier_version"] != "2.0.0"
                 or frontier["inventory"] != inventory
                 or inventory != authoritative
                 or canonical_digest(preimage) != frontier["frontier_record_digest"]
                 or canonical_digest(frontier) != row["d2_frontier_digest"]
                 or frontier["contract_digest"] != row["contract_digest"]
                 or frontier["iteration"] != row["iteration"]
+                or frontier["attempt_cursor"] != row["attempt_cursor"]
+                or row["attempt_cursor"] != prior_cursor
                 or frontier["joined_iteration"] != row["joined_iteration"]
                 or row["joined_iteration"] != prior_joined
-                or row["iteration"] <= row["joined_iteration"]
+                or row["iteration"] != row["attempt_cursor"] + 1
+                or row["joined_iteration"] > row["attempt_cursor"]
                 or frontier["journal_sequence"] != row["source_journal_sequence"]
                 or frontier["fencing_epoch"] != row["fencing_epoch"]
                 or row["source_journal_sequence"] >= row["event_journal_sequence"]
@@ -3628,6 +3754,7 @@ class DurableStore:
             if (
                 iterations != list(range(1, len(iterations) + 1))
                 or len(iterations) > contract["max_iterations"]
+                or len(iterations) != contract["attempt_cursor"]
             ):
                 raise _StoreCorrupt("M4 attempt ledger mismatch")
         if connection.execute(
@@ -4328,8 +4455,10 @@ class DurableStore:
             or contract["parent_contract_digest"] != row["parent_contract_digest"]
             or contract["lineage_root"] != row["lineage_root"]
             or contract["max_iterations"] != row["max_iterations"]
+            or row["attempt_cursor"] < 0
             or row["joined_iteration"] < contract["joined_iteration"]
-            or row["joined_iteration"] > row["max_iterations"]
+            or row["joined_iteration"] > row["attempt_cursor"]
+            or row["attempt_cursor"] > row["max_iterations"]
             or contract["revocation_epoch"] != row["revocation_epoch"]
             or contract["fencing_epoch"] != row["fencing_epoch"]
             or contract["lineage_root"] != meta["lineage_root"]
@@ -4459,7 +4588,15 @@ class DurableStore:
                 },
             )
             connection.execute(
-                """INSERT INTO active_contracts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """
+                INSERT INTO active_contracts (
+                    contract_digest, authority_domain_id, journal_lineage_id,
+                    root_contract_digest, parent_contract_digest, lineage_root,
+                    max_iterations, attempt_cursor, joined_iteration, contract_json,
+                    resolver_verification_json, resolver_verification_digest,
+                    activated_at, revocation_epoch, fencing_epoch, journal_sequence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     contract["contract_digest"],
                     contract["authority_domain_id"],
@@ -4670,7 +4807,7 @@ class DurableStore:
             return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
         frontier = raw["frontier"]
         if (
-            frontier["frontier_version"] != "1.0.0"
+            frontier["frontier_version"] != "2.0.0"
             or not all(
                 _valid_identifier(frontier[field])
                 for field in ("authority_domain_id", "journal_lineage_id")
@@ -4682,7 +4819,12 @@ class DurableStore:
             or (frontier["parent_contract_digest"] is not None and not _valid_digest(frontier["parent_contract_digest"]))
             or not all(
                 _bounded_integer(frontier[field])
-                for field in ("journal_sequence", "joined_iteration", "fencing_epoch")
+                for field in (
+                    "journal_sequence",
+                    "attempt_cursor",
+                    "joined_iteration",
+                    "fencing_epoch",
+                )
             )
             or not _bounded_integer(frontier["iteration"], 1)
             or _parse_time(frontier["issued_at"]) is None
@@ -4770,7 +4912,6 @@ class DurableStore:
                 "WHERE f.contract_digest=? ORDER BY f.iteration",
                 (contract_row["contract_digest"],),
             ).fetchall()
-            next_iteration = 1 if not prior_attempts else prior_attempts[-1]["iteration"] + 1
             if prior_attempts and prior_attempts[-1]["state"] not in {"DISCARDED", "JOINED"}:
                 connection.rollback()
                 return _result(DurableOutcome.DENY, DurableReason.D2_INVENTORY_INVALID)
@@ -4784,8 +4925,9 @@ class DurableStore:
                 or frontier["root_contract_digest"] != contract["root_contract_digest"]
                 or frontier["parent_contract_digest"] != contract["parent_contract_digest"]
                 or frontier["journal_sequence"] != meta["journal_head_sequence"]
+                or frontier["attempt_cursor"] != contract_row["attempt_cursor"]
                 or frontier["joined_iteration"] != contract_row["joined_iteration"]
-                or frontier["iteration"] != next_iteration
+                or frontier["iteration"] != frontier["attempt_cursor"] + 1
                 or frontier["iteration"] > contract_row["max_iterations"]
                 or frontier["fencing_epoch"] != meta["fencing_epoch"]
                 or frontier["fencing_epoch"] != contract["fencing_epoch"]
@@ -4823,6 +4965,7 @@ class DurableStore:
                     "d2_frontier_digest": d2_digest,
                     "frontier_record_digest": frontier["frontier_record_digest"],
                     "source_journal_sequence": frontier["journal_sequence"],
+                    "attempt_cursor": frontier["attempt_cursor"],
                     "iteration": frontier["iteration"],
                     "revocation_epoch": capability["revocation_epoch"],
                     "fencing_epoch": frontier["fencing_epoch"],
@@ -4831,12 +4974,20 @@ class DurableStore:
                 },
             )
             connection.execute(
-                """INSERT INTO d2_frontiers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """
+                INSERT INTO d2_frontiers (
+                    d2_frontier_digest, transaction_id, contract_digest, iteration,
+                    attempt_cursor, joined_iteration, source_journal_sequence,
+                    fencing_epoch, inventory_json, frontier_json, verification_json,
+                    verification_digest, bound_at, event_journal_sequence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     d2_digest,
                     raw["transaction_id"],
                     frontier["contract_digest"],
                     frontier["iteration"],
+                    frontier["attempt_cursor"],
                     frontier["joined_iteration"],
                     frontier["journal_sequence"],
                     frontier["fencing_epoch"],
@@ -4848,6 +4999,19 @@ class DurableStore:
                     sequence,
                 ),
             )
+            changed = connection.execute(
+                "UPDATE active_contracts SET attempt_cursor=? WHERE contract_digest=? "
+                "AND attempt_cursor=? AND joined_iteration=? AND max_iterations>=?",
+                (
+                    frontier["iteration"],
+                    frontier["contract_digest"],
+                    frontier["attempt_cursor"],
+                    frontier["joined_iteration"],
+                    frontier["iteration"],
+                ),
+            )
+            if changed.rowcount != 1:
+                raise _StoreCorrupt("M4 attempt cursor update mismatch")
             self._hit("m4_frontier_after_event")
             connection.commit()
             connection.close()
@@ -5820,11 +5984,12 @@ class DurableStore:
             if state == "JOINED":
                 changed = connection.execute(
                     "UPDATE active_contracts SET joined_iteration=? WHERE contract_digest=? "
-                    "AND joined_iteration=? AND max_iterations>=?",
+                    "AND joined_iteration=? AND attempt_cursor=? AND max_iterations>=?",
                     (
                         transaction["iteration"],
                         transaction["contract_digest"],
                         frontier["joined_iteration"],
+                        transaction["iteration"],
                         transaction["iteration"],
                     ),
                 )
@@ -6148,7 +6313,7 @@ class DurableStore:
                     "WHERE f.contract_digest=? ORDER BY f.iteration",
                     (contract_row["contract_digest"],),
                 ).fetchall()
-                if len(prior_attempts) >= contract_row["max_iterations"]:
+                if contract_row["attempt_cursor"] >= contract_row["max_iterations"]:
                     connection.rollback()
                     return _result(
                         DurableOutcome.DENY,

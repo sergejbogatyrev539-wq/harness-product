@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:harness:schema:admission-candidate:1",
+  "$id": "urn:harness:schema:admission-candidate:2",
   "title": "Canonical exact-bound admission candidate",
   "type": "object",
   "additionalProperties": false,
@@ -12,7 +12,7 @@
     "session_attestation", "broker_ipc_attestation", "supply_chain", "approval_receipt"
   ],
   "properties": {
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"const": "2.0.0"},
     "request_id": {"$ref": "#/$defs/id"},
     "request_digest": {"$ref": "#/$defs/digest"},
     "evaluated_at": {"type": "string", "format": "date-time"},
@@ -277,11 +277,11 @@
     },
     "d2Frontier": {
       "type": "object", "additionalProperties": false,
-      "required": ["definition_status", "contract_digest", "contract_version", "authority_domain_id", "journal_lineage_id", "root_contract_digest", "parent_contract_digest", "journal_sequence", "fencing_epoch", "frontier_record_digest", "joined_iteration", "max_iteration", "durable_state_digest", "inventory"],
+      "required": ["definition_status", "contract_digest", "contract_version", "authority_domain_id", "journal_lineage_id", "root_contract_digest", "parent_contract_digest", "journal_sequence", "fencing_epoch", "frontier_record_digest", "attempt_cursor", "joined_iteration", "iteration", "max_iteration", "durable_state_digest", "inventory"],
       "properties": {
         "definition_status": {"const": "PROVISIONAL_OPERATIONAL"},
         "contract_digest": {"$ref": "#/$defs/digest"},
-        "contract_version": {"const": "1.0.0"},
+        "contract_version": {"const": "2.0.0"},
         "authority_domain_id": {"$ref": "#/$defs/id"},
         "journal_lineage_id": {"$ref": "#/$defs/id"},
         "root_contract_digest": {"$ref": "#/$defs/digest"},
@@ -289,7 +289,9 @@
         "journal_sequence": {"type": "integer", "minimum": 0},
         "fencing_epoch": {"type": "integer", "minimum": 0},
         "frontier_record_digest": {"$ref": "#/$defs/digest"},
+        "attempt_cursor": {"type": "integer", "minimum": 0},
         "joined_iteration": {"type": "integer", "minimum": 0},
+        "iteration": {"type": "integer", "minimum": 1},
         "max_iteration": {"type": "integer", "minimum": 1},
         "durable_state_digest": {"$ref": "#/$defs/digest"},
         "inventory": {"type": "array", "items": {"$ref": "#/$defs/d2Artifact"}}

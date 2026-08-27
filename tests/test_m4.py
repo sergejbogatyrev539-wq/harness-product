@@ -30,7 +30,7 @@ from tests.test_m4_durable import _inventory
 
 def _contract(issue: dict[str, object], scope_digest: str) -> dict[str, object]:
     body: dict[str, object] = {
-        "contract_version": "1.0.0",
+        "contract_version": "2.0.0",
         "authority_domain_id": "dev-stageable-local",
         "journal_lineage_id": "journal-lineage-1",
         "root_contract_digest": m2._digest("b"),
@@ -365,14 +365,15 @@ class M4CoordinatorTests(unittest.TestCase):
         )
         intent = json.loads(intent_text)
         frontier: dict[str, object] = {
-            "frontier_version": "1.0.0",
+            "frontier_version": "2.0.0",
             "contract_digest": contract["contract_digest"],
-            "contract_version": "1.0.0",
+            "contract_version": "2.0.0",
             "authority_domain_id": contract["authority_domain_id"],
             "journal_lineage_id": contract["journal_lineage_id"],
             "root_contract_digest": contract["root_contract_digest"],
             "parent_contract_digest": None,
             "journal_sequence": self.row("SELECT journal_head_sequence FROM store_meta")[0],
+            "attempt_cursor": 0,
             "joined_iteration": 0,
             "iteration": 1,
             "fencing_epoch": 11,

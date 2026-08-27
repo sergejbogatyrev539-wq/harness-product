@@ -365,7 +365,7 @@ Human approval — exact-bound predicate/evidence при admission. Controller `
 proposed_sequence <= verified_sequence + 1
 ```
 
-До controller `JOIN(N+1)` MUST NOT существовать относящийся к N+2 объект, который является хотя бы одним из следующего:
+Durable `attempt_cursor` обозначает число уже начатых попыток, а `joined_iteration` — номер последней успешно присоединённой попытки; всегда `0 <= joined_iteration <= attempt_cursor <= max_iterations`. До atomic frontier bind следующей попытки MUST NOT существовать относящийся к `attempt_cursor+1` объект, который является хотя бы одним из следующего:
 
 - controller-visible;
 - persisted или staged;
@@ -374,7 +374,7 @@ proposed_sequence <= verified_sequence + 1
 - candidate/proposal/bundle branch, пригодный к повторному использованию;
 - capability, target binding, dispatch intent или external authorization.
 
-Private ephemeral model tokens MAY существовать вне этого bound только если они никогда не сохраняются, не передаются, не становятся context/evidence/control input и не связываются с tool/budget/target. Нарушение переводит controller в `STOPPED`, а при возможном внешнем эффекте — в `QUARANTINED`.
+Atomic frontier bind для iteration `attempt_cursor+1` необратимо двигает только `attempt_cursor`; `JOIN` двигает только `joined_iteration`. Поэтому terminal `DISCARDED` попытки N разрешает admission N+1 без ложного `JOIN(N)`, но failed, blocked, discarded, restarted и nested attempts не возвращают slot. До terminal `JOINED` или `DISCARDED` текущей попытки следующий frontier не допускается. Private ephemeral model tokens MAY существовать вне этого bound только если они никогда не сохраняются, не передаются, не становятся context/evidence/control input и не связываются с tool/budget/target. Нарушение переводит controller в `STOPPED`, а при возможном внешнем эффекте — в `QUARANTINED`.
 
 ## 7. Глобальные инварианты
 
@@ -429,7 +429,7 @@ Private ephemeral model tokens MAY существовать вне этого bo
 | `T-LTS-CORE-001` | Finite transition matrix for modeled reference branches. | Нелегальные transitions fail closed; terminal conservation guards hold. | `EV-SPEC-LTS-001`. | `PARTIAL_SPECIFICATION_TESTED`; not runtime-exhaustive |
 | `T-LTS-CORE-002` | Crash/replay at modeled durable dispatch boundaries. | Нет replay after STOP; reservation/capability state conserved. | `EV-SPEC-LTS-CRASH-001`. | `PARTIAL_SPECIFICATION_TESTED`; durable store absent |
 | `T-LTS-CORE-003` | Unknown external outcome. | Нет automatic retry; только quarantine/reconcile with escrow. | Trace bundle. | `SPECIFICATION_TESTED`; live connector absent |
-| `T-LTS-CORE-004` | D2 typed frontier exploration. | До `JOIN(N+1)` rejected all declared N+2 artifact classes/flags. | `EV-SPEC-D2-001`. | `SPECIFICATION_TESTED`; D2 definition provisional |
+| `T-LTS-CORE-004` | D2 typed frontier exploration. | За `attempt_cursor+1` rejected all declared artifact classes/flags; stale/gap cursor и rollback не меняют state. | `EV-SPEC-D2-001`. | `SPECIFICATION_TESTED`; D2 definition provisional |
 | `T-LTS-CORE-005` | Concurrency/fencing двух writers/executors. | Только current epoch может dispatch/commit; loser stops. | Schedule traces. | `PLANNED/ABSENT` |
 | `T-ATTACK-CORE-001` | Replay/transfer/stale/material-change attempts. | Все denied; authoritative block events emitted. | Attack trace bundle. | `PLANNED/ABSENT` |
 | `T-ATTACK-CORE-002` | Delegation amplification/budget fragmentation. | Child subset и conservation equation сохраняются при interleavings/crash. | Property/fault report. | `PLANNED/ABSENT` |
@@ -505,7 +505,7 @@ PEP и executor независимо проверяют signature/trust root/key
 
 ### D2 frontier state
 
-Controller durable-хранит closed inventory `frontier[iteration]` для classes `PLAN`, `PROMPT`, `CONTEXT`, `CANDIDATE`, `REUSABLE_BRANCH`, `TOOL_BINDING`, `CAPABILITY`, `BUDGET_RESERVATION`, `LOCK`, `TARGET_BINDING`, `DISPATCH_INTENT`, `EXTERNAL_AUTHORIZATION`, `STAGED_OUTPUT`, `PERSISTED_STATE`, `CONTROLLER_TOKEN`. An externally verified frontier record MUST bind exact `contract_digest`, `contract_version=1.0.0`, `authority_domain_id`, `journal_lineage_id`, `root_contract_digest`, nullable `parent_contract_digest`, `journal_sequence`, `fencing_epoch` and `frontier_record_digest`. Its canonical `d2_frontier_digest` remains exact through decision, capability, dispatch, crash/recovery and JOIN. Даже artifact с false/empty flags остаётся членом своего intrinsic class. Любой transition, создающий запись для `i > joined_iteration+1` или `i > contract.max_iterations`, отклоняется без изменения state; inventory update и создающий artifact write атомарны. Scalar check номера итерации, caller-supplied visibility flags или RAM-only inventory не удовлетворяют D2-PROVISIONAL.
+Controller durable-хранит closed inventory `frontier[iteration]` для classes `PLAN`, `PROMPT`, `CONTEXT`, `CANDIDATE`, `REUSABLE_BRANCH`, `TOOL_BINDING`, `CAPABILITY`, `BUDGET_RESERVATION`, `LOCK`, `TARGET_BINDING`, `DISPATCH_INTENT`, `EXTERNAL_AUTHORIZATION`, `STAGED_OUTPUT`, `PERSISTED_STATE`, `CONTROLLER_TOKEN`. An externally verified frontier record MUST bind exact `contract_digest`, `contract_version=2.0.0`, `authority_domain_id`, `journal_lineage_id`, `root_contract_digest`, nullable `parent_contract_digest`, `journal_sequence`, `fencing_epoch`, `attempt_cursor`, `joined_iteration`, `iteration` and `frontier_record_digest`. Its canonical `d2_frontier_digest` remains exact through decision, capability, dispatch, crash/recovery and JOIN. Даже artifact с false/empty flags остаётся членом своего intrinsic class. Bind допускается только когда record cursor равен current durable cursor, `iteration = attempt_cursor + 1`, `joined_iteration` равен отдельному current join progress, previous attempt terminal, и `iteration <= contract.max_iterations`; event append, frontier write и cursor CAS образуют один atomic commit. Любой stale/gap/rollback или старый frontier/contract record отклоняется без изменения state. Scalar check номера итерации, caller-supplied visibility flags или RAM-only inventory не удовлетворяют D2-PROVISIONAL.
 
 ### Effect stages and JOIN
 
@@ -533,6 +533,6 @@ Each receipt stage is the closed tagged object `{status, entries, reason?}`: `KN
 
 The only consumed loop contract is one complete schema-valid `loop-contract` object. Its `contract_digest` is computed over its canonical complete content excluding that field itself, and an externally verified resolver record MUST bind that digest to the resolved object. Admission, capability, dispatch, recovery and `JOIN` require exact equality for the selected contract's lifecycle/revocation, audience/human confirmation, artifact bindings, D2 definition/bound, aggregate budget keys and values, and the selected manifest's `postcheck_required=true` and `independent_observer_required=true`; a projection, partial reconstruction or digest-only assertion is non-authorizing.
 
-`iteration_bound.max_iterations` is the hard `max_attempts` ceiling, not a success quota. Every started attempt consumes the next durable journal iteration, including failed, blocked, retried, restarted and nested attempts; `success_target`, if used for assessment, is non-authorizing metadata and MUST NOT raise or reset that ceiling. Changing `max_iterations` or the frozen packet digest terminates the current exact-bound contract; further work requires a new contract plus a fresh explicit user continuation grant.
+`iteration_bound.max_iterations` is the hard `max_attempts` ceiling, not a success quota. Every started attempt atomically and irreversibly consumes the next durable `attempt_cursor` slot when its D2 frontier commits, including failed, blocked, discarded, retried, restarted and nested attempts. `JOIN` advances only `joined_iteration`; success never returns a cursor slot. `success_target`, if used for assessment, is non-authorizing metadata and MUST NOT raise or reset that ceiling. Changing `max_iterations` or the frozen packet digest terminates the current exact-bound contract; further work requires a new contract plus a fresh explicit user continuation grant.
 
-At `ADMIT`, the embedded verified frontier's `journal_sequence`, `fencing_epoch` and `joined_iteration` MUST equal the pre-admission durable reducer state, and the claimed slot's `iteration` MUST equal `joined_iteration + 1`. This is an admission-time state coupling, not a generic dispatch predicate: durable dispatch advances sequence and fence.
+At `ADMIT`, the embedded verified frontier's `journal_sequence`, `fencing_epoch`, `attempt_cursor` and `joined_iteration` MUST equal the pre-admission durable reducer state, and the claimed slot's `iteration` MUST equal `attempt_cursor + 1`. Admission atomically advances `attempt_cursor` together with the frontier record; `JOIN` later advances only `joined_iteration`. This is an admission-time state coupling, not a generic dispatch predicate: durable dispatch advances sequence and fence.

@@ -647,8 +647,17 @@ def validate_d2_frontier(candidate: Mapping[str, Any], durable_facts: Mapping[st
     frontier, iteration = _mapping(candidate.get("d2_frontier")), candidate.get("iteration")
     if frontier is None or not isinstance(iteration, int) or isinstance(iteration, bool):
         return False
-    joined, maximum, inventory = frontier.get("joined_iteration"), frontier.get("max_iteration"), frontier.get("inventory")
-    if not isinstance(joined, int) or isinstance(joined, bool) or not isinstance(maximum, int) or isinstance(maximum, bool) or not isinstance(inventory, list) or iteration != joined + 1 or iteration > maximum:
+    cursor, joined = frontier.get("attempt_cursor"), frontier.get("joined_iteration")
+    maximum, inventory = frontier.get("max_iteration"), frontier.get("inventory")
+    if (
+        not isinstance(cursor, int) or isinstance(cursor, bool)
+        or not isinstance(joined, int) or isinstance(joined, bool)
+        or not isinstance(maximum, int) or isinstance(maximum, bool)
+        or not isinstance(inventory, list)
+        or not 0 <= joined <= cursor < maximum
+        or frontier.get("iteration") != iteration
+        or iteration != cursor + 1
+    ):
         return False
     authoritative = _mapping(durable_facts.get("authoritative_d2_frontier"))
     if authoritative is None or not isinstance(authoritative.get("inventory"), list) or not authoritative.get("inventory"):
@@ -658,12 +667,12 @@ def validate_d2_frontier(candidate: Mapping[str, Any], durable_facts: Mapping[st
         "contract_digest", "contract_version", "authority_domain_id",
         "journal_lineage_id", "root_contract_digest", "parent_contract_digest",
         "journal_sequence", "fencing_epoch", "durable_state_digest",
-        "joined_iteration", "max_iteration", "inventory",
+        "attempt_cursor", "joined_iteration", "iteration", "max_iteration", "inventory",
     )
     unsigned = {key: deepcopy(value) for key, value in frontier.items() if key != "frontier_record_digest"}
     if (
         frontier.get("contract_digest") != bindings.get("contract_digest")
-        or frontier.get("contract_version") != "1.0.0"
+        or frontier.get("contract_version") != "2.0.0"
         or not all(isinstance(frontier.get(key), str) and frontier.get(key) for key in ("authority_domain_id", "journal_lineage_id"))
         or not all(_valid_digest(frontier.get(key)) for key in ("contract_digest", "root_contract_digest", "frontier_record_digest"))
         or frontier.get("parent_contract_digest") is not None and not _valid_digest(frontier.get("parent_contract_digest"))
@@ -688,7 +697,7 @@ def validate_d2_frontier(candidate: Mapping[str, Any], durable_facts: Mapping[st
     present = {(item.get("artifact_id"), item.get("class")) for item in inventory if isinstance(item, Mapping)}
     authoritative_present = {(item.get("artifact_id"), item.get("class")) for item in authoritative.get("inventory", []) if isinstance(item, Mapping)}
     required_keys = {(item["artifact_id"], item["class"]) for item in required}
-    return required_keys <= present and required_keys <= authoritative_present and all(isinstance(item, Mapping) and item.get("class") in D2_CLASSES and isinstance(item.get("iteration"), int) and item["iteration"] < joined + 2 for item in inventory)
+    return required_keys <= present and required_keys <= authoritative_present and all(isinstance(item, Mapping) and item.get("class") in D2_CLASSES and isinstance(item.get("iteration"), int) and item["iteration"] <= cursor + 1 for item in inventory)
 
 
 def _trusted_roots_digest(candidate: Mapping[str, Any], isolation_profile: Mapping[str, Any], trusted_facts: Mapping[str, Any]) -> str | None:
@@ -1484,7 +1493,7 @@ def validate_loop_contract(contract: Any, trusted_facts: Mapping[str, Any] | Non
     if contract is None:
         return False
     required = {"schema_version", "contract_id", "contract_version", "contract_digest", "status", "principal", "audience", "authority_domain", "allowed_effects", "allowed_operations", "aggregate_budgets", "iteration_bound", "d2", "artifact_bindings", "postcheck", "human_confirmation", "lifecycle", "material_change_invalidates"}
-    if set(contract) != required or contract.get("schema_version") != "1.0.0" or contract.get("status") != "ACTIVE" or contract.get("material_change_invalidates") is not True:
+    if set(contract) != required or contract.get("schema_version") != "2.0.0" or contract.get("status") != "ACTIVE" or contract.get("material_change_invalidates") is not True:
         return False
     if contract.get("contract_digest") != canonical_digest({key: value for key, value in contract.items() if key != "contract_digest"}):
         return False
@@ -1496,10 +1505,10 @@ def validate_loop_contract(contract: Any, trusted_facts: Mapping[str, Any] | Non
     issued, start, expires, now = _parse_time(lifecycle.get("issued_at")), _parse_time(lifecycle.get("not_before")), _parse_time(lifecycle.get("expires_at")), _parse_time(facts.get("trusted_time"))
     return bool(
         isinstance(contract.get("contract_id"), str) and contract.get("contract_id") and isinstance(contract.get("principal"), str) and contract.get("principal") and isinstance(contract.get("audience"), str) and contract.get("audience")
-        and isinstance(contract.get("contract_version"), int) and contract["contract_version"] >= 1
+        and isinstance(contract.get("contract_version"), int) and contract["contract_version"] >= 2
         and set(domain) == {"domain_id", "definition_status", "journal_lineage_id"} and domain.get("definition_status") == "PROVISIONAL" and all(isinstance(domain.get(key), str) and domain.get(key) for key in ("domain_id", "journal_lineage_id"))
-        and set(bound) == {"max_iterations", "counter_source", "monotonic", "durable", "reset_on_restart", "reset_on_retry", "reset_on_nested_contract"} and isinstance(bound.get("max_iterations"), int) and bound["max_iterations"] >= 1 and bound.get("counter_source") == "CANONICAL_DURABLE_JOURNAL" and all(bound.get(key) is value for key, value in (("monotonic", True), ("durable", True), ("reset_on_restart", False), ("reset_on_retry", False), ("reset_on_nested_contract", False)))
-        and d2 == {"definition_status": "PROVISIONAL", "operational_bound": "NO_CONTROLLER_VISIBLE_PERSISTED_STAGED_TOOL_BOUND_BUDGETED_REUSABLE_N_PLUS_2_BEFORE_JOIN_N_PLUS_1", "private_ephemeral_tokens_excluded": True}
+        and set(bound) in ({"max_iterations", "counter_source", "monotonic", "durable", "reset_on_restart", "reset_on_retry", "reset_on_nested_contract"}, {"max_iterations", "success_target", "counter_source", "monotonic", "durable", "reset_on_restart", "reset_on_retry", "reset_on_nested_contract"}) and isinstance(bound.get("max_iterations"), int) and bound["max_iterations"] >= 1 and ("success_target" not in bound or isinstance(bound["success_target"], int) and not isinstance(bound["success_target"], bool) and bound["success_target"] >= 1) and bound.get("counter_source") == "CANONICAL_DURABLE_JOURNAL" and all(bound.get(key) is value for key, value in (("monotonic", True), ("durable", True), ("reset_on_restart", False), ("reset_on_retry", False), ("reset_on_nested_contract", False)))
+        and d2 == {"definition_status": "PROVISIONAL", "operational_bound": "NO_CONTROLLER_VISIBLE_PERSISTED_STAGED_TOOL_BOUND_BUDGETED_REUSABLE_BEYOND_ATTEMPT_CURSOR_PLUS_ONE", "private_ephemeral_tokens_excluded": True}
         and isinstance(contract.get("allowed_effects"), list) and bool(contract["allowed_effects"]) and set(contract["allowed_effects"]) <= EFFECTS
         and isinstance(contract.get("allowed_operations"), list) and bool(contract["allowed_operations"]) and all(isinstance(row, Mapping) and set(row) == {"operation_id", "manifest_digest", "effects", "scopes", "approval_class"} and isinstance(row.get("operation_id"), str) and _valid_digest(row.get("manifest_digest")) and isinstance(row.get("effects"), list) and bool(row["effects"]) and set(row["effects"]) <= set(contract["allowed_effects"]) and isinstance(row.get("scopes"), list) and bool(row["scopes"]) and row.get("approval_class") in {"NONE", "PREAUTHORIZED_EXACT", "HUMAN_SINGLE", "HUMAN_DUAL"} for row in contract["allowed_operations"])
         and _budget_map([{**row, "amount": row.get("limit")} for row in contract.get("aggregate_budgets", [])], "amount") is not None
@@ -1559,7 +1568,7 @@ def _result(decision: str, reason: str, candidate: Mapping[str, Any] | None, env
     approval_digest = approval.get("receipt_digest") if approval is not None and approval.get("decision") == "APPROVE" and _valid_digest(approval.get("receipt_digest")) else None
     target_evaluation = ({"endpoint_binding_digest": bindings.get("endpoint_binding_digest", ZERO_DIGEST)} if "endpoint_binding_digest" in bindings else {"descriptor_binding_digest": bindings.get("descriptor_binding_digest", ZERO_DIGEST)})
     result: dict[str, Any] = {
-        "schema_version": "1.0.0", "decision": decision, "reason_codes": [reason],
+        "schema_version": "2.0.0", "decision": decision, "reason_codes": [reason],
         "authorized_effects": sorted({item["effect"] for item in envelope or []}) if allowed else [],
         "authorized_envelope": envelope if allowed and envelope else [], "obligations": sorted(set(obligations)) if allowed else [],
         "reservations": list(reservations) if allowed else [], "capability_issuance": allowed, "approval_receipt_digest": approval_digest if allowed else None,
@@ -1780,17 +1789,19 @@ def _trusted_delegation_record(store: Mapping[str, Any], capability: Mapping[str
 
 
 def _d2_frontier_record_valid(frontier: Mapping[str, Any]) -> bool:
-    fields = {"definition_status", "contract_digest", "contract_version", "authority_domain_id", "journal_lineage_id", "root_contract_digest", "parent_contract_digest", "journal_sequence", "fencing_epoch", "frontier_record_digest", "joined_iteration", "max_iteration", "durable_state_digest", "inventory"}
+    fields = {"definition_status", "contract_digest", "contract_version", "authority_domain_id", "journal_lineage_id", "root_contract_digest", "parent_contract_digest", "journal_sequence", "fencing_epoch", "frontier_record_digest", "attempt_cursor", "joined_iteration", "iteration", "max_iteration", "durable_state_digest", "inventory"}
     artifact_fields = {"artifact_id", "class", "iteration", "controller_visible", "persisted", "staged", "tool_bound", "budgeted", "reusable"}
     inventory = frontier.get("inventory")
     return bool(
         set(frontier) == fields
-        and frontier.get("definition_status") == "PROVISIONAL_OPERATIONAL" and frontier.get("contract_version") == "1.0.0"
+        and frontier.get("definition_status") == "PROVISIONAL_OPERATIONAL" and frontier.get("contract_version") == "2.0.0"
         and all(_valid_digest(frontier.get(key)) for key in ("contract_digest", "root_contract_digest", "frontier_record_digest", "durable_state_digest"))
         and (frontier.get("parent_contract_digest") is None or _valid_digest(frontier.get("parent_contract_digest")))
         and all(isinstance(frontier.get(key), str) and frontier.get(key) for key in ("authority_domain_id", "journal_lineage_id"))
-        and all(isinstance(frontier.get(key), int) and not isinstance(frontier.get(key), bool) and frontier.get(key) >= 0 for key in ("journal_sequence", "fencing_epoch", "joined_iteration"))
+        and all(isinstance(frontier.get(key), int) and not isinstance(frontier.get(key), bool) and frontier.get(key) >= 0 for key in ("journal_sequence", "fencing_epoch", "attempt_cursor", "joined_iteration"))
+        and isinstance(frontier.get("iteration"), int) and not isinstance(frontier.get("iteration"), bool) and frontier.get("iteration") == frontier.get("attempt_cursor") + 1
         and isinstance(frontier.get("max_iteration"), int) and not isinstance(frontier.get("max_iteration"), bool) and frontier.get("max_iteration") >= 1
+        and 0 <= frontier.get("joined_iteration") <= frontier.get("attempt_cursor") < frontier.get("max_iteration")
         and isinstance(inventory, list)
         and all(isinstance(item, Mapping) and set(item) == artifact_fields and isinstance(item.get("artifact_id"), str) and item.get("class") in D2_CLASSES and isinstance(item.get("iteration"), int) and not isinstance(item.get("iteration"), bool) and all(isinstance(item.get(key), bool) for key in artifact_fields - {"artifact_id", "class", "iteration"}) for item in inventory)
     )
@@ -2534,7 +2545,7 @@ def reduce_transition(state: Any, event: Any) -> dict[str, Any]:
             admitted_frontier = _mapping(evaluation.get("d2_frontier_record"))
             if admitted_frontier is None or evaluation.get("d2_frontier_digest") != admitted_frontier.get("frontier_record_digest") or not _valid_digest(evaluation.get("d2_frontier_digest")):
                 return _reject(state_m, "ADMIT_D2_FRONTIER_BINDING_INVALID")
-            if any(admitted_frontier.get(key) != state_m.get(key) for key in ("journal_sequence", "fencing_epoch", "joined_iteration")):
+            if any(admitted_frontier.get(key) != state_m.get(key) for key in ("journal_sequence", "fencing_epoch", "attempt_cursor", "joined_iteration")):
                 return _reject(state_m, "ADMIT_D2_FRONTIER_REDUCER_STATE_MISMATCH")
             if _trusted_runtime_d2_frontier(state_m, admitted_frontier, evaluation.get("contract_digest")) is None:
                 return _reject(state_m, "ADMIT_D2_FRONTIER_VERIFICATION_REQUIRED")
@@ -2542,7 +2553,8 @@ def reduce_transition(state: Any, event: Any) -> dict[str, Any]:
             request_digest = evaluation.get("request_digest")
             if not _valid_digest(slot_digest) or not _trusted_admitted_iteration_slot(state_m, slot_digest, request_digest): return _reject(state_m, "ADMIT_ITERATION_SLOT_VERIFICATION_REQUIRED")
             slot_record = _mapping((_mapping((_mapping(state_m.get("trusted_store")) or {}).get("iteration_slot_verifications")) or {}).get(f"{slot_digest}:{state_m.get('fencing_epoch')}")) or {}
-            if (_mapping(slot_record.get("slot")) or {}).get("iteration") != state_m.get("joined_iteration", 0) + 1:
+            slot_iteration = (_mapping(slot_record.get("slot")) or {}).get("iteration")
+            if slot_iteration != state_m.get("attempt_cursor", 0) + 1 or slot_iteration != admitted_frontier.get("iteration"):
                 return _reject(state_m, "ADMIT_ITERATION_SLOT_FRONTIER_MISMATCH")
             nxt["admitted_request_digest"], nxt["admitted_iteration_slot_digest"], nxt["admitted_d2_frontier_digest"], nxt["admitted_d2_frontier_record"] = request_digest, slot_digest, evaluation["d2_frontier_digest"], deepcopy(admitted_frontier)
             if not all(_valid_digest(evaluation.get(key)) for key in ("broker_ipc_attestation_digest", "broker_ipc_binding_digest", "resource_vector_digest")):
@@ -2560,6 +2572,15 @@ def reduce_transition(state: Any, event: Any) -> dict[str, Any]:
             nxt["admitted_target_kind"] = "ENDPOINT" if _valid_digest(endpoint_digest) else "FILESYSTEM"
             nxt["admitted_target_binding_digest"] = endpoint_digest if _valid_digest(endpoint_digest) else descriptor_digest
             nxt["approval_mode"], nxt["approval_receipt_digest"] = evaluation.get("approval_mode"), evaluation.get("approval_receipt_digest")
+            cursor_before = state_m.get("attempt_cursor")
+            nxt["attempt_cursor"] = admitted_frontier["iteration"]
+            record = {
+                "attempt_cursor_before": cursor_before,
+                "attempt_cursor_after": nxt["attempt_cursor"],
+                "iteration": admitted_frontier["iteration"],
+                "d2_frontier_digest": evaluation["d2_frontier_digest"],
+                "atomic_serializable_transition": True,
+            }
         elif event_type == "CALCULATE_RESERVATION":
             vector = event_m.get("reservation_vector")
             mapped = _budget_map(vector, "amount", reject_duplicates=True)
@@ -2644,8 +2665,8 @@ def reduce_transition(state: Any, event: Any) -> dict[str, Any]:
             if not _valid_digest(dispatch): return _reject(state_m, "DISPATCH_DIGEST_INVALID")
             nxt["capability_status"] = "CONSUMED"; nxt["consumed_capability_digests"] = sorted(set(nxt["consumed_capability_digests"]) | {digest}); nxt["dispatch_intent_digest"] = dispatch; nxt["target_kind"] = target_kind; nxt["object_identity"] = deepcopy(event_m["object_identity"])
             nxt["idempotency_key_digest"] = event_m.get("idempotency_key_digest"); nxt["connector_id"] = event_m.get("connector_id"); nxt["source_chain_digest"] = event_m.get("source_chain_digest")
-            nxt["iteration_counter"] += 1; nxt["journal_sequence"] += 1; nxt["fencing_epoch"] += 1
-            record = {"transaction_id": nxt["transaction_id"], "capability_consumption": digest, "budget_reservation": nxt["budget_reserved"], "budget_reservation_by_key": _budget_rows(nxt["budget_reserved_by_key"]), "budget_reservation_vector": deepcopy(nxt["reservation_vector"]), "budget_reservation_vector_digest": nxt["reservation_vector_digest"], "iteration_slot_digest": nxt["admitted_iteration_slot_digest"], "d2_frontier_digest": nxt["admitted_d2_frontier_digest"], "broker_ipc_attestation_digest": nxt["admitted_broker_ipc_attestation_digest"], "broker_ipc_binding_digest": nxt["admitted_broker_ipc_binding_digest"], "resource_vector_digest": nxt["resource_vector_digest"], "dispatch_intent": dispatch, "target_kind": target_kind, "object_identity": deepcopy(nxt["object_identity"]), "idempotency_key_digest": nxt["idempotency_key_digest"], "source_chain_digest": nxt["source_chain_digest"], "decision_digest": nxt["admitted_decision_digest"], "authorized_envelope_digest": nxt["admitted_envelope_digest"], "approval_mode": nxt.get("approval_mode"), "approval_receipt_digest": nxt.get("approval_receipt_digest"), "execution_binding": deepcopy(nxt["execution_binding"]), "monotonic_counter": nxt["iteration_counter"], "journal_sequence": nxt["journal_sequence"], "fencing_epoch": nxt["fencing_epoch"], "atomic_serializable_transition": True}
+            nxt["journal_sequence"] += 1; nxt["fencing_epoch"] += 1
+            record = {"transaction_id": nxt["transaction_id"], "capability_consumption": digest, "budget_reservation": nxt["budget_reserved"], "budget_reservation_by_key": _budget_rows(nxt["budget_reserved_by_key"]), "budget_reservation_vector": deepcopy(nxt["reservation_vector"]), "budget_reservation_vector_digest": nxt["reservation_vector_digest"], "iteration_slot_digest": nxt["admitted_iteration_slot_digest"], "d2_frontier_digest": nxt["admitted_d2_frontier_digest"], "broker_ipc_attestation_digest": nxt["admitted_broker_ipc_attestation_digest"], "broker_ipc_binding_digest": nxt["admitted_broker_ipc_binding_digest"], "resource_vector_digest": nxt["resource_vector_digest"], "dispatch_intent": dispatch, "target_kind": target_kind, "object_identity": deepcopy(nxt["object_identity"]), "idempotency_key_digest": nxt["idempotency_key_digest"], "source_chain_digest": nxt["source_chain_digest"], "decision_digest": nxt["admitted_decision_digest"], "authorized_envelope_digest": nxt["admitted_envelope_digest"], "approval_mode": nxt.get("approval_mode"), "approval_receipt_digest": nxt.get("approval_receipt_digest"), "execution_binding": deepcopy(nxt["execution_binding"]), "monotonic_counter": nxt["attempt_cursor"], "journal_sequence": nxt["journal_sequence"], "fencing_epoch": nxt["fencing_epoch"], "atomic_serializable_transition": True}
         elif event_type in {"QUIESCE", "SEAL", "POSTCHECK_PASS"}:
             key, ref_key, evidence_type = {"QUIESCE": ("quiescence_attestation_digest", "quiesce_evidence_ref", "QUIESCE"), "SEAL": ("seal_digest", "seal_evidence_ref", "SEAL"), "POSTCHECK_PASS": ("postcheck_attestation_digest", "postcheck_evidence_ref", "POSTCHECK")} [event_type]
             trusted = _trusted_stage_evidence_valid(_mapping(state_m.get("trusted_store")) or {}, event_m.get(ref_key), evidence_type, transaction_id=nxt.get("transaction_id"), capability_digest=nxt.get("capability_digest"), session_id=(_mapping(nxt.get("execution_binding")) or {}).get("session_id"), object_identity=nxt.get("object_identity"), fencing_epoch=nxt.get("fencing_epoch"))
@@ -2729,7 +2750,10 @@ def reduce_transition(state: Any, event: Any) -> dict[str, Any]:
             trusted = _mapping((_mapping(store.get("join")) or {}).get(event_m.get("join_evidence_ref"))) or {}
             unsigned = {key: value for key, value in trusted.items() if key != "evidence_digest"}
             if trusted.get("evidence_type") != "JOIN" or trusted.get("transaction_id") != nxt.get("transaction_id") or trusted.get("decision_digest") != nxt.get("admitted_decision_digest") or trusted.get("d2_frontier_digest") != nxt.get("admitted_d2_frontier_digest") or trusted.get("capability_digest") != nxt.get("capability_digest") or trusted.get("envelope_digest") != nxt.get("admitted_envelope_digest") or trusted.get("object_id") != evidence.get("object_id") or trusted.get("object_digest") != evidence.get("object_digest") or trusted.get("object_identity") != nxt.get("object_identity") or trusted.get("chain_digest") != evidence.get("chain_digest") or any(trusted.get(key) != nxt.get(key) for key in ("quiesce_evidence_ref", "seal_evidence_ref", "postcheck_evidence_ref", "quiescence_attestation_digest", "seal_digest", "postcheck_attestation_digest")) or trusted.get("signature_verified") is not True or not trusted.get("verified_by") or trusted.get("evidence_digest") != canonical_digest(unsigned): return _reject(state_m, "JOIN_TRUSTED_EVIDENCE_REQUIRED")
-            nxt["joined_iteration"] = nxt["iteration_counter"]
+            frontier = _mapping(nxt.get("admitted_d2_frontier_record")) or {}
+            if frontier.get("iteration") != nxt.get("attempt_cursor"):
+                return _reject(state_m, "JOIN_ATTEMPT_CURSOR_MISMATCH")
+            nxt["joined_iteration"] = frontier["iteration"]
         elif event_type == "STOP":
             nxt["controller_outcome"] = "STOPPED"; nxt["capability_status"], nxt["capability_digest"], nxt["execution_binding"] = "NONE", None, None
         nxt["phase"] = target
@@ -2745,7 +2769,7 @@ def initial_state(branch: str, budget_total: int = 100000, trusted_store: Mappin
     if totals is None:
         totals = {("LEGACY", "UNITS", ZERO_DIGEST, "lineage:legacy"): budget_total}
     zeros = {key: 0 for key in totals}
-    state = {"phase": "STOPPED", "branch": branch, "controller_outcome": "STOPPED", "transaction_id": None, "trusted_store": deepcopy(dict(trusted_store or {})), "trusted_pep_receipts": {}, "admitted_decision_digest": None, "admitted_envelope_digest": None, "admitted_reservation_vector": [], "admitted_reservation_vector_digest": None, "admitted_request_digest": None, "admitted_iteration_slot_digest": None, "admitted_d2_frontier_digest": None, "admitted_d2_frontier_record": None, "admitted_target_kind": None, "admitted_target_binding_digest": None, "approval_mode": "NOT_REQUIRED", "approval_receipt_digest": None, "capability_effects_digest": None, "capability_budgets_digest": None, "capability_status": "NONE", "capability_digest": None, "issued_capability": None, "capability_verification_digest": None, "capability_lineage_digest": None, "contract_digest": None, "iteration_slot_digest": None, "execution_binding": None, "capability_expires_at": None, "capability_revocation_epoch": None, "capability_fencing_epoch": None, "supply_chain_measurement_digest": None, "consumed_capability_digests": [], "revoked_capability_digests": [], "consumed_reconciliation_evidence_digests": [], "budget_total_by_key": deepcopy(totals), "budget_remaining_by_key": deepcopy(totals), "budget_reserved_by_key": deepcopy(zeros), "budget_spent_by_key": deepcopy(zeros), "unknown_escrow_by_key": deepcopy(zeros), "budget_total": 0, "budget_remaining": 0, "budget_reserved": 0, "budget_spent": 0, "reservation_vector": [], "reservation_vector_digest": None, "unknown_escrow": 0, "iteration_counter": 0, "joined_iteration": 0, "journal_sequence": 0, "fencing_epoch": 1, "dispatch_intent_digest": None, "target_kind": None, "idempotency_key_digest": None, "connector_id": None, "source_chain_digest": None, "reconciliation_evidence_digest": None, "failure_disposition": None, "compensation_authorization": None, "quarantined": False, "automatic_retry_allowed": False, "quiescence_attestation_digest": None, "seal_digest": None, "postcheck_attestation_digest": None, "quiesce_evidence_ref": None, "seal_evidence_ref": None, "postcheck_evidence_ref": None, "object_identity": None, "object_id": None, "object_digest": None, "receipt_chain_digest": None, "host_recovery_required": False}
+    state = {"phase": "STOPPED", "branch": branch, "controller_outcome": "STOPPED", "transaction_id": None, "trusted_store": deepcopy(dict(trusted_store or {})), "trusted_pep_receipts": {}, "admitted_decision_digest": None, "admitted_envelope_digest": None, "admitted_reservation_vector": [], "admitted_reservation_vector_digest": None, "admitted_request_digest": None, "admitted_iteration_slot_digest": None, "admitted_d2_frontier_digest": None, "admitted_d2_frontier_record": None, "admitted_target_kind": None, "admitted_target_binding_digest": None, "approval_mode": "NOT_REQUIRED", "approval_receipt_digest": None, "capability_effects_digest": None, "capability_budgets_digest": None, "capability_status": "NONE", "capability_digest": None, "issued_capability": None, "capability_verification_digest": None, "capability_lineage_digest": None, "contract_digest": None, "iteration_slot_digest": None, "execution_binding": None, "capability_expires_at": None, "capability_revocation_epoch": None, "capability_fencing_epoch": None, "supply_chain_measurement_digest": None, "consumed_capability_digests": [], "revoked_capability_digests": [], "consumed_reconciliation_evidence_digests": [], "budget_total_by_key": deepcopy(totals), "budget_remaining_by_key": deepcopy(totals), "budget_reserved_by_key": deepcopy(zeros), "budget_spent_by_key": deepcopy(zeros), "unknown_escrow_by_key": deepcopy(zeros), "budget_total": 0, "budget_remaining": 0, "budget_reserved": 0, "budget_spent": 0, "reservation_vector": [], "reservation_vector_digest": None, "unknown_escrow": 0, "attempt_cursor": 0, "joined_iteration": 0, "journal_sequence": 0, "fencing_epoch": 1, "dispatch_intent_digest": None, "target_kind": None, "idempotency_key_digest": None, "connector_id": None, "source_chain_digest": None, "reconciliation_evidence_digest": None, "failure_disposition": None, "compensation_authorization": None, "quarantined": False, "automatic_retry_allowed": False, "quiescence_attestation_digest": None, "seal_digest": None, "postcheck_attestation_digest": None, "quiesce_evidence_ref": None, "seal_evidence_ref": None, "postcheck_evidence_ref": None, "object_identity": None, "object_id": None, "object_digest": None, "receipt_chain_digest": None, "host_recovery_required": False}
     state.update(admitted_broker_ipc_attestation_digest=None, admitted_broker_ipc_binding_digest=None, admitted_runtime_session_id=None, admitted_broker_ipc_fencing_epoch=None, resource_vector_digest=None)
     _sync_budget_scalars(state)
     return state

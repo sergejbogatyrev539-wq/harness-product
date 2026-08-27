@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:harness:schema:loop-contract:1",
+  "$id": "urn:harness:schema:loop-contract:2",
   "title": "Pre-approved bounded loop contract",
   "type": "object",
   "additionalProperties": false,
@@ -25,9 +25,9 @@
     "material_change_invalidates"
   ],
   "properties": {
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"const": "2.0.0"},
     "contract_id": {"type": "string", "pattern": "^contract:[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$"},
-    "contract_version": {"type": "integer", "minimum": 1},
+    "contract_version": {"type": "integer", "minimum": 2},
     "contract_digest": {"$ref": "#/$defs/digest"},
     "status": {"enum": ["DRAFT", "ACTIVE", "EXPIRED", "REVOKED", "CONSUMED"]},
     "principal": {"$ref": "#/$defs/id"},
@@ -109,6 +109,7 @@
       "required": ["max_iterations", "counter_source", "monotonic", "durable", "reset_on_restart", "reset_on_retry", "reset_on_nested_contract"],
       "properties": {
         "max_iterations": {"type": "integer", "minimum": 1},
+        "success_target": {"type": "integer", "minimum": 1},
         "counter_source": {"const": "CANONICAL_DURABLE_JOURNAL"},
         "monotonic": {"const": true},
         "durable": {"const": true},
@@ -123,7 +124,7 @@
       "required": ["definition_status", "operational_bound", "private_ephemeral_tokens_excluded"],
       "properties": {
         "definition_status": {"const": "PROVISIONAL"},
-        "operational_bound": {"const": "NO_CONTROLLER_VISIBLE_PERSISTED_STAGED_TOOL_BOUND_BUDGETED_REUSABLE_N_PLUS_2_BEFORE_JOIN_N_PLUS_1"},
+        "operational_bound": {"const": "NO_CONTROLLER_VISIBLE_PERSISTED_STAGED_TOOL_BOUND_BUDGETED_REUSABLE_BEYOND_ATTEMPT_CURSOR_PLUS_ONE"},
         "private_ephemeral_tokens_excluded": {"const": true}
       }
     },
