@@ -18,10 +18,16 @@ import select
 import signal
 import stat
 import time
-from typing import Callable
+from typing import Callable, Protocol
 
 from . import kernel, l0, publisher
-from .durable import DispatchClaim, DurableOutcome, DurableStore, canonical_digest
+from .durable import (
+    DispatchClaim,
+    DurableOutcome,
+    DurableStore,
+    StageExecutionGrant,
+    canonical_digest,
+)
 from .model import (
     EffectKind,
     KernelResult,
@@ -43,6 +49,78 @@ _INPUT_KEYS = frozenset(
         "observed_at",
         "verifications",
         "external_verifications",
+    }
+)
+_RUNTIME_INPUT_KEYS = frozenset(
+    {
+        "runtime_version",
+        "transaction_id",
+        "d2_frontier_digest",
+        "stage_request",
+        "observed_at",
+    }
+)
+_RUNTIME_PREFLIGHT_KEYS = frozenset(
+    {
+        "runtime_version",
+        "outcome",
+        "transaction_id",
+        "claim_digest",
+        "profile_digest",
+        "placement_digest",
+        "session_id",
+        "revocation_epoch",
+        "fencing_epoch",
+        "executor_principal",
+        "executor_session",
+        "staging_binding_digest",
+        "observed_at",
+        "expires_at",
+    }
+)
+_RUNTIME_CONTINUITY_KEYS = frozenset(
+    {
+        "continuity_version",
+        "purpose",
+        "outcome",
+        "transaction_id",
+        "decision_digest",
+        "authorized_envelope_digest",
+        "claim_digest",
+        "intent_digest",
+        "capability_id",
+        "contract_digest",
+        "d2_frontier_digest",
+        "attempt_cursor",
+        "iteration",
+        "target_authority_digest",
+        "publication_target_binding_digest",
+        "publication_root_anchor_digest",
+        "profile_digest",
+        "placement_digest",
+        "session_id",
+        "revocation_epoch",
+        "fencing_epoch",
+        "snapshot_id",
+        "snapshot_device",
+        "snapshot_inode",
+        "snapshot_size",
+        "snapshot_digest",
+        "seal_record_digest",
+        "postcheck_record_digest",
+        "observer_receipt_digest",
+        "publication_authorization_digest",
+        "publication_receipt_digest",
+        "published_binding_digest",
+        "frontier_record_digest",
+        "controller_principal",
+        "controller_session",
+        "publisher_principal",
+        "publisher_session",
+        "authority_record_digest",
+        "issued_at",
+        "observed_at",
+        "expires_at",
     }
 )
 _TIME_KEYS = frozenset(
@@ -148,6 +226,93 @@ class M4Result:
     observer_pid: int | None = None
     observer_session: int | None = None
     record_digest: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeStageExecution:
+    record: l0.StageRecord
+    process_id: int
+    process_session: int
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeObserverReceipt:
+    receipt: dict[str, object]
+    verification_source: dict[str, object]
+    process_id: int
+    process_session: int
+    uid: int
+    gid: int
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimePublicationReceipt:
+    fact: publisher.PublicationFact
+    verification_source: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeContinuity:
+    payload: dict[str, object]
+    verification_source: dict[str, object]
+
+
+class M4RuntimeBoundary(Protocol):
+    """Exact process boundary supplied only by the disposable runtime profile."""
+
+    def preflight(
+        self,
+        profile: l0.CompiledL0Profile,
+        claim: DispatchClaim,
+        supply: l0.SupplyVerification,
+        staging_binding: l0.PathBinding,
+        observed_at: str,
+    ) -> RuntimeContinuity: ...
+
+    def stage(
+        self,
+        profile: l0.CompiledL0Profile,
+        claim: DispatchClaim,
+        supply: l0.SupplyVerification,
+        root_descriptor: int,
+        stage_request: dict[str, object],
+        stage_execution_grant: StageExecutionGrant,
+        claim_verifier_factory: object,
+        supply_verifier_factory: object,
+        m4_verifier_factory: object,
+    ) -> RuntimeStageExecution: ...
+
+    def observe(
+        self,
+        profile: l0.CompiledL0Profile,
+        snapshot_descriptor: int,
+        snapshot: M4Snapshot,
+        receipt_body: dict[str, object],
+    ) -> RuntimeObserverReceipt: ...
+
+    def publish(
+        self,
+        snapshot_descriptor: int,
+        authorization: dict[str, object],
+        authorization_verification: dict[str, object],
+        observed_at: str,
+        fault: object | None,
+    ) -> RuntimePublicationReceipt: ...
+
+    def continuity(
+        self,
+        purpose: str,
+        payload: dict[str, object],
+    ) -> RuntimeContinuity: ...
+
+
+class M4ExternalVerificationProvider(Protocol):
+    def sign(
+        self,
+        payload: bytes,
+        observed_at: str,
+        purpose: str,
+    ) -> dict[str, object]: ...
 
 
 class _M4Stop(Exception):
@@ -705,11 +870,14 @@ class M4Coordinator:
         staging_root_descriptor: int,
         topology: publisher.PublisherTopology,
         topology_verification: object,
-        trusted_publisher: publisher.TrustedPublisher,
+        trusted_publisher: publisher.TrustedPublisher | None,
         executor_claim_verifier_factory: object,
         supply_verifier_factory: object,
         external_verifier_factory: object,
         principals: M4Principals,
+        runtime_boundary: object | None = None,
+        m4_verifier_factory: object | None = None,
+        external_verification_provider: object | None = None,
     ) -> None:
         if type(staging_root_descriptor) is not int or staging_root_descriptor < 0:
             raise ValueError("invalid trusted staging root")
@@ -717,8 +885,6 @@ class M4Coordinator:
             type(profile) is not l0.CompiledL0Profile
             or not l0._profile_is_valid(profile)
             or type(topology) is not publisher.PublisherTopology
-            or type(trusted_publisher) is not publisher.TrustedPublisher
-            or trusted_publisher.topology != topology
             or type(principals) is not M4Principals
             or not all(
                 callable(value)
@@ -730,6 +896,27 @@ class M4Coordinator:
             )
         ):
             raise ValueError("invalid trusted M4 publication boundary")
+        deployment = topology.assurance_scope == "DEPLOYMENT_ATTESTED"
+        code_model = topology.assurance_scope == "CODE_MODEL_FIXTURE"
+        if code_model and (
+            type(trusted_publisher) is not publisher.TrustedPublisher
+            or trusted_publisher.topology != topology
+        ):
+            raise ValueError("invalid trusted M4 publication boundary")
+        if deployment and (
+            trusted_publisher is not None
+            or not store.dynamic_m4_verification
+            or runtime_boundary is None
+            or any(
+                not callable(getattr(runtime_boundary, name, None))
+                for name in ("preflight", "stage", "observe", "publish", "continuity")
+            )
+            or not callable(m4_verifier_factory)
+            or not callable(getattr(external_verification_provider, "sign", None))
+        ):
+            raise ValueError("deployment runtime boundary absent")
+        if not code_model and not deployment:
+            raise ValueError("invalid M4 assurance scope")
         self._store = store
         self._profile = profile
         self._staging_root = fcntl.fcntl(staging_root_descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
@@ -740,6 +927,9 @@ class M4Coordinator:
         self._supply_verifier_factory = supply_verifier_factory
         self._external_verifier_factory = external_verifier_factory
         self._principals = principals
+        self._runtime = runtime_boundary
+        self._m4_verifier_factory = m4_verifier_factory
+        self._external_verification_provider = external_verification_provider
 
     def _advance(
         self,
@@ -747,19 +937,19 @@ class M4Coordinator:
         expected_state: str,
         state: str,
         observed_at: dict[str, object],
-        verifications: dict[str, object],
+        verifications: dict[str, object] | None,
         evidence: dict[str, object],
     ) -> str:
-        result = self._store.advance_m4(
-            {
-                "transaction_id": transaction_id,
-                "expected_state": expected_state,
-                "state": state,
-                "observed_at": observed_at[state],
-                "evidence": evidence,
-                "verification": verifications[state],
-            }
-        )
+        raw = {
+            "transaction_id": transaction_id,
+            "expected_state": expected_state,
+            "state": state,
+            "observed_at": observed_at[state],
+            "evidence": evidence,
+        }
+        if verifications is not None:
+            raw["verification"] = verifications[state]
+        result = self._store.advance_m4(raw)
         if not result.committed or result.m4_state != state or result.record_digest is None:
             raise _M4Stop(M4Reason.DURABLE_TRANSITION_FAILED)
         return result.record_digest
@@ -817,6 +1007,33 @@ class M4Coordinator:
         ):
             raise _M4Stop(M4Reason.EXTERNAL_BRANCH_DENIED)
 
+    def _runtime_continuity(
+        self,
+        purpose: str,
+        expected: dict[str, object],
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        if self._runtime is None or frozenset(expected) != _RUNTIME_CONTINUITY_KEYS:
+            raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+        result = self._runtime.continuity(purpose, expected)
+        if (
+            type(result) is not RuntimeContinuity
+            or not _closed(result.payload, _RUNTIME_CONTINUITY_KEYS)
+            or result.payload != expected
+            or not publisher.verify_external(
+                self._external_verifier_factory,
+                result.payload,
+                result.verification_source,
+                expected["observed_at"],
+            )
+        ):
+            raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+        verification = publisher._external_verification_record(
+            result.payload, result.verification_source
+        )
+        if verification is None:
+            raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+        return result.payload, verification
+
     def execute(
         self,
         claim: object,
@@ -839,25 +1056,32 @@ class M4Coordinator:
         observer_session: int | None = None
         times: dict[str, object] | None = None
         verifications: dict[str, object] | None = None
+        external_verifications: dict[str, object] | None = None
         try:
             if type(claim) is not DispatchClaim or type(supply) is not l0.SupplyVerification:
                 raise _M4Stop(M4Reason.MALFORMED_INPUT)
-            value = _closed(raw, _INPUT_KEYS)
+            runtime_mode = self._topology.assurance_scope == "DEPLOYMENT_ATTESTED"
+            value = _closed(raw, _RUNTIME_INPUT_KEYS if runtime_mode else _INPUT_KEYS)
+            if runtime_mode and value["runtime_version"] != "1.0.0":
+                raise _M4Stop(M4Reason.MALFORMED_INPUT)
             transaction_id = _identifier(value["transaction_id"])
             _digest(value["d2_frontier_digest"])
             if transaction_id != claim.transaction_id:
                 raise _M4Stop(M4Reason.CLAIM_REJECTED)
             root_descriptor = fcntl.fcntl(self._staging_root, fcntl.F_DUPFD_CLOEXEC, 3)
+            if runtime_mode and _fault is not None:
+                raise _M4Stop(M4Reason.MALFORMED_INPUT)
             if _fault is not None and not callable(_fault):
                 raise _M4Stop(M4Reason.MALFORMED_INPUT)
             times = _closed(value["observed_at"], _TIME_KEYS)
-            verifications = _closed(value["verifications"], _VERIFICATION_KEYS)
-            external_verifications = _closed(
-                value["external_verifications"], _EXTERNAL_VERIFICATION_KEYS
-            )
+            if not runtime_mode:
+                verifications = _closed(value["verifications"], _VERIFICATION_KEYS)
+                external_verifications = _closed(
+                    value["external_verifications"], _EXTERNAL_VERIFICATION_KEYS
+                )
             if not all(type(item) is str for item in times.values()):
                 raise _M4Stop(M4Reason.MALFORMED_INPUT)
-            if not all(
+            if not runtime_mode and not all(
                 type(item) is dict
                 for item in (*verifications.values(), *external_verifications.values())
             ):
@@ -887,7 +1111,13 @@ class M4Coordinator:
                 or self._topology.session_id != claim.session_id
                 or self._topology.revocation_epoch != claim.revocation_epoch
                 or self._topology.fencing_epoch != claim.fencing_epoch
-                or self._publisher.topology != self._topology
+                or (
+                    not runtime_mode
+                    and (
+                        self._publisher is None
+                        or self._publisher.topology != self._topology
+                    )
+                )
             ):
                 raise _M4Stop(M4Reason.CLAIM_REJECTED)
             if not publisher.verify_external(
@@ -928,15 +1158,51 @@ class M4Coordinator:
             )
             if verified.outcome is not DurableOutcome.OK or verified.dispatch_claim != claim:
                 raise _M4Stop(M4Reason.CLAIM_REJECTED)
-            begun = self._store.begin_m4_transaction(
-                {
-                    "transaction_id": transaction_id,
-                    "d2_frontier_digest": value["d2_frontier_digest"],
-                    "target_binding": source.data(),
+            if runtime_mode:
+                if self._runtime is None:
+                    raise _M4Stop(M4Reason.CLAIM_REJECTED)
+                expected_preflight = {
+                    "runtime_version": "1.0.0",
+                    "outcome": "READY",
+                    "transaction_id": claim.transaction_id,
+                    "claim_digest": claim.claim_digest,
+                    "profile_digest": self._profile.profile_digest,
+                    "placement_digest": supply.placement_digest,
+                    "session_id": claim.session_id,
+                    "revocation_epoch": claim.revocation_epoch,
+                    "fencing_epoch": claim.fencing_epoch,
+                    "executor_principal": claim.audience_id,
+                    "executor_session": self._topology.subject("EXECUTOR").session_id,
+                    "staging_binding_digest": source.composite_binding_digest,
                     "observed_at": times["BEGIN"],
-                    "stage_authorization_verification": verifications["STAGED"],
+                    "expires_at": supply.expires_at,
                 }
-            )
+                preflight = self._runtime.preflight(
+                    self._profile, claim, supply, source, times["BEGIN"]
+                )
+                if (
+                    type(preflight) is not RuntimeContinuity
+                    or not _closed(preflight.payload, _RUNTIME_PREFLIGHT_KEYS)
+                    or preflight.payload != expected_preflight
+                    or not publisher.verify_external(
+                        self._external_verifier_factory,
+                        preflight.payload,
+                        preflight.verification_source,
+                        times["BEGIN"],
+                    )
+                ):
+                    raise _M4Stop(M4Reason.CLAIM_REJECTED)
+            begin_raw = {
+                "transaction_id": transaction_id,
+                "d2_frontier_digest": value["d2_frontier_digest"],
+                "target_binding": source.data(),
+                "publication_target_binding_digest": self._topology.publication_target_binding.composite_binding_digest,
+                "publication_root_anchor_digest": self._topology.publication_root_anchor.anchor_digest,
+                "observed_at": times["BEGIN"],
+            }
+            if not runtime_mode:
+                begin_raw["stage_authorization_verification"] = verifications["STAGED"]
+            begun = self._store.begin_m4_transaction(begin_raw)
             if (
                 not begun.committed
                 or begun.m4_state != "DISPATCHED"
@@ -953,16 +1219,57 @@ class M4Coordinator:
                 "stage_authorization_digest": begun.record_digest,
                 "observed_at": times["STAGED"],
             }
-            stage_record, executor_pid, executor_session = _stage_child(
-                self._store,
-                self._profile,
-                claim,
-                supply,
-                root_descriptor,
-                stage_request,
-                self._claim_verifier_factory,
-                self._supply_verifier_factory,
-            )
+            if runtime_mode:
+                consumed = self._store.consume_m4_stage_authorization(
+                    {
+                        "transaction_id": transaction_id,
+                        "stage_authorization_digest": begun.record_digest,
+                        "target_binding": source.data(),
+                        "observed_at": times["STAGED"],
+                    },
+                    require_execution_grant=True,
+                )
+                if (
+                    not consumed.committed
+                    or consumed.record_digest != begun.record_digest
+                    or type(consumed.stage_execution_grant) is not StageExecutionGrant
+                    or self._runtime is None
+                ):
+                    raise _M4Stop(M4Reason.DURABLE_TRANSITION_FAILED)
+                execution = self._runtime.stage(
+                    self._profile,
+                    claim,
+                    supply,
+                    root_descriptor,
+                    stage_request,
+                    consumed.stage_execution_grant,
+                    self._claim_verifier_factory,
+                    self._supply_verifier_factory,
+                    self._m4_verifier_factory,
+                )
+                if (
+                    type(execution) is not RuntimeStageExecution
+                    or type(execution.record) is not l0.StageRecord
+                    or type(execution.process_id) is not int
+                    or execution.process_id < 1
+                    or type(execution.process_session) is not int
+                    or execution.process_session < 1
+                ):
+                    raise _M4Stop(M4Reason.STAGE_FAILED)
+                stage_record = execution.record
+                executor_pid = execution.process_id
+                executor_session = execution.process_session
+            else:
+                stage_record, executor_pid, executor_session = _stage_child(
+                    self._store,
+                    self._profile,
+                    claim,
+                    supply,
+                    root_descriptor,
+                    stage_request,
+                    self._claim_verifier_factory,
+                    self._supply_verifier_factory,
+                )
             staged = l0._binding_for_open_target(
                 self._profile,
                 root_descriptor,
@@ -1054,18 +1361,12 @@ class M4Coordinator:
                 _fault("after_seal")
             _assert_read_lease(self._profile, read_lease, staged)
             _recheck_bound_path(self._profile, root_descriptor, staged)
-            observer_pid, observer_session, observer_uid, observer_gid, postcheck_digest = _postcheck_child(
-                self._profile, snapshot_descriptor, snapshot
-            )
-            _assert_read_lease(self._profile, read_lease, staged)
-            _recheck_bound_path(self._profile, root_descriptor, staged)
             capability_payload = _strict_json(claim.capability_payload_json)
             if type(capability_payload) is not dict:
                 raise _M4Stop(M4Reason.CLAIM_REJECTED)
             observer_subject = self._topology.subject("OBSERVER")
-            observer_body = {
+            observer_context = {
                 "receipt_version": 1,
-                "outcome": "PASS",
                 "transaction_id": transaction_id,
                 "capability_id": claim.capability_id,
                 "claim_digest": claim.claim_digest,
@@ -1074,7 +1375,17 @@ class M4Coordinator:
                 "authorized_envelope_digest": capability_payload[
                     "authorized_envelope_digest"
                 ],
+                "contract_digest": capability_payload["contract_digest"],
+                "d2_frontier_digest": value["d2_frontier_digest"],
+                "attempt_cursor": begun.m4_iteration,
+                "iteration": begun.m4_iteration,
                 "target_authority_digest": self._topology.topology_digest,
+                "publication_target_binding_digest": (
+                    self._topology.publication_target_binding.composite_binding_digest
+                ),
+                "publication_root_anchor_digest": (
+                    self._topology.publication_root_anchor.anchor_digest
+                ),
                 "profile_digest": claim.profile_digest,
                 "placement_digest": claim.placement_digest,
                 "session_id": claim.session_id,
@@ -1085,24 +1396,86 @@ class M4Coordinator:
                 "snapshot_size": snapshot.size,
                 "snapshot_digest": snapshot.digest,
                 "observer_subject": observer_subject.data(),
-                "proposal_digest": postcheck_digest,
                 "revocation_epoch": claim.revocation_epoch,
                 "fencing_epoch": claim.fencing_epoch,
+                "issued_at": times["POSTCHECKED"],
                 "observed_at": times["POSTCHECKED"],
+                "expires_at": self._topology.expires_at,
             }
-            observer_receipt = {
-                **observer_body,
-                "receipt_digest": canonical_digest(observer_body),
-            }
+            if runtime_mode:
+                if self._runtime is None:
+                    raise _M4Stop(M4Reason.POSTCHECK_FAILED)
+                observation = self._runtime.observe(
+                    self._profile,
+                    snapshot_descriptor,
+                    snapshot,
+                    observer_context,
+                )
+                if type(observation) is not RuntimeObserverReceipt:
+                    raise _M4Stop(M4Reason.POSTCHECK_FAILED)
+                observer_receipt = observation.receipt
+                observer_source = observation.verification_source
+                observer_pid = observation.process_id
+                observer_session = observation.process_session
+                observer_uid = observation.uid
+                observer_gid = observation.gid
+                if (
+                    type(observer_pid) is not int
+                    or observer_pid < 1
+                    or type(observer_session) is not int
+                    or observer_session < 1
+                    or type(observer_uid) is not int
+                    or observer_uid < 0
+                    or type(observer_gid) is not int
+                    or observer_gid < 0
+                ):
+                    raise _M4Stop(M4Reason.POSTCHECK_FAILED)
+            else:
+                (
+                    observer_pid,
+                    observer_session,
+                    observer_uid,
+                    observer_gid,
+                    postcheck_digest,
+                ) = _postcheck_child(self._profile, snapshot_descriptor, snapshot)
+                observer_body = {
+                    **observer_context,
+                    "outcome": "PASS",
+                    "proposal_digest": postcheck_digest,
+                }
+                observer_receipt = {
+                    **observer_body,
+                    "receipt_digest": canonical_digest(observer_body),
+                }
+                observer_source = external_verifications["OBSERVER_RECEIPT"]
             if not publisher.verify_external(
                 self._external_verifier_factory,
                 observer_receipt,
-                external_verifications["OBSERVER_RECEIPT"],
+                observer_source,
                 times["POSTCHECKED"],
             ):
                 raise _M4Stop(M4Reason.POSTCHECK_FAILED)
+            receipt_body = {
+                key: item
+                for key, item in observer_receipt.items()
+                if key != "receipt_digest"
+            }
+            if (
+                type(observer_receipt) is not dict
+                or receipt_body.get("outcome") != "PASS"
+                or {
+                    key: receipt_body[key]
+                    for key in observer_context
+                }
+                != observer_context
+                or type(receipt_body.get("proposal_digest")) is not str
+                or _DIGEST.fullmatch(receipt_body["proposal_digest"]) is None
+                or observer_receipt.get("receipt_digest")
+                != canonical_digest(receipt_body)
+            ):
+                raise _M4Stop(M4Reason.POSTCHECK_FAILED)
             observer_verification = publisher._external_verification_record(
-                observer_receipt, external_verifications["OBSERVER_RECEIPT"]
+                observer_receipt, observer_source
             )
             if observer_verification is None:
                 raise _M4Stop(M4Reason.POSTCHECK_FAILED)
@@ -1141,10 +1514,14 @@ class M4Coordinator:
                 "capability_id": claim.capability_id,
                 "contract_digest": capability_payload["contract_digest"],
                 "d2_frontier_digest": value["d2_frontier_digest"],
+                "attempt_cursor": begun.m4_iteration,
                 "iteration": begun.m4_iteration,
                 "target_authority_digest": self._topology.topology_digest,
                 "publication_target_binding_digest": (
                     self._topology.publication_target_binding.composite_binding_digest
+                ),
+                "publication_root_anchor_digest": (
+                    self._topology.publication_root_anchor.anchor_digest
                 ),
                 "snapshot_id": snapshot.snapshot_id,
                 "snapshot_digest": snapshot.digest,
@@ -1158,6 +1535,7 @@ class M4Coordinator:
                 "fencing_epoch": claim.fencing_epoch,
                 "publisher_principal": self._topology.subject("PUBLISHER").principal_id,
                 "publisher_session": self._topology.subject("PUBLISHER").session_id,
+                "issued_at": times["COMMITTED"],
                 "observed_at": times["COMMITTED"],
                 "expires_at": self._topology.expires_at,
             }
@@ -1165,31 +1543,62 @@ class M4Coordinator:
                 **authorization_body,
                 "authorization_digest": canonical_digest(authorization_body),
             }
-            publication_result = self._publisher.publish(
-                snapshot_descriptor,
-                authorization,
-                external_verifications["PUBLICATION_AUTHORIZATION"],
-                times["COMMITTED"],
-                _fault=_fault,
-            )
-            if (
-                publication_result.outcome is not publisher.PublisherOutcome.PUBLISHED
-                or publication_result.fact is None
-            ):
-                raise _M4Stop(M4Reason.PUBLICATION_FAILED)
-            publication_receipt = publication_result.fact.data()
+            if runtime_mode:
+                if self._runtime is None or self._external_verification_provider is None:
+                    raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+                authorization_source = self._external_verification_provider.sign(
+                    _canonical(authorization),
+                    times["COMMITTED"],
+                    "M4_PUBLICATION_AUTHORIZATION",
+                )
+                if not publisher.verify_external(
+                    self._external_verifier_factory,
+                    authorization,
+                    authorization_source,
+                    times["COMMITTED"],
+                ):
+                    raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+                runtime_publication = self._runtime.publish(
+                    snapshot_descriptor,
+                    authorization,
+                    authorization_source,
+                    times["COMMITTED"],
+                    None,
+                )
+                if type(runtime_publication) is not RuntimePublicationReceipt:
+                    raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+                publication_receipt = runtime_publication.fact.data()
+                publication_source = runtime_publication.verification_source
+            else:
+                if self._publisher is None:
+                    raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+                authorization_source = external_verifications["PUBLICATION_AUTHORIZATION"]
+                publication_result = self._publisher.publish(
+                    snapshot_descriptor,
+                    authorization,
+                    authorization_source,
+                    times["COMMITTED"],
+                    _fault=_fault,
+                )
+                if (
+                    publication_result.outcome is not publisher.PublisherOutcome.PUBLISHED
+                    or publication_result.fact is None
+                ):
+                    raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+                publication_receipt = publication_result.fact.data()
+                publication_source = external_verifications["PUBLICATION_RECEIPT"]
             if not publisher.verify_external(
                 self._external_verifier_factory,
                 publication_receipt,
-                external_verifications["PUBLICATION_RECEIPT"],
+                publication_source,
                 times["COMMITTED"],
             ):
                 raise _M4Stop(M4Reason.PUBLICATION_FAILED)
             publication_authorization_verification = publisher._external_verification_record(
-                authorization, external_verifications["PUBLICATION_AUTHORIZATION"]
+                authorization, authorization_source
             )
             publication_verification = publisher._external_verification_record(
-                publication_receipt, external_verifications["PUBLICATION_RECEIPT"]
+                publication_receipt, publication_source
             )
             if (
                 publication_authorization_verification is None
@@ -1200,27 +1609,91 @@ class M4Coordinator:
             _recheck_bound_path(self._profile, root_descriptor, staged)
             if _fault is not None:
                 _fault("before_commit_record")
-            if not self._publisher.continuity():
+            continuity_base = {
+                "continuity_version": 1,
+                "outcome": "CONTINUOUS",
+                "transaction_id": transaction_id,
+                "decision_digest": capability_payload["decision_digest"],
+                "authorized_envelope_digest": capability_payload[
+                    "authorized_envelope_digest"
+                ],
+                "claim_digest": claim.claim_digest,
+                "intent_digest": claim.intent_digest,
+                "capability_id": claim.capability_id,
+                "contract_digest": capability_payload["contract_digest"],
+                "d2_frontier_digest": value["d2_frontier_digest"],
+                "attempt_cursor": begun.m4_iteration,
+                "iteration": begun.m4_iteration,
+                "target_authority_digest": self._topology.topology_digest,
+                "publication_target_binding_digest": self._topology.publication_target_binding.composite_binding_digest,
+                "publication_root_anchor_digest": self._topology.publication_root_anchor.anchor_digest,
+                "profile_digest": claim.profile_digest,
+                "placement_digest": claim.placement_digest,
+                "session_id": claim.session_id,
+                "revocation_epoch": claim.revocation_epoch,
+                "fencing_epoch": claim.fencing_epoch,
+                "snapshot_id": snapshot.snapshot_id,
+                "snapshot_device": snapshot.device,
+                "snapshot_inode": snapshot.inode,
+                "snapshot_size": snapshot.size,
+                "snapshot_digest": snapshot.digest,
+                "seal_record_digest": seal_record_digest,
+                "postcheck_record_digest": postcheck_record_digest,
+                "observer_receipt_digest": observer_receipt["receipt_digest"],
+                "publication_authorization_digest": authorization[
+                    "authorization_digest"
+                ],
+                "publication_receipt_digest": publication_receipt["receipt_digest"],
+                "published_binding_digest": publication_receipt["published_binding"][
+                    "composite_binding_digest"
+                ],
+                "frontier_record_digest": begun.frontier_record_digest,
+                "controller_principal": self._principals.controller_principal,
+                "controller_session": self._principals.controller_session,
+                "publisher_principal": self._topology.subject("PUBLISHER").principal_id,
+                "publisher_session": self._topology.subject("PUBLISHER").session_id,
+                "expires_at": self._topology.expires_at,
+            }
+            pre_commit_continuity: dict[str, object] | None = None
+            pre_commit_verification: dict[str, object] | None = None
+            if runtime_mode:
+                pre_commit_continuity, pre_commit_verification = self._runtime_continuity(
+                    "PRE_COMMIT",
+                    {
+                        **continuity_base,
+                        "purpose": "PRE_COMMIT",
+                        "authority_record_digest": postcheck_record_digest,
+                        "issued_at": times["COMMITTED"],
+                        "observed_at": times["COMMITTED"],
+                    },
+                )
+            elif self._publisher is None or not self._publisher.continuity():
                 raise _M4Stop(M4Reason.PUBLICATION_FAILED)
             _assert_read_lease(self._profile, read_lease, staged)
             _recheck_bound_path(self._profile, root_descriptor, staged)
-            commit = _evidence(
-                {
-                    "evidence_version": 1,
-                    "seal_record_digest": seal_record_digest,
-                    "postcheck_record_digest": postcheck_record_digest,
-                    "snapshot_id": snapshot.snapshot_id,
-                    "snapshot_device": snapshot.device,
-                    "snapshot_inode": snapshot.inode,
-                    "snapshot_size": snapshot.size,
-                    "snapshot_digest": snapshot.digest,
-                    "publication_authorization": authorization,
-                    "publication_authorization_verification": publication_authorization_verification,
-                    "publication_receipt": publication_receipt,
-                    "publication_verification": publication_verification,
-                }
-            )
-            if not self._publisher.continuity():
+            commit_body = {
+                "evidence_version": 1,
+                "seal_record_digest": seal_record_digest,
+                "postcheck_record_digest": postcheck_record_digest,
+                "snapshot_id": snapshot.snapshot_id,
+                "snapshot_device": snapshot.device,
+                "snapshot_inode": snapshot.inode,
+                "snapshot_size": snapshot.size,
+                "snapshot_digest": snapshot.digest,
+                "publication_authorization": authorization,
+                "publication_authorization_verification": publication_authorization_verification,
+                "publication_receipt": publication_receipt,
+                "publication_verification": publication_verification,
+            }
+            if runtime_mode:
+                commit_body["pre_commit_continuity"] = pre_commit_continuity
+                commit_body["pre_commit_continuity_verification"] = (
+                    pre_commit_verification
+                )
+            commit = _evidence(commit_body)
+            if not runtime_mode and (
+                self._publisher is None or not self._publisher.continuity()
+            ):
                 raise _M4Stop(M4Reason.PUBLICATION_FAILED)
             current_record_digest = self._advance(
                 transaction_id, state, "COMMITTED", times, verifications, commit
@@ -1228,21 +1701,37 @@ class M4Coordinator:
             state = "COMMITTED"
             if _fault is not None:
                 _fault("after_commit")
-            if not self._publisher.continuity():
+            if not runtime_mode and (
+                self._publisher is None or not self._publisher.continuity()
+            ):
                 raise _M4Stop(M4Reason.PUBLICATION_FAILED)
             _assert_read_lease(self._profile, read_lease, staged)
             _recheck_bound_path(self._profile, root_descriptor, staged)
-            join = _evidence(
-                {
-                    "evidence_version": 1,
-                    "commit_record_digest": current_record_digest,
-                    "joined_iteration": begun.m4_iteration,
-                    "frontier_record_digest": begun.frontier_record_digest,
-                    "controller_principal": self._principals.controller_principal,
-                    "controller_session": self._principals.controller_session,
-                }
-            )
-            if not self._publisher.continuity():
+            join_body = {
+                "evidence_version": 1,
+                "commit_record_digest": current_record_digest,
+                "joined_iteration": begun.m4_iteration,
+                "frontier_record_digest": begun.frontier_record_digest,
+                "controller_principal": self._principals.controller_principal,
+                "controller_session": self._principals.controller_session,
+            }
+            if runtime_mode:
+                pre_join_continuity, pre_join_verification = self._runtime_continuity(
+                    "PRE_JOIN",
+                    {
+                        **continuity_base,
+                        "purpose": "PRE_JOIN",
+                        "authority_record_digest": current_record_digest,
+                        "issued_at": times["JOINED"],
+                        "observed_at": times["JOINED"],
+                    },
+                )
+                join_body["pre_join_continuity"] = pre_join_continuity
+                join_body["pre_join_continuity_verification"] = pre_join_verification
+            join = _evidence(join_body)
+            if not runtime_mode and (
+                self._publisher is None or not self._publisher.continuity()
+            ):
                 raise _M4Stop(M4Reason.PUBLICATION_FAILED)
             current_record_digest = self._advance(
                 transaction_id, state, "JOINED", times, verifications, join
@@ -1274,7 +1763,7 @@ class M4Coordinator:
                     except OSError:
                         pass
 
-        if transaction_id is not None and state is not None and times is not None and verifications is not None:
+        if transaction_id is not None and state is not None and times is not None:
             try:
                 if state == "COMMITTED" and current_record_digest is not None:
                     record_digest = self._advance(

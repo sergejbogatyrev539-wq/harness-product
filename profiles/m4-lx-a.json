@@ -1,0 +1,111 @@
+{
+  "profile_version": "1.0.0",
+  "profile_id": "M4-LX-A",
+  "assurance_scope": "DEPLOYMENT_ATTESTED",
+  "backend": {
+    "path": "/usr/bin/bwrap",
+    "version": "bubblewrap 0.9.0"
+  },
+  "publication": {
+    "root": "/var/lib/harness-m4-publication/anchor/publication",
+    "sandbox_root": "/var/lib/harness-m4-publication/anchor/publication",
+    "target": "/staging/artifact.txt",
+    "parent_owner": "ROOT_SUPERVISOR",
+    "root_owner": "PUBLISHER",
+    "parent_writable_roles": [],
+    "root_writable_roles": ["PUBLISHER"],
+    "git_authority": "DENY",
+    "transport": "SEALED_FD_ONLY"
+  },
+  "roles": {
+    "WORKER": {
+      "principal_id": "agent_worker-1",
+      "uid": 3001,
+      "gid": 4001,
+      "session_id": "session-1",
+      "security_label": "harness-l0-lx-a.worker",
+      "cgroup": "worker-session-1",
+      "credential_namespace": "credential-worker-1",
+      "namespace_id": "namespace-worker-1",
+      "fd_allowlist": [0, 1]
+    },
+    "CONTROLLER": {
+      "principal_id": "controller-1",
+      "uid": 3000,
+      "gid": 4000,
+      "session_id": "controller-session-1",
+      "security_label": "harness-l0-lx-a.controller",
+      "cgroup": "controller-session-1",
+      "credential_namespace": "credential-controller-1",
+      "namespace_id": "namespace-controller-1",
+      "fd_allowlist": [0, 1, 2, 3]
+    },
+    "EXECUTOR": {
+      "principal_id": "executor-3",
+      "uid": 3003,
+      "gid": 4003,
+      "session_id": "executor-session-1",
+      "security_label": "harness-l0-lx-a.executor",
+      "cgroup": "executor-session-1",
+      "credential_namespace": "credential-executor-1",
+      "namespace_id": "namespace-executor-1",
+      "fd_allowlist": [0, 1, 2]
+    },
+    "OBSERVER": {
+      "principal_id": "observer-1",
+      "uid": 3004,
+      "gid": 4004,
+      "session_id": "observer-session-1",
+      "security_label": "harness-m4-lx-a.observer",
+      "cgroup": "observer-session-1",
+      "credential_namespace": "credential-observer-1",
+      "namespace_id": "namespace-observer-1",
+      "fd_allowlist": [0, 1, 2]
+    },
+    "PUBLISHER": {
+      "principal_id": "publisher-1",
+      "uid": 3005,
+      "gid": 4005,
+      "session_id": "publisher-session-1",
+      "security_label": "harness-m4-lx-a.publisher",
+      "cgroup": "publisher-session-1",
+      "credential_namespace": "credential-publisher-1",
+      "namespace_id": "namespace-publisher-1",
+      "fd_allowlist": [0, 1, 2]
+    }
+  },
+  "receipt_keys": {
+    "M4_AUTHORITY": {
+      "key_id": "harness-m4-authority-ed25519-1",
+      "issuer_id": "controller-1",
+      "private_owner": "CONTROLLER",
+      "algorithm": "ED25519"
+    },
+    "OBSERVER": {
+      "key_id": "harness-m4-observer-ed25519-1",
+      "issuer_id": "observer-1",
+      "private_owner": "OBSERVER",
+      "algorithm": "ED25519"
+    },
+    "PUBLISHER": {
+      "key_id": "harness-m4-publisher-ed25519-1",
+      "issuer_id": "publisher-1",
+      "private_owner": "PUBLISHER",
+      "algorithm": "ED25519"
+    }
+  },
+  "supply_trust": {
+    "trust_root_id": "harness-m4-disposable-supply-root-1",
+    "signer_id": "harness-m4-supply-attestor",
+    "key_id": "harness-m4-supply-ed25519-1",
+    "private_owner": "ROOT_SUPERVISOR",
+    "algorithm": "ED25519",
+    "admission": "HOST_ATTEMPT_LEDGER_PIN_BEFORE_WORKER_GATE"
+  },
+  "limits": {
+    "wall_time_ms": 3000,
+    "receipt_lifetime_ms": 120000,
+    "max_report_bytes": 1048576,
+    "max_attempts": 2
+  }
+}

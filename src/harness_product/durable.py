@@ -180,6 +180,8 @@ _STAGE_AUTHORIZATION_KEYS = frozenset(
         "iteration",
         "target_authority_digest",
         "target_binding",
+        "publication_target_binding_digest",
+        "publication_root_anchor_digest",
         "profile_digest",
         "placement_digest",
         "session_id",
@@ -191,6 +193,31 @@ _STAGE_AUTHORIZATION_KEYS = frozenset(
     }
 )
 _STAGE_AUTHORIZATION_PAYLOAD_KEYS = frozenset({"record_type", "authorization"})
+_STAGE_EXECUTION_CONSUMPTION_KEYS = frozenset(
+    {
+        "consumption_version",
+        "transaction_id",
+        "stage_authorization_digest",
+        "claim_digest",
+        "intent_digest",
+        "capability_id",
+        "contract_digest",
+        "d2_frontier_digest",
+        "iteration",
+        "target_authority_digest",
+        "target_binding",
+        "profile_digest",
+        "placement_digest",
+        "session_id",
+        "revocation_epoch",
+        "fencing_epoch",
+        "consumed_at",
+        "expires_at",
+    }
+)
+_STAGE_EXECUTION_GRANT_KEYS = frozenset(
+    {"record_type", "authorization", "authorization_verification", "consumption"}
+)
 _STAGE_CONSUMPTION_EVENT_KEYS = frozenset(
     {
         "transaction_id",
@@ -205,6 +232,14 @@ _STAGE_CONSUMPTION_EVENT_KEYS = frozenset(
         "revocation_epoch",
         "fencing_epoch",
         "observed_at",
+    }
+)
+_STAGE_CONSUMPTION_DYNAMIC_EVENT_KEYS = frozenset(
+    set(_STAGE_CONSUMPTION_EVENT_KEYS)
+    | {
+        "execution_grant",
+        "execution_grant_verification",
+        "execution_grant_verification_digest",
     }
 )
 _STAGE_RECORD_KEYS = frozenset(
@@ -240,7 +275,13 @@ _OBSERVER_RECEIPT_KEYS = frozenset(
         "intent_digest",
         "decision_digest",
         "authorized_envelope_digest",
+        "contract_digest",
+        "d2_frontier_digest",
+        "attempt_cursor",
+        "iteration",
         "target_authority_digest",
+        "publication_target_binding_digest",
+        "publication_root_anchor_digest",
         "profile_digest",
         "placement_digest",
         "session_id",
@@ -254,7 +295,9 @@ _OBSERVER_RECEIPT_KEYS = frozenset(
         "proposal_digest",
         "revocation_epoch",
         "fencing_epoch",
+        "issued_at",
         "observed_at",
+        "expires_at",
         "receipt_digest",
     }
 )
@@ -269,9 +312,11 @@ _PUBLICATION_AUTHORIZATION_KEYS = frozenset(
         "capability_id",
         "contract_digest",
         "d2_frontier_digest",
+        "attempt_cursor",
         "iteration",
         "target_authority_digest",
         "publication_target_binding_digest",
+        "publication_root_anchor_digest",
         "snapshot_id",
         "snapshot_digest",
         "snapshot_size",
@@ -284,6 +329,7 @@ _PUBLICATION_AUTHORIZATION_KEYS = frozenset(
         "fencing_epoch",
         "publisher_principal",
         "publisher_session",
+        "issued_at",
         "observed_at",
         "expires_at",
         "authorization_digest",
@@ -294,17 +340,80 @@ _PUBLICATION_RECEIPT_KEYS = frozenset(
         "receipt_version",
         "outcome",
         "transaction_id",
+        "decision_digest",
+        "authorized_envelope_digest",
+        "claim_digest",
+        "intent_digest",
+        "capability_id",
+        "contract_digest",
+        "d2_frontier_digest",
+        "attempt_cursor",
+        "iteration",
         "target_authority_digest",
+        "publication_target_binding_digest",
+        "publication_root_anchor_digest",
         "snapshot_id",
         "snapshot_digest",
         "snapshot_size",
         "before_binding",
         "published_binding",
         "publisher_subject",
+        "profile_digest",
+        "placement_digest",
+        "session_id",
+        "revocation_epoch",
+        "fencing_epoch",
         "authorization_digest",
         "publication_method",
+        "issued_at",
         "observed_at",
+        "expires_at",
         "receipt_digest",
+    }
+)
+_M4_CONTINUITY_KEYS = frozenset(
+    {
+        "continuity_version",
+        "purpose",
+        "outcome",
+        "transaction_id",
+        "decision_digest",
+        "authorized_envelope_digest",
+        "claim_digest",
+        "intent_digest",
+        "capability_id",
+        "contract_digest",
+        "d2_frontier_digest",
+        "attempt_cursor",
+        "iteration",
+        "target_authority_digest",
+        "publication_target_binding_digest",
+        "publication_root_anchor_digest",
+        "profile_digest",
+        "placement_digest",
+        "session_id",
+        "revocation_epoch",
+        "fencing_epoch",
+        "snapshot_id",
+        "snapshot_device",
+        "snapshot_inode",
+        "snapshot_size",
+        "snapshot_digest",
+        "seal_record_digest",
+        "postcheck_record_digest",
+        "observer_receipt_digest",
+        "publication_authorization_digest",
+        "publication_receipt_digest",
+        "published_binding_digest",
+        "frontier_record_digest",
+        "controller_principal",
+        "controller_session",
+        "publisher_principal",
+        "publisher_session",
+        "authority_record_digest",
+        "issued_at",
+        "observed_at",
+        "expires_at",
     }
 )
 _M4_EVIDENCE_KEYS = {
@@ -392,6 +501,12 @@ _M4_EVIDENCE_KEYS = {
         {"evidence_version", "quarantine_record_digest", "evidence_digest"}
     ),
 }
+_M4_RUNTIME_COMMITTED_EVIDENCE_KEYS = _M4_EVIDENCE_KEYS["COMMITTED"] | frozenset(
+    {"pre_commit_continuity", "pre_commit_continuity_verification"}
+)
+_M4_RUNTIME_JOINED_EVIDENCE_KEYS = _M4_EVIDENCE_KEYS["JOINED"] | frozenset(
+    {"pre_join_continuity", "pre_join_continuity_verification"}
+)
 _M4_RECORD_KEYS = frozenset(
     {
         "record_version",
@@ -660,6 +775,25 @@ class M4Verifier(Protocol):
     ) -> VerificationResult: ...
 
 
+class M4VerificationProvider(Protocol):
+    """Trusted post-construction signer for exact M4 canonical payload bytes."""
+
+    def sign(
+        self,
+        payload: bytes,
+        observed_at: str,
+        purpose: str,
+    ) -> dict[str, object]: ...
+
+    def verify(
+        self,
+        purpose: str,
+        payload: bytes,
+        record: bytes,
+        observed_at: str,
+    ) -> VerificationResult: ...
+
+
 @dataclass(frozen=True, slots=True)
 class DispatchClaim:
     transaction_id: str
@@ -733,8 +867,24 @@ class M4Recovery:
     contract_digest: str
     d2_frontier_digest: str
     fencing_epoch: int
+    record_digest: str | None
+    frontier_record_digest: str
+    iteration: int
+    frontier_attempt_cursor: int
+    frontier_joined_iteration: int
+    attempt_cursor: int
+    joined_iteration: int
+    journal_sequence: int
+    intent_state: str
+    revocation_epoch: int
     resume_allowed: bool = False
     retry_allowed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class StageExecutionGrant:
+    payload_json: str
+    verification_json: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -755,6 +905,7 @@ class DurableResult:
     m4_iteration: int | None = None
     frontier_record_digest: str | None = None
     m4_recovery: tuple[M4Recovery, ...] = ()
+    stage_execution_grant: StageExecutionGrant | None = None
 
     @property
     def committed(self) -> bool:
@@ -1401,6 +1552,8 @@ def _valid_stage_authorization(value: object) -> bool:
                 "contract_digest",
                 "d2_frontier_digest",
                 "target_authority_digest",
+                "publication_target_binding_digest",
+                "publication_root_anchor_digest",
                 "profile_digest",
                 "placement_digest",
                 "authorization_digest",
@@ -1418,6 +1571,177 @@ def _valid_stage_authorization(value: object) -> bool:
         return False
     body = {key: value[key] for key in value if key != "authorization_digest"}
     return canonical_digest(body) == value["authorization_digest"]
+
+
+def _valid_stage_execution_consumption(value: object) -> bool:
+    if not _closed_dict(value, _STAGE_EXECUTION_CONSUMPTION_KEYS):
+        return False
+    consumed = _parse_time(value["consumed_at"])
+    expires = _parse_time(value["expires_at"])
+    return (
+        value["consumption_version"] == FORMAT_VERSION
+        and all(
+            _valid_identifier(value[field])
+            for field in ("transaction_id", "session_id")
+        )
+        and all(
+            _valid_digest(value[field])
+            for field in (
+                "stage_authorization_digest",
+                "claim_digest",
+                "intent_digest",
+                "capability_id",
+                "contract_digest",
+                "d2_frontier_digest",
+                "target_authority_digest",
+                "profile_digest",
+                "placement_digest",
+            )
+        )
+        and _bounded_integer(value["iteration"], 1)
+        and _valid_path_binding(value["target_binding"])
+        and _bounded_integer(value["revocation_epoch"])
+        and _bounded_integer(value["fencing_epoch"], 1)
+        and consumed is not None
+        and expires is not None
+        and consumed < expires
+    )
+
+
+def _valid_stage_execution_grant(value: object) -> bool:
+    if not _closed_dict(value, _STAGE_EXECUTION_GRANT_KEYS):
+        return False
+    authorization = value["authorization"]
+    authorization_verification = value["authorization_verification"]
+    consumption = value["consumption"]
+    authorization_payload = {
+        "record_type": "M4_STAGE_AUTHORIZATION",
+        "authorization": authorization,
+    }
+    return (
+        value["record_type"] == "M4_STAGE_EXECUTION_GRANT"
+        and _valid_stage_authorization(authorization)
+        and _closed_dict(authorization_verification, _VERIFICATION_RECORD_KEYS)
+        and authorization_verification["bindings"] == authorization_payload
+        and authorization_verification["payload_digest"]
+        == canonical_digest(authorization_payload)
+        and _valid_stage_execution_consumption(consumption)
+        and consumption["transaction_id"] == authorization["transaction_id"]
+        and consumption["stage_authorization_digest"]
+        == authorization["authorization_digest"]
+        and consumption["claim_digest"] == authorization["claim_digest"]
+        and consumption["intent_digest"] == authorization["intent_digest"]
+        and consumption["capability_id"] == authorization["capability_id"]
+        and consumption["contract_digest"] == authorization["contract_digest"]
+        and consumption["d2_frontier_digest"]
+        == authorization["d2_frontier_digest"]
+        and consumption["iteration"] == authorization["iteration"]
+        and consumption["target_authority_digest"]
+        == authorization["target_authority_digest"]
+        and consumption["target_binding"] == authorization["target_binding"]
+        and consumption["profile_digest"] == authorization["profile_digest"]
+        and consumption["placement_digest"] == authorization["placement_digest"]
+        and consumption["session_id"] == authorization["session_id"]
+        and consumption["revocation_epoch"] == authorization["revocation_epoch"]
+        and consumption["fencing_epoch"] == authorization["fencing_epoch"]
+        and consumption["expires_at"] == authorization["expires_at"]
+    )
+
+
+def verify_stage_execution_grant(
+    grant: object,
+    verifier: object,
+    claim: object,
+    stage_authorization_digest: object,
+    target_binding: object,
+    observed_at: object,
+) -> bool:
+    """Independently verify one post-consume execution grant at the executor."""
+
+    try:
+        if (
+            type(grant) is not StageExecutionGrant
+            or type(claim) is not DispatchClaim
+            or not _valid_digest(stage_authorization_digest)
+            or not _valid_path_binding(target_binding)
+            or type(observed_at) is not str
+            or _parse_time(observed_at) is None
+            or not callable(getattr(verifier, "verify", None))
+        ):
+            return False
+        payload = _json_value(grant.payload_json)
+        verification = _json_value(grant.verification_json)
+        if (
+            not _valid_stage_execution_grant(payload)
+            or not _closed_dict(verification, _VERIFICATION_RECORD_KEYS)
+            or verification["bindings"] != payload
+            or verification["payload_digest"] != canonical_digest(payload)
+        ):
+            return False
+        result = verifier.verify(
+            grant.payload_json.encode("utf-8"),
+            grant.verification_json.encode("utf-8"),
+            observed_at,
+        )
+        if (
+            type(result) is not VerificationResult
+            or result.status is not VerificationStatus.VERIFIED
+            or result.verifier_id != verification["verifier_id"]
+            or result.payload_digest != canonical_digest(payload)
+            or result.record_digest != canonical_digest(verification)
+        ):
+            return False
+        authorization = payload["authorization"]
+        authorization_verification = payload["authorization_verification"]
+        authorization_payload = {
+            "record_type": "M4_STAGE_AUTHORIZATION",
+            "authorization": authorization,
+        }
+        authorization_result = verifier.verify(
+            _canonical_bytes(authorization_payload),
+            _canonical_bytes(authorization_verification),
+            observed_at,
+        )
+        consumption = payload["consumption"]
+        capability_payload = _json_value(claim.capability_payload_json)
+        issued_at = _parse_time(authorization["issued_at"])
+        consumed_at = _parse_time(consumption["consumed_at"])
+        expires_at = _parse_time(consumption["expires_at"])
+        observed = _parse_time(observed_at)
+        return (
+            type(authorization_result) is VerificationResult
+            and authorization_result.status is VerificationStatus.VERIFIED
+            and authorization_result.verifier_id
+            == authorization_verification["verifier_id"]
+            and authorization_result.payload_digest
+            == canonical_digest(authorization_payload)
+            and authorization_result.record_digest
+            == canonical_digest(authorization_verification)
+            and type(capability_payload) is dict
+            and consumption["transaction_id"] == claim.transaction_id
+            and consumption["stage_authorization_digest"]
+            == stage_authorization_digest
+            and consumption["claim_digest"] == claim.claim_digest
+            and consumption["intent_digest"] == claim.intent_digest
+            and consumption["capability_id"] == claim.capability_id
+            and consumption["contract_digest"] == capability_payload["contract_digest"]
+            and consumption["target_authority_digest"]
+            == claim.target_authority_digest
+            and consumption["target_binding"] == target_binding
+            and consumption["profile_digest"] == claim.profile_digest
+            and consumption["placement_digest"] == claim.placement_digest
+            and consumption["session_id"] == claim.session_id
+            and consumption["revocation_epoch"] == claim.revocation_epoch
+            and consumption["fencing_epoch"] == claim.fencing_epoch
+            and consumption["consumed_at"] == observed_at
+            and issued_at is not None
+            and consumed_at is not None
+            and expires_at is not None
+            and observed is not None
+            and issued_at <= consumed_at <= observed < expires_at
+        )
+    except Exception:
+        return False
 
 
 def _valid_stage_record(
@@ -1484,6 +1808,96 @@ def _valid_receipt_digest(value: dict[str, object]) -> bool:
     return _valid_digest(value.get("receipt_digest")) and canonical_digest(body) == value["receipt_digest"]
 
 
+def _valid_m4_continuity(
+    value: object,
+    verification: object,
+    *,
+    purpose: str,
+    authority_record_digest: str,
+    transaction: sqlite3.Row,
+    capability: dict[str, object],
+    frontier: dict[str, object],
+    stage_authorization: dict[str, object],
+    sealed: dict[str, object],
+    seal_record_digest: str,
+    postcheck_record_digest: str,
+    observer_receipt: dict[str, object],
+    publication_authorization: dict[str, object],
+    publication_receipt: dict[str, object],
+    observed_at: str,
+    verification_check: object,
+    controller: tuple[str, str] | None = None,
+) -> bool:
+    try:
+        subject = publication_receipt["publisher_subject"]
+        published = publication_receipt["published_binding"]
+        if (
+            not _closed_dict(value, _M4_CONTINUITY_KEYS)
+            or value["continuity_version"] != FORMAT_VERSION
+            or value["purpose"] != purpose
+            or value["outcome"] != "CONTINUOUS"
+            or value["transaction_id"] != transaction["transaction_id"]
+            or value["decision_digest"] != transaction["decision_digest"]
+            or value["authorized_envelope_digest"]
+            != transaction["authorized_envelope_digest"]
+            or value["claim_digest"] != transaction["claim_digest"]
+            or value["intent_digest"] != transaction["intent_digest"]
+            or value["capability_id"] != transaction["capability_id"]
+            or value["contract_digest"] != transaction["contract_digest"]
+            or value["d2_frontier_digest"] != transaction["d2_frontier_digest"]
+            or value["attempt_cursor"] != transaction["iteration"]
+            or value["iteration"] != transaction["iteration"]
+            or value["target_authority_digest"] != capability["target_authority_digest"]
+            or value["publication_target_binding_digest"]
+            != stage_authorization["publication_target_binding_digest"]
+            or value["publication_root_anchor_digest"]
+            != stage_authorization["publication_root_anchor_digest"]
+            or value["profile_digest"] != capability["profile_digest"]
+            or value["placement_digest"] != capability["placement_digest"]
+            or value["session_id"] != capability["session_id"]
+            or value["revocation_epoch"] != transaction["revocation_epoch"]
+            or value["fencing_epoch"] != transaction["fencing_epoch"]
+            or not _same_snapshot(value, sealed)
+            or value["seal_record_digest"] != seal_record_digest
+            or value["postcheck_record_digest"] != postcheck_record_digest
+            or value["observer_receipt_digest"] != observer_receipt["receipt_digest"]
+            or value["publication_authorization_digest"]
+            != publication_authorization["authorization_digest"]
+            or value["publication_receipt_digest"]
+            != publication_receipt["receipt_digest"]
+            or value["published_binding_digest"]
+            != published["composite_binding_digest"]
+            or value["frontier_record_digest"] != frontier["frontier_record_digest"]
+            or value["publisher_principal"] != subject["principal_id"]
+            or value["publisher_session"] != subject["session_id"]
+            or value["authority_record_digest"] != authority_record_digest
+            or value["issued_at"] != observed_at
+            or value["observed_at"] != observed_at
+            or value["expires_at"] != capability["expires_at"]
+            or _parse_time(value["issued_at"]) is None
+            or _parse_time(value["expires_at"]) is None
+            or _parse_time(value["expires_at"]) <= _parse_time(observed_at)
+            or not _valid_identifier(value["controller_principal"])
+            or not _valid_identifier(value["controller_session"])
+            or value["controller_principal"]
+            in {capability["principal_id"], capability["audience_id"]}
+            or value["controller_session"] == capability["session_id"]
+            or (
+                controller is not None
+                and (
+                    value["controller_principal"], value["controller_session"]
+                )
+                != controller
+            )
+            or not callable(verification_check)
+            or not verification_check(value, verification, observed_at)
+        ):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def _m4_evidence_object_digest(
     state: str,
     evidence: object,
@@ -1491,13 +1905,25 @@ def _m4_evidence_object_digest(
     capability: dict[str, object],
     intent: dict[str, object],
     frontier: dict[str, object],
+    stage_authorization: dict[str, object],
     prior: dict[str, tuple[str, dict[str, object]]],
     observed_at: str,
     verification_check: object,
 ) -> str | None:
     """Validate one closed stage record and return its continuing object binding."""
 
-    if state not in _M4_EVIDENCE_KEYS or not _closed_dict(evidence, _M4_EVIDENCE_KEYS[state]):
+    allowed = _M4_EVIDENCE_KEYS.get(state)
+    if state == "COMMITTED" and type(evidence) is dict and (
+        "pre_commit_continuity" in evidence
+        or "pre_commit_continuity_verification" in evidence
+    ):
+        allowed = _M4_RUNTIME_COMMITTED_EVIDENCE_KEYS
+    elif state == "JOINED" and type(evidence) is dict and (
+        "pre_join_continuity" in evidence
+        or "pre_join_continuity_verification" in evidence
+    ):
+        allowed = _M4_RUNTIME_JOINED_EVIDENCE_KEYS
+    if allowed is None or not _closed_dict(evidence, allowed):
         raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
     if evidence["evidence_version"] != FORMAT_VERSION:
         raise _Rejected(DurableOutcome.STOP, DurableReason.UNKNOWN_INPUT)
@@ -1588,7 +2014,15 @@ def _m4_evidence_object_digest(
             or receipt["decision_digest"] != transaction["decision_digest"]
             or receipt["authorized_envelope_digest"]
             != transaction["authorized_envelope_digest"]
+            or receipt["contract_digest"] != transaction["contract_digest"]
+            or receipt["d2_frontier_digest"] != transaction["d2_frontier_digest"]
+            or receipt["attempt_cursor"] != transaction["iteration"]
+            or receipt["iteration"] != transaction["iteration"]
             or receipt["target_authority_digest"] != capability["target_authority_digest"]
+            or receipt["publication_target_binding_digest"]
+            != stage_authorization["publication_target_binding_digest"]
+            or receipt["publication_root_anchor_digest"]
+            != stage_authorization["publication_root_anchor_digest"]
             or receipt["profile_digest"] != capability["profile_digest"]
             or receipt["placement_digest"] != capability["placement_digest"]
             or receipt["session_id"] != capability["session_id"]
@@ -1606,8 +2040,12 @@ def _m4_evidence_object_digest(
             or receipt["revocation_epoch"] != transaction["revocation_epoch"]
             or receipt["fencing_epoch"] != transaction["fencing_epoch"]
             or not _valid_digest(receipt["proposal_digest"])
+            or receipt["issued_at"] != observed_at
             or receipt["observed_at"] != observed_at
+            or receipt["expires_at"] != capability["expires_at"]
+            or _parse_time(receipt["issued_at"]) is None
             or _parse_time(receipt["observed_at"]) is None
+            or _parse_time(receipt["expires_at"]) is None
             or not _valid_receipt_digest(receipt)
             or not callable(verification_check)
             or not verification_check(
@@ -1622,9 +2060,11 @@ def _m4_evidence_object_digest(
         postcheck_digest, postchecked = prior["POSTCHECKED"]
         authorization = evidence["publication_authorization"]
         receipt = evidence["publication_receipt"]
+        observer_receipt = postchecked["evidence"]["observer_receipt"]
         before = receipt.get("before_binding") if type(receipt) is dict else None
         published = receipt.get("published_binding") if type(receipt) is dict else None
         subject = receipt.get("publisher_subject") if type(receipt) is dict else None
+        runtime_continuity = "pre_commit_continuity" in evidence
         if (
             current is None
             or evidence["seal_record_digest"] != seal_digest
@@ -1642,9 +2082,14 @@ def _m4_evidence_object_digest(
             or authorization["capability_id"] != transaction["capability_id"]
             or authorization["contract_digest"] != transaction["contract_digest"]
             or authorization["d2_frontier_digest"] != transaction["d2_frontier_digest"]
+            or authorization["attempt_cursor"] != transaction["iteration"]
             or authorization["iteration"] != transaction["iteration"]
             or authorization["target_authority_digest"]
             != capability["target_authority_digest"]
+            or authorization["publication_target_binding_digest"]
+            != observer_receipt["publication_target_binding_digest"]
+            or authorization["publication_root_anchor_digest"]
+            != observer_receipt["publication_root_anchor_digest"]
             or authorization["snapshot_id"] != evidence["snapshot_id"]
             or authorization["snapshot_digest"] != evidence["snapshot_digest"]
             or authorization["snapshot_size"] != evidence["snapshot_size"]
@@ -1655,7 +2100,9 @@ def _m4_evidence_object_digest(
             or authorization["session_id"] != capability["session_id"]
             or authorization["revocation_epoch"] != transaction["revocation_epoch"]
             or authorization["fencing_epoch"] != transaction["fencing_epoch"]
+            or authorization["issued_at"] != observed_at
             or authorization["observed_at"] != observed_at
+            or _parse_time(authorization["issued_at"]) is None
             or _parse_time(authorization["expires_at"]) is None
             or _parse_time(authorization["expires_at"]) <= _parse_time(observed_at)
             or not _valid_identifier(authorization["publisher_principal"])
@@ -1679,7 +2126,21 @@ def _m4_evidence_object_digest(
             or receipt["receipt_version"] != FORMAT_VERSION
             or receipt["outcome"] != "PUBLISHED"
             or receipt["transaction_id"] != transaction["transaction_id"]
+            or receipt["decision_digest"] != transaction["decision_digest"]
+            or receipt["authorized_envelope_digest"]
+            != transaction["authorized_envelope_digest"]
+            or receipt["claim_digest"] != transaction["claim_digest"]
+            or receipt["intent_digest"] != transaction["intent_digest"]
+            or receipt["capability_id"] != transaction["capability_id"]
+            or receipt["contract_digest"] != transaction["contract_digest"]
+            or receipt["d2_frontier_digest"] != transaction["d2_frontier_digest"]
+            or receipt["attempt_cursor"] != transaction["iteration"]
+            or receipt["iteration"] != transaction["iteration"]
             or receipt["target_authority_digest"] != capability["target_authority_digest"]
+            or receipt["publication_target_binding_digest"]
+            != authorization["publication_target_binding_digest"]
+            or receipt["publication_root_anchor_digest"]
+            != authorization["publication_root_anchor_digest"]
             or receipt["snapshot_id"] != evidence["snapshot_id"]
             or receipt["snapshot_digest"] != evidence["snapshot_digest"]
             or receipt["snapshot_size"] != evidence["snapshot_size"]
@@ -1692,6 +2153,11 @@ def _m4_evidence_object_digest(
             or before["mount_identity"] != published["mount_identity"]
             or published["final_digest"] != evidence["snapshot_digest"]
             or not _valid_security_subject(subject)
+            or receipt["profile_digest"] != capability["profile_digest"]
+            or receipt["placement_digest"] != capability["placement_digest"]
+            or receipt["session_id"] != capability["session_id"]
+            or receipt["revocation_epoch"] != transaction["revocation_epoch"]
+            or receipt["fencing_epoch"] != transaction["fencing_epoch"]
             or receipt["authorization_digest"] != authorization["authorization_digest"]
             or subject["principal_id"] != authorization["publisher_principal"]
             or subject["session_id"] != authorization["publisher_session"]
@@ -1699,18 +2165,47 @@ def _m4_evidence_object_digest(
             or subject["session_id"] == capability["session_id"]
             or not _valid_digest(receipt["authorization_digest"])
             or receipt["publication_method"] != "ATOMIC_REPLACE_FSYNC"
+            or receipt["issued_at"] != observed_at
             or receipt["observed_at"] != observed_at
+            or receipt["expires_at"] != authorization["expires_at"]
+            or _parse_time(receipt["issued_at"]) is None
             or _parse_time(receipt["observed_at"]) is None
+            or _parse_time(receipt["expires_at"]) is None
             or not _valid_receipt_digest(receipt)
             or not verification_check(
                 receipt, evidence["publication_verification"], observed_at
+            )
+            or (
+                runtime_continuity
+                and not _valid_m4_continuity(
+                    evidence["pre_commit_continuity"],
+                    evidence["pre_commit_continuity_verification"],
+                    purpose="PRE_COMMIT",
+                    authority_record_digest=postcheck_digest,
+                    transaction=transaction,
+                    capability=capability,
+                    frontier=frontier,
+                    stage_authorization=stage_authorization,
+                    sealed=sealed["evidence"],
+                    seal_record_digest=seal_digest,
+                    postcheck_record_digest=postcheck_digest,
+                    observer_receipt=observer_receipt,
+                    publication_authorization=authorization,
+                    publication_receipt=receipt,
+                    observed_at=observed_at,
+                    verification_check=verification_check,
+                )
             )
             or not _valid_digest(evidence["evidence_digest"])
         ):
             raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
         return published["composite_binding_digest"]
     if state == "JOINED":
-        commit_digest, _ = prior["COMMITTED"]
+        commit_digest, committed = prior["COMMITTED"]
+        seal_digest, sealed = prior["SEALED"]
+        postcheck_digest, postchecked = prior["POSTCHECKED"]
+        committed_evidence = committed["evidence"]
+        runtime_continuity = "pre_join_continuity" in evidence
         if (
             current is None
             or evidence["commit_record_digest"] != commit_digest
@@ -1722,6 +2217,36 @@ def _m4_evidence_object_digest(
             )
             or evidence["controller_principal"] in {capability["principal_id"], capability["audience_id"]}
             or evidence["controller_session"] == capability["session_id"]
+            or (
+                runtime_continuity
+                and (
+                    "pre_commit_continuity" not in committed_evidence
+                    or not _valid_m4_continuity(
+                        evidence["pre_join_continuity"],
+                        evidence["pre_join_continuity_verification"],
+                        purpose="PRE_JOIN",
+                        authority_record_digest=commit_digest,
+                        transaction=transaction,
+                        capability=capability,
+                        frontier=frontier,
+                        stage_authorization=stage_authorization,
+                        sealed=sealed["evidence"],
+                        seal_record_digest=seal_digest,
+                        postcheck_record_digest=postcheck_digest,
+                        observer_receipt=postchecked["evidence"]["observer_receipt"],
+                        publication_authorization=committed_evidence[
+                            "publication_authorization"
+                        ],
+                        publication_receipt=committed_evidence["publication_receipt"],
+                        observed_at=observed_at,
+                        verification_check=verification_check,
+                        controller=(
+                            evidence["controller_principal"],
+                            evidence["controller_session"],
+                        ),
+                    )
+                )
+            )
             or not _valid_digest(evidence["evidence_digest"])
         ):
             raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
@@ -2116,6 +2641,7 @@ class DurableStore:
         executor_claim_verifier: ExecutorClaimVerifier | None = None,
         runtime_session_verifier: RuntimeSessionVerifier | None = None,
         m4_verifier: M4Verifier | None = None,
+        m4_verification_provider: M4VerificationProvider | None = None,
         _fault: object | None = None,
     ) -> None:
         self._path = path if type(path) is str else ""
@@ -2124,6 +2650,7 @@ class DurableStore:
         self._executor_claim_verifier = executor_claim_verifier
         self._runtime_session_verifier = runtime_session_verifier
         self._m4_verifier = m4_verifier
+        self._m4_verification_provider = m4_verification_provider
         self._fault = _fault
         self._usable = False
         self._stopped_reason = DurableReason.MALFORMED_INPUT
@@ -2159,6 +2686,12 @@ class DurableStore:
         except Exception:
             connection.close()
             raise
+
+    @property
+    def dynamic_m4_verification(self) -> bool:
+        """Whether this store can emit and reverify post-canonical M4 records."""
+
+        return self._m4_verification_provider is not None
 
     def _initialize_or_validate_schema(self, connection: sqlite3.Connection) -> None:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -3593,7 +4126,7 @@ class DurableStore:
             }
             if (
                 _parse_time(row["terminal_at"]) is None
-                or row["terminal_reason"] not in {"RELEASED", "QUARANTINED_ESCROW"}
+                or row["terminal_reason"] not in {"SPENT", "RELEASED", "QUARANTINED_ESCROW"}
                 or terminal_event is None
                 or tuple(terminal_event[:2]) != ("RUNTIME_SESSION_" + row["state"], row["session_record_id"])
                 or _json_value(terminal_event["payload_json"]) != expected_terminal
@@ -3888,7 +4421,10 @@ class DurableStore:
                 or canonical_digest(stage_verification)
                 != event_payload.get("stage_authorization_verification_digest")
                 or not self._embedded_m4_verification_is_valid(
-                    stage_payload, stage_verification, row["started_at"]
+                    stage_payload,
+                    stage_verification,
+                    row["started_at"],
+                    "M4_STAGE_AUTHORIZATION",
                 )
                 or event is None
                 or tuple(event[:2]) != ("M4_DISPATCH_BOUND", row["transaction_id"])
@@ -3927,9 +4463,24 @@ class DurableStore:
                     if type(consumed) is dict
                     else None,
                 }
+                dynamic_consumption = self._m4_verification_provider is not None
+                consumed_base = (
+                    {
+                        key: consumed[key]
+                        for key in _STAGE_CONSUMPTION_EVENT_KEYS
+                    }
+                    if type(consumed) is dict
+                    and _STAGE_CONSUMPTION_EVENT_KEYS.issubset(consumed)
+                    else None
+                )
                 if (
-                    not _closed_dict(consumed, _STAGE_CONSUMPTION_EVENT_KEYS)
-                    or consumed != expected_consumed
+                    not _closed_dict(
+                        consumed,
+                        _STAGE_CONSUMPTION_DYNAMIC_EVENT_KEYS
+                        if dynamic_consumption
+                        else _STAGE_CONSUMPTION_EVENT_KEYS,
+                    )
+                    or consumed_base != expected_consumed
                     or (consumed_time := _parse_time(consumed["observed_at"])) is None
                     or (stage_issued := _parse_time(stage_authorization["issued_at"]))
                     is None
@@ -3939,6 +4490,52 @@ class DurableStore:
                     or consumed_events[0]["sequence"] <= row["started_journal_sequence"]
                 ):
                     raise _StoreCorrupt("M4 stage authorization event mismatch")
+                if dynamic_consumption:
+                    grant_payload = consumed["execution_grant"]
+                    grant_verification = consumed["execution_grant_verification"]
+                    expected_consumption = {
+                        "consumption_version": FORMAT_VERSION,
+                        "transaction_id": row["transaction_id"],
+                        "stage_authorization_digest": stage_authorization[
+                            "authorization_digest"
+                        ],
+                        "claim_digest": row["claim_digest"],
+                        "intent_digest": row["intent_digest"],
+                        "capability_id": row["capability_id"],
+                        "contract_digest": row["contract_digest"],
+                        "d2_frontier_digest": row["d2_frontier_digest"],
+                        "iteration": row["iteration"],
+                        "target_authority_digest": stage_authorization[
+                            "target_authority_digest"
+                        ],
+                        "target_binding": stage_authorization["target_binding"],
+                        "profile_digest": capability["profile_digest"],
+                        "placement_digest": capability["placement_digest"],
+                        "session_id": capability["session_id"],
+                        "revocation_epoch": row["revocation_epoch"],
+                        "fencing_epoch": row["fencing_epoch"],
+                        "consumed_at": consumed["observed_at"],
+                        "expires_at": capability["expires_at"],
+                    }
+                    if (
+                        not _valid_stage_execution_grant(grant_payload)
+                        or grant_payload["authorization"] != stage_authorization
+                        or grant_payload["authorization_verification"]
+                        != stage_verification
+                        or grant_payload["consumption"] != expected_consumption
+                        or not _closed_dict(
+                            grant_verification, _VERIFICATION_RECORD_KEYS
+                        )
+                        or canonical_digest(grant_verification)
+                        != consumed["execution_grant_verification_digest"]
+                        or not self._embedded_m4_verification_is_valid(
+                            grant_payload,
+                            grant_verification,
+                            consumed["observed_at"],
+                            "M4_STAGE_EXECUTION_GRANT",
+                        )
+                    ):
+                        raise _StoreCorrupt("M4 execution grant mismatch")
             transitions = connection.execute(
                 "SELECT * FROM m4_transition_records WHERE transaction_id=? ORDER BY transition_index",
                 (row["transaction_id"],),
@@ -4016,6 +4613,7 @@ class DurableStore:
                         capability_value,
                         intent_value,
                         frontier_value,
+                        stage_authorization,
                         prior,
                         transition_row["observed_at"],
                         self._embedded_m4_verification_is_valid,
@@ -4054,6 +4652,15 @@ class DurableStore:
                     or verification.get("bindings") != record
                     or verification.get("payload_digest") != transition_row["record_digest"]
                     or canonical_digest(verification) != transition_row["verification_digest"]
+                    or not self._m4_verification_is_valid(
+                        transition_row["record_json"],
+                        transition_row["record_digest"],
+                        verification,
+                        transition_row["verification_json"],
+                        transition_row["verification_digest"],
+                        transition_row["observed_at"],
+                        "M4_TRANSITION:" + state,
+                    )
                     or record["transaction_id"] != row["transaction_id"]
                     or record["contract_digest"] != row["contract_digest"]
                     or record["d2_frontier_digest"] != row["d2_frontier_digest"]
@@ -4341,28 +4948,64 @@ class DurableStore:
         verification_text: str,
         verification_digest: str,
         observed_at: str,
+        purpose: str | None = None,
     ) -> bool:
         try:
             if self._m4_verifier is None:
                 return False
-            result = self._m4_verifier.verify(
-                payload_text.encode("utf-8"), verification_text.encode("utf-8"), observed_at
-            )
-            return (
+            payload_bytes = payload_text.encode("utf-8")
+            verification_bytes = verification_text.encode("utf-8")
+            result = self._m4_verifier.verify(payload_bytes, verification_bytes, observed_at)
+            generic_valid = (
                 type(result) is VerificationResult
                 and result.status is VerificationStatus.VERIFIED
                 and result.verifier_id == verification["verifier_id"]
                 and result.payload_digest == payload_digest
                 and result.record_digest == verification_digest
             )
+            if not generic_valid:
+                return False
+            if purpose is None or self._m4_verification_provider is None:
+                return True
+            routed = self._m4_verification_provider.verify(
+                purpose, payload_bytes, verification_bytes, observed_at
+            )
+            return (
+                type(routed) is VerificationResult
+                and routed.status is VerificationStatus.VERIFIED
+                and routed.verifier_id == verification["verifier_id"]
+                and routed.payload_digest == payload_digest
+                and routed.record_digest == verification_digest
+            )
         except Exception:
             return False
+
+    def _m4_verification_source(
+        self,
+        payload: dict[str, object],
+        observed_at: str,
+        purpose: str,
+        supplied: object | None,
+    ) -> dict[str, object]:
+        if self._m4_verification_provider is None:
+            if not _valid_verification_source(supplied):
+                raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+            return supplied
+        if supplied is not None:
+            raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        source = self._m4_verification_provider.sign(
+            _canonical_bytes(payload), observed_at, purpose
+        )
+        if not _valid_verification_source(source):
+            raise _Rejected(DurableOutcome.STOP, DurableReason.M4_EVIDENCE_INVALID)
+        return source
 
     def _embedded_m4_verification_is_valid(
         self,
         payload: object,
         verification: object,
         observed_at: str,
+        purpose: str | None = None,
     ) -> bool:
         try:
             if type(payload) is not dict or not _closed_dict(
@@ -4384,6 +5027,7 @@ class DurableStore:
                     verification_text,
                     verification_digest,
                     observed_at,
+                    purpose,
                 )
             )
         except Exception:
@@ -5027,6 +5671,8 @@ class DurableStore:
                 journal_sequence=sequence,
                 contract_digest=frontier["contract_digest"],
                 d2_frontier_digest=d2_digest,
+                m4_iteration=frontier["iteration"],
+                frontier_record_digest=frontier["frontier_record_digest"],
             )
         except _Rejected as rejection:
             if connection is not None:
@@ -5057,25 +5703,30 @@ class DurableStore:
             return _result(DurableOutcome.STOP, self._stopped_reason)
         if self._m4_verifier is None:
             return _result(DurableOutcome.STOP, DurableReason.M4_VERIFIER_ABSENT)
-        if not _closed_dict(
-            raw,
-            frozenset(
-                {
-                    "transaction_id",
-                    "d2_frontier_digest",
-                    "target_binding",
-                    "observed_at",
-                    "stage_authorization_verification",
-                }
-            ),
-        ):
+        dynamic_verification = self._m4_verification_provider is not None
+        keys = {
+            "transaction_id",
+            "d2_frontier_digest",
+            "target_binding",
+            "publication_target_binding_digest",
+            "publication_root_anchor_digest",
+            "observed_at",
+        }
+        if not dynamic_verification:
+            keys.add("stage_authorization_verification")
+        if not _closed_dict(raw, frozenset(keys)):
             return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
         if (
             not _valid_identifier(raw["transaction_id"])
             or not _valid_digest(raw["d2_frontier_digest"])
             or not _valid_path_binding(raw["target_binding"])
+            or not _valid_digest(raw["publication_target_binding_digest"])
+            or not _valid_digest(raw["publication_root_anchor_digest"])
             or _parse_time(raw["observed_at"]) is None
-            or not _valid_verification_source(raw["stage_authorization_verification"])
+            or (
+                not dynamic_verification
+                and not _valid_verification_source(raw["stage_authorization_verification"])
+            )
         ):
             return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
         connection: sqlite3.Connection | None = None
@@ -5209,6 +5860,12 @@ class DurableStore:
                 "iteration": frontier["iteration"],
                 "target_authority_digest": capability_payload["target_authority_digest"],
                 "target_binding": target_binding,
+                "publication_target_binding_digest": raw[
+                    "publication_target_binding_digest"
+                ],
+                "publication_root_anchor_digest": raw[
+                    "publication_root_anchor_digest"
+                ],
                 "profile_digest": capability["profile_digest"],
                 "placement_digest": capability["placement_digest"],
                 "session_id": capability["session_id"],
@@ -5225,13 +5882,21 @@ class DurableStore:
                 "record_type": "M4_STAGE_AUTHORIZATION",
                 "authorization": stage_authorization,
             }
+            stage_source = self._m4_verification_source(
+                stage_payload,
+                raw["observed_at"],
+                "M4_STAGE_AUTHORIZATION",
+                None
+                if dynamic_verification
+                else raw["stage_authorization_verification"],
+            )
             (
                 stage_payload_text,
                 stage_payload_digest,
                 stage_verification,
                 stage_verification_text,
                 stage_verification_digest,
-            ) = _verification_for(stage_payload, raw["stage_authorization_verification"])
+            ) = _verification_for(stage_payload, stage_source)
             if (
                 not _valid_stage_authorization(stage_authorization)
                 or not self._m4_verification_is_valid(
@@ -5241,6 +5906,7 @@ class DurableStore:
                     stage_verification_text,
                     stage_verification_digest,
                     raw["observed_at"],
+                    "M4_STAGE_AUTHORIZATION",
                 )
             ):
                 connection.rollback()
@@ -5335,12 +6001,21 @@ class DurableStore:
             if connection is not None:
                 connection.close()
 
-    def consume_m4_stage_authorization(self, raw: object) -> DurableResult:
+    def consume_m4_stage_authorization(
+        self,
+        raw: object,
+        *,
+        require_execution_grant: bool = False,
+    ) -> DurableResult:
         """Atomically consume one current exact-bound authorization before staging."""
 
         if not self._usable:
             return _result(DurableOutcome.STOP, self._stopped_reason)
         if self._m4_verifier is None:
+            return _result(DurableOutcome.STOP, DurableReason.M4_VERIFIER_ABSENT)
+        if type(require_execution_grant) is not bool:
+            return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
+        if require_execution_grant and self._m4_verification_provider is None:
             return _result(DurableOutcome.STOP, DurableReason.M4_VERIFIER_ABSENT)
         keys = frozenset(
             {
@@ -5511,6 +6186,7 @@ class DurableStore:
                     verification_text,
                     verification_digest,
                     raw["observed_at"],
+                    "M4_STAGE_AUTHORIZATION",
                 )
             ):
                 connection.rollback()
@@ -5531,6 +6207,73 @@ class DurableStore:
                 "fencing_epoch": transaction["fencing_epoch"],
                 "observed_at": raw["observed_at"],
             }
+            execution_grant: StageExecutionGrant | None = None
+            if self._m4_verification_provider is not None:
+                consumption = {
+                    "consumption_version": FORMAT_VERSION,
+                    "transaction_id": transaction["transaction_id"],
+                    "stage_authorization_digest": authorization[
+                        "authorization_digest"
+                    ],
+                    "claim_digest": transaction["claim_digest"],
+                    "intent_digest": transaction["intent_digest"],
+                    "capability_id": transaction["capability_id"],
+                    "contract_digest": transaction["contract_digest"],
+                    "d2_frontier_digest": transaction["d2_frontier_digest"],
+                    "iteration": transaction["iteration"],
+                    "target_authority_digest": authorization[
+                        "target_authority_digest"
+                    ],
+                    "target_binding": authorization["target_binding"],
+                    "profile_digest": capability["profile_digest"],
+                    "placement_digest": capability["placement_digest"],
+                    "session_id": capability["session_id"],
+                    "revocation_epoch": transaction["revocation_epoch"],
+                    "fencing_epoch": transaction["fencing_epoch"],
+                    "consumed_at": raw["observed_at"],
+                    "expires_at": authorization["expires_at"],
+                }
+                grant_payload = {
+                    "record_type": "M4_STAGE_EXECUTION_GRANT",
+                    "authorization": authorization,
+                    "authorization_verification": verification,
+                    "consumption": consumption,
+                }
+                grant_source = self._m4_verification_source(
+                    grant_payload,
+                    raw["observed_at"],
+                    "M4_STAGE_EXECUTION_GRANT",
+                    None,
+                )
+                (
+                    grant_payload_text,
+                    grant_payload_digest,
+                    grant_verification,
+                    grant_verification_text,
+                    grant_verification_digest,
+                ) = _verification_for(grant_payload, grant_source)
+                if not self._m4_verification_is_valid(
+                    grant_payload_text,
+                    grant_payload_digest,
+                    grant_verification,
+                    grant_verification_text,
+                    grant_verification_digest,
+                    raw["observed_at"],
+                    "M4_STAGE_EXECUTION_GRANT",
+                ):
+                    connection.rollback()
+                    return _result(
+                        DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID
+                    )
+                event_payload = {
+                    **event_payload,
+                    "execution_grant": grant_payload,
+                    "execution_grant_verification": grant_verification,
+                    "execution_grant_verification_digest": grant_verification_digest,
+                }
+                execution_grant = StageExecutionGrant(
+                    grant_payload_text, grant_verification_text
+                )
             sequence = self._append_event(
                 connection,
                 "M4_STAGE_AUTHORIZATION_CONSUMED",
@@ -5550,6 +6293,7 @@ class DurableStore:
                 record_digest=authorization["authorization_digest"],
                 m4_state=transaction["state"],
                 m4_iteration=transaction["iteration"],
+                stage_execution_grant=execution_grant,
             )
         except _StoreCorrupt:
             if connection is not None:
@@ -5665,6 +6409,49 @@ class DurableStore:
         )
         if changed.rowcount != 1:
             raise _StoreCorrupt("M4 terminal intent update mismatch")
+        session = connection.execute(
+            "SELECT * FROM execution_sessions WHERE transaction_id=?",
+            (transaction["transaction_id"],),
+        ).fetchone()
+        if session is not None:
+            if session["state"] != "PREPARED":
+                raise _StoreCorrupt("M4 terminal runtime session mismatch")
+            claim_row = connection.execute(
+                "SELECT claim_json FROM dispatch_attempt_claims WHERE transaction_id=?",
+                (transaction["transaction_id"],),
+            ).fetchone()
+            if claim_row is None:
+                raise _StoreCorrupt("M4 terminal runtime claim absent")
+            claim = _json_value(claim_row["claim_json"])
+            runtime_state = "QUARANTINED" if disposition == "QUARANTINED_ESCROW" else "STOPPED"
+            runtime_sequence = self._append_event(
+                connection,
+                "RUNTIME_SESSION_" + runtime_state,
+                session["session_record_id"],
+                {
+                    "session_record_id": session["session_record_id"],
+                    "transaction_id": session["transaction_id"],
+                    "claim_digest": session["claim_digest"],
+                    "state": runtime_state,
+                    "disposition": disposition,
+                    "observed_at": observed_at,
+                    "revocation_epoch": claim["revocation_epoch"],
+                    "fencing_epoch": session["fencing_epoch"],
+                },
+            )
+            changed = connection.execute(
+                "UPDATE execution_sessions SET state=?, terminal_at=?, terminal_reason=?, "
+                "terminal_journal_sequence=? WHERE session_record_id=? AND state='PREPARED'",
+                (
+                    runtime_state,
+                    observed_at,
+                    disposition,
+                    runtime_sequence,
+                    session["session_record_id"],
+                ),
+            )
+            if changed.rowcount != 1:
+                raise _StoreCorrupt("M4 terminal runtime session update mismatch")
         return self._append_event(
             connection,
             "BUDGET_TERMINAL_" + disposition,
@@ -5685,10 +6472,11 @@ class DurableStore:
             return _result(DurableOutcome.STOP, self._stopped_reason)
         if self._m4_verifier is None:
             return _result(DurableOutcome.STOP, DurableReason.M4_VERIFIER_ABSENT)
-        keys = frozenset(
-            {"transaction_id", "expected_state", "state", "observed_at", "evidence", "verification"}
-        )
-        if not _closed_dict(raw, keys):
+        dynamic_verification = self._m4_verification_provider is not None
+        keys = {"transaction_id", "expected_state", "state", "observed_at", "evidence"}
+        if not dynamic_verification:
+            keys.add("verification")
+        if not _closed_dict(raw, frozenset(keys)):
             return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
         if (
             not _valid_identifier(raw["transaction_id"])
@@ -5697,7 +6485,10 @@ class DurableStore:
             or raw["expected_state"] not in _M4_STATES
             or raw["state"] not in _M4_STATES
             or _parse_time(raw["observed_at"]) is None
-            or not _valid_verification_source(raw["verification"])
+            or (
+                not dynamic_verification
+                and not _valid_verification_source(raw["verification"])
+            )
         ):
             return _result(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
         connection: sqlite3.Connection | None = None
@@ -5748,6 +6539,22 @@ class DurableStore:
                 for value in (capability, capability_verification, claim, claim_verification, intent)
             ):
                 raise _StoreCorrupt("invalid M4 transition source")
+            dispatch_row = connection.execute(
+                "SELECT payload_json FROM journal_entries WHERE sequence=?",
+                (transaction["started_journal_sequence"],),
+            ).fetchone()
+            dispatch_payload = (
+                _json_value(dispatch_row["payload_json"])
+                if dispatch_row is not None
+                else None
+            )
+            stage_authorization = (
+                dispatch_payload.get("stage_authorization")
+                if type(dispatch_payload) is dict
+                else None
+            )
+            if not _valid_stage_authorization(stage_authorization):
+                raise _StoreCorrupt("invalid M4 stage authorization source")
             observed = _parse_time(raw["observed_at"])
             started = _parse_time(transaction["started_at"])
             not_before = _parse_time(capability_row["not_before"])
@@ -5839,7 +6646,12 @@ class DurableStore:
                 )
                 if (
                     len(consumed) != 1
-                    or not _closed_dict(consumed_value, _STAGE_CONSUMPTION_EVENT_KEYS)
+                    or not _closed_dict(
+                        consumed_value,
+                        _STAGE_CONSUMPTION_DYNAMIC_EVENT_KEYS
+                        if self._m4_verification_provider is not None
+                        else _STAGE_CONSUMPTION_EVENT_KEYS,
+                    )
                     or consumed[0]["sequence"] <= transaction["started_journal_sequence"]
                     or consumed_at is None
                     or consumed_at > observed
@@ -5879,6 +6691,7 @@ class DurableStore:
                         row["verification_json"],
                         row["verification_digest"],
                         raw["observed_at"],
+                        "M4_TRANSITION:" + row["state"],
                     )
                 ):
                     connection.rollback()
@@ -5896,6 +6709,7 @@ class DurableStore:
                 capability,
                 intent,
                 frontier,
+                stage_authorization,
                 prior,
                 raw["observed_at"],
                 self._embedded_m4_verification_is_valid,
@@ -5936,8 +6750,14 @@ class DurableStore:
                 "intent": intent,
                 "evidence": raw["evidence"],
             }
+            source = self._m4_verification_source(
+                record,
+                raw["observed_at"],
+                "M4_TRANSITION:" + state,
+                None if dynamic_verification else raw["verification"],
+            )
             record_text, record_digest, verification, verification_text, verification_digest = _verification_for(
-                record, raw["verification"]
+                record, source
             )
             if not self._m4_verification_is_valid(
                 record_text,
@@ -5946,6 +6766,7 @@ class DurableStore:
                 verification_text,
                 verification_digest,
                 raw["observed_at"],
+                "M4_TRANSITION:" + state,
             ):
                 connection.rollback()
                 return _result(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
@@ -8103,19 +8924,53 @@ class DurableStore:
                     for row in session_rows
                 )
                 m4_rows = connection.execute(
-                    "SELECT transaction_id, state, contract_digest, d2_frontier_digest, fencing_epoch "
-                    "FROM m4_transactions ORDER BY started_journal_sequence"
+                    """
+                    SELECT t.transaction_id, t.state, t.contract_digest,
+                           t.d2_frontier_digest, t.fencing_epoch,
+                           t.current_record_digest, f.frontier_json,
+                           t.iteration, a.attempt_cursor, a.joined_iteration,
+                           i.state AS intent_state, t.revocation_epoch,
+                           COALESCE(r.journal_sequence, t.started_journal_sequence)
+                               AS recovery_journal_sequence
+                    FROM m4_transactions AS t
+                    JOIN d2_frontiers AS f
+                      ON f.d2_frontier_digest=t.d2_frontier_digest
+                    JOIN active_contracts AS a
+                      ON a.contract_digest=t.contract_digest
+                    JOIN dispatch_intents AS i
+                      ON i.transaction_id=t.transaction_id
+                    LEFT JOIN m4_transition_records AS r
+                      ON r.record_digest=t.current_record_digest
+                    ORDER BY t.started_journal_sequence
+                    """
                 ).fetchall()
-                m4_recovery = tuple(
-                    M4Recovery(
-                        row["transaction_id"],
-                        row["state"],
-                        row["contract_digest"],
-                        row["d2_frontier_digest"],
-                        row["fencing_epoch"],
+                recovered_m4: list[M4Recovery] = []
+                for row in m4_rows:
+                    frontier = _json_value(row["frontier_json"])
+                    if type(frontier) is not dict or not _valid_digest(
+                        frontier.get("frontier_record_digest")
+                    ):
+                        raise _StoreCorrupt("M4 recovery frontier mismatch")
+                    recovered_m4.append(
+                        M4Recovery(
+                            row["transaction_id"],
+                            row["state"],
+                            row["contract_digest"],
+                            row["d2_frontier_digest"],
+                            row["fencing_epoch"],
+                            row["current_record_digest"],
+                            frontier["frontier_record_digest"],
+                            row["iteration"],
+                            frontier["attempt_cursor"],
+                            frontier["joined_iteration"],
+                            row["attempt_cursor"],
+                            row["joined_iteration"],
+                            row["recovery_journal_sequence"],
+                            row["intent_state"],
+                            row["revocation_epoch"],
+                        )
                     )
-                    for row in m4_rows
-                )
+                m4_recovery = tuple(recovered_m4)
             finally:
                 connection.close()
             return DurableResult(

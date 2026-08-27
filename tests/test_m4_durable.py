@@ -9,9 +9,17 @@ import tempfile
 import unittest
 
 import harness_product.durable as durable_module
-from harness_product.durable import DurableOutcome, DurableReason, DurableStore, canonical_digest
+from harness_product.durable import (
+    DurableOutcome,
+    DurableReason,
+    DurableStore,
+    VerificationResult,
+    VerificationStatus,
+    canonical_digest,
+)
 
 from tests import test_durable as m2
+from tests import test_durable_lifecycle as m3_lifecycle
 
 
 class _Fault:
@@ -21,6 +29,42 @@ class _Fault:
     def __call__(self, point: str) -> None:
         if point == self.point:
             raise RuntimeError(point)
+
+
+class _DynamicM4Source:
+    def __init__(
+        self,
+        fail_purpose: str | None = None,
+        reject_verify_purpose: str | None = None,
+    ) -> None:
+        self.fail_purpose = fail_purpose
+        self.reject_verify_purpose = reject_verify_purpose
+        self.calls: list[tuple[str, bytes, str]] = []
+        self.verify_calls: list[tuple[str, bytes, bytes, str]] = []
+
+    def sign(self, payload: bytes, observed_at: str, purpose: str) -> dict[str, object]:
+        self.calls.append((purpose, bytes(payload), observed_at))
+        if purpose == self.fail_purpose:
+            raise RuntimeError(purpose)
+        return m2._verification_source()
+
+    def verify(
+        self,
+        purpose: str,
+        payload: bytes,
+        record: bytes,
+        observed_at: str,
+    ) -> VerificationResult:
+        self.verify_calls.append((purpose, bytes(payload), bytes(record), observed_at))
+        result = m2.ExactVerifier().verify(payload, record, observed_at)
+        if purpose == self.reject_verify_purpose:
+            return VerificationResult(
+                VerificationStatus.REJECTED,
+                result.verifier_id,
+                result.payload_digest,
+                result.record_digest,
+            )
+        return result
 
 
 def _contract(issue: dict[str, object]) -> dict[str, object]:
@@ -259,11 +303,17 @@ def _begin_chain(
     )
     assert bound.committed and bound.d2_frontier_digest is not None
     before = _path_binding(m2._digest("e"))
+    publication_before = _publication_binding(m2._digest("e"), 91)
+    publication_root_anchor_digest = m2._digest("6")
     begun = store.begin_m4_transaction(
         {
             "transaction_id": "transaction-0001",
             "d2_frontier_digest": bound.d2_frontier_digest,
             "target_binding": before,
+            "publication_target_binding_digest": publication_before[
+                "composite_binding_digest"
+            ],
+            "publication_root_anchor_digest": publication_root_anchor_digest,
             "observed_at": "2026-08-25T12:02:02Z",
             "stage_authorization_verification": m2._verification_source(),
         }
@@ -278,8 +328,9 @@ def _begin_chain(
         "stage_authorization_digest": begun.record_digest,
         "stage_authorization_consumed": False,
         "staged": _path_binding(m2._digest("a")),
-        "publication_before": _publication_binding(m2._digest("e"), 91),
+        "publication_before": publication_before,
         "published": _publication_binding(m2._digest("a"), 92),
+        "publication_root_anchor_digest": publication_root_anchor_digest,
         "state": "DISPATCHED",
         "records": {},
     }
@@ -298,6 +349,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
             str(self.path),
             m2.ExactVerifier(),
             executor_claim_verifier=m2.ExactVerifier(),
+            runtime_session_verifier=m2.ExactVerifier(),
             m4_verifier=m2.ExactVerifier(),
         )
 
@@ -306,6 +358,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
         name: str,
         *,
         m4_verifier: object | None = None,
+        m4_verification_provider: object | None = None,
         fault: object | None = None,
     ) -> tuple[Path, DurableStore]:
         path = Path(self.temporary.name) / (name + ".sqlite3")
@@ -314,8 +367,246 @@ class M4DurableLifecycleTests(unittest.TestCase):
             m2.ExactVerifier(),
             executor_claim_verifier=m2.ExactVerifier(),
             m4_verifier=m4_verifier or m2.ExactVerifier(),
+            m4_verification_provider=m4_verification_provider,
             _fault=fault,
         )
+
+    def test_dynamic_m4_verification_signs_internal_payload_and_rolls_back_failure(self) -> None:
+        provider = _DynamicM4Source()
+        path, store = self.store_at("dynamic-m4", m4_verification_provider=provider)
+        claimed = _claimed_chain(store, lambda statement: self.row_at(path, statement))
+        frontier = _frontier(claimed, lambda statement: self.row_at(path, statement))
+        bound = store.bind_m4_frontier(
+            {
+                "transaction_id": "transaction-0001",
+                "observed_at": "2026-08-25T12:02:01Z",
+                "frontier": frontier,
+                "frontier_verification": m2._verification_source(),
+            }
+        )
+        self.assertTrue(bound.committed)
+        binding = _path_binding(m2._digest("e"))
+        publication_binding = _publication_binding(m2._digest("e"), 91)
+        begun = store.begin_m4_transaction(
+            {
+                "transaction_id": "transaction-0001",
+                "d2_frontier_digest": bound.d2_frontier_digest,
+                "target_binding": binding,
+                "publication_target_binding_digest": publication_binding[
+                    "composite_binding_digest"
+                ],
+                "publication_root_anchor_digest": m2._digest("6"),
+                "observed_at": "2026-08-25T12:02:02Z",
+            }
+        )
+        self.assertTrue(begun.committed, begun)
+        purpose, payload_bytes, observed_at = provider.calls[0]
+        payload = json.loads(payload_bytes)
+        self.assertEqual(purpose, "M4_STAGE_AUTHORIZATION")
+        self.assertEqual(observed_at, "2026-08-25T12:02:02Z")
+        self.assertEqual(payload["record_type"], "M4_STAGE_AUTHORIZATION")
+        event = json.loads(
+            self.row_at(
+                path,
+                "SELECT payload_json FROM journal_entries "
+                "WHERE event_type='M4_DISPATCH_BOUND'",
+            )[0]
+        )
+        self.assertEqual(event["stage_authorization_verification"]["bindings"], payload)
+        self.assertEqual(
+            event["stage_authorization_verification"]["proof"],
+            m2._verification_source()["proof"],
+        )
+        rejected = store.begin_m4_transaction(
+            {
+                "transaction_id": "transaction-0001",
+                "d2_frontier_digest": bound.d2_frontier_digest,
+                "target_binding": binding,
+                "publication_target_binding_digest": publication_binding[
+                    "composite_binding_digest"
+                ],
+                "publication_root_anchor_digest": m2._digest("6"),
+                "observed_at": "2026-08-25T12:02:02Z",
+                "stage_authorization_verification": m2._verification_source(),
+            }
+        )
+        self.assertEqual((rejected.outcome, rejected.reason), (DurableOutcome.STOP, DurableReason.MALFORMED_INPUT))
+
+        consumed = store.consume_m4_stage_authorization(
+            {
+                "transaction_id": "transaction-0001",
+                "stage_authorization_digest": begun.record_digest,
+                "target_binding": binding,
+                "observed_at": "2026-08-25T12:02:03Z",
+            }
+        )
+        self.assertTrue(consumed.committed)
+        grant = getattr(consumed, "stage_execution_grant", None)
+        self.assertIsNotNone(grant)
+        grant_payload = json.loads(grant.payload_json)
+        grant_verification = json.loads(grant.verification_json)
+        self.assertEqual(grant_payload["record_type"], "M4_STAGE_EXECUTION_GRANT")
+        self.assertEqual(
+            grant_payload["authorization_verification"],
+            event["stage_authorization_verification"],
+        )
+        self.assertEqual(grant_verification["bindings"], grant_payload)
+        self.assertEqual(provider.calls[-1][0], "M4_STAGE_EXECUTION_GRANT")
+        verified_claim = store.verify_dispatch_claim(
+            {
+                "transaction_id": "transaction-0001",
+                "claim_digest": claimed["claim_digest"],
+                "audience_id": claimed["payload"]["audience_id"],
+                "placement_digest": claimed["payload"]["placement_digest"],
+                "session_id": claimed["payload"]["session_id"],
+                "revocation_epoch": claimed["payload"]["revocation_epoch"],
+                "fencing_epoch": claimed["payload"]["fencing_epoch"],
+                "observed_at": "2026-08-25T12:02:03Z",
+            }
+        ).dispatch_claim
+        self.assertIsNotNone(verified_claim)
+        future_payload = deepcopy(grant_payload)
+        future_payload["authorization"]["issued_at"] = "2026-08-25T12:02:04Z"
+        future_payload["authorization"]["authorization_digest"] = canonical_digest(
+            {
+                key: future_payload["authorization"][key]
+                for key in future_payload["authorization"]
+                if key != "authorization_digest"
+            }
+        )
+        future_payload["consumption"]["stage_authorization_digest"] = future_payload[
+            "authorization"
+        ]["authorization_digest"]
+        future_authorization_payload = {
+            "record_type": "M4_STAGE_AUTHORIZATION",
+            "authorization": future_payload["authorization"],
+        }
+        future_payload["authorization_verification"] = {
+            **future_payload["authorization_verification"],
+            "payload_digest": canonical_digest(future_authorization_payload),
+            "bindings": future_authorization_payload,
+        }
+        future_verification = {
+            **grant_verification,
+            "payload_digest": canonical_digest(future_payload),
+            "bindings": future_payload,
+        }
+        future_grant = durable_module.StageExecutionGrant(
+            json.dumps(future_payload, sort_keys=True, separators=(",", ":")),
+            json.dumps(future_verification, sort_keys=True, separators=(",", ":")),
+        )
+        self.assertFalse(
+            durable_module.verify_stage_execution_grant(
+                future_grant,
+                m2.ExactVerifier(),
+                verified_claim,
+                future_payload["authorization"]["authorization_digest"],
+                binding,
+                "2026-08-25T12:02:03Z",
+            )
+        )
+        staged = _path_binding(m2._digest("a"))
+        stage_record = {
+            "transaction_id": "transaction-0001",
+            "claim_digest": claimed["claim_digest"],
+            "binding_digest": binding["composite_binding_digest"],
+            "before_digest": binding["final_digest"],
+            "after_digest": staged["final_digest"],
+            "bytes_written": 1,
+        }
+        stage_record["record_digest"] = canonical_digest(stage_record)
+        advanced = store.advance_m4(
+            {
+                "transaction_id": "transaction-0001",
+                "expected_state": "DISPATCHED",
+                "state": "STAGED",
+                "observed_at": "2026-08-25T12:02:04Z",
+                "evidence": {
+                    "evidence_version": 1,
+                    "stage_record": stage_record,
+                    "source_object_binding": binding,
+                    "staged_object_binding": staged,
+                },
+            }
+        )
+        self.assertTrue(advanced.committed, advanced)
+        purpose, payload_bytes, observed_at = provider.calls[-1]
+        self.assertEqual((purpose, observed_at), ("M4_TRANSITION:STAGED", "2026-08-25T12:02:04Z"))
+        stored_record, stored_verification = self.row_at(
+            path,
+            "SELECT record_json, verification_json FROM m4_transition_records "
+            "WHERE state='STAGED'",
+        )
+        self.assertEqual(payload_bytes, stored_record.encode("utf-8"))
+        self.assertEqual(json.loads(stored_verification)["bindings"], json.loads(stored_record))
+
+        reopened_provider = _DynamicM4Source()
+        reopened = DurableStore(
+            str(path),
+            m2.ExactVerifier(),
+            executor_claim_verifier=m2.ExactVerifier(),
+            m4_verifier=m2.ExactVerifier(),
+            m4_verification_provider=reopened_provider,
+        )
+        self.assertEqual(reopened.health().reason, DurableReason.READY)
+        routed_purposes = [call[0] for call in reopened_provider.verify_calls]
+        self.assertEqual(
+            set(routed_purposes),
+            {
+                "M4_STAGE_AUTHORIZATION",
+                "M4_STAGE_EXECUTION_GRANT",
+                "M4_TRANSITION:STAGED",
+            },
+        )
+        self.assertGreaterEqual(routed_purposes.count("M4_STAGE_AUTHORIZATION"), 1)
+        self.assertGreaterEqual(routed_purposes.count("M4_TRANSITION:STAGED"), 1)
+
+        rejected_reopen = DurableStore(
+            str(path),
+            m2.ExactVerifier(),
+            executor_claim_verifier=m2.ExactVerifier(),
+            m4_verifier=m2.ExactVerifier(),
+            m4_verification_provider=_DynamicM4Source(
+                reject_verify_purpose="M4_TRANSITION:STAGED"
+            ),
+        )
+        self.assertEqual(rejected_reopen.health().reason, DurableReason.CORRUPT_STORE)
+
+        provider.fail_purpose = "M4_TRANSITION:QUIESCED"
+        before_counts = self.row_at(
+            path,
+            "SELECT (SELECT COUNT(*) FROM m4_transition_records), journal_head_sequence "
+            "FROM store_meta WHERE id=1",
+        )
+        failed = store.advance_m4(
+            {
+                "transaction_id": "transaction-0001",
+                "expected_state": "STAGED",
+                "state": "QUIESCED",
+                "observed_at": "2026-08-25T12:02:05Z",
+                "evidence": {
+                    "evidence_version": 1,
+                    "process_tree_id": "tree-1",
+                    "session_id": claimed["payload"]["session_id"],
+                    "writer_fencing_epoch": 11,
+                    "revoked_writer_fds": [3],
+                    "remaining_writer_fds": [],
+                    "writer_leases_revoked": True,
+                    "process_tree_quiesced": True,
+                    "evidence_digest": m2._digest("f"),
+                },
+            }
+        )
+        self.assertEqual((failed.outcome, failed.reason), (DurableOutcome.STOP, DurableReason.INTERNAL_ERROR))
+        self.assertEqual(
+            self.row_at(
+                path,
+                "SELECT (SELECT COUNT(*) FROM m4_transition_records), journal_head_sequence "
+                "FROM store_meta WHERE id=1",
+            ),
+            before_counts,
+        )
+        self.assertEqual(self.row_at(path, "SELECT state FROM m4_transactions"), ("STAGED",))
 
     def row_at(
         self,
@@ -409,7 +700,17 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 "authorized_envelope_digest": chain["payload"][
                     "authorized_envelope_digest"
                 ],
+                "contract_digest": chain["contract"]["contract_digest"],
+                "d2_frontier_digest": chain["d2_frontier_digest"],
+                "attempt_cursor": iteration,
+                "iteration": iteration,
                 "target_authority_digest": target_authority,
+                "publication_target_binding_digest": chain["publication_before"][
+                    "composite_binding_digest"
+                ],
+                "publication_root_anchor_digest": chain[
+                    "publication_root_anchor_digest"
+                ],
                 "profile_digest": chain["payload"]["profile_digest"],
                 "placement_digest": chain["payload"]["placement_digest"],
                 "session_id": chain["payload"]["session_id"],
@@ -423,7 +724,9 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 "proposal_digest": m2._digest("3"),
                 "revocation_epoch": 7,
                 "fencing_epoch": 11,
+                "issued_at": "2026-08-25T12:02:10Z",
                 "observed_at": "2026-08-25T12:02:10Z",
+                "expires_at": chain["payload"]["expires_at"],
             }
             receipt = {
                 **receipt_body,
@@ -456,16 +759,40 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 "receipt_version": 1,
                 "outcome": "PUBLISHED",
                 "transaction_id": transaction_id,
+                "decision_digest": chain["payload"]["decision_digest"],
+                "authorized_envelope_digest": chain["payload"][
+                    "authorized_envelope_digest"
+                ],
+                "claim_digest": chain["claim_digest"],
+                "intent_digest": chain["intent_digest"],
+                "capability_id": chain["capability_id"],
+                "contract_digest": chain["contract"]["contract_digest"],
+                "d2_frontier_digest": chain["d2_frontier_digest"],
+                "attempt_cursor": iteration,
+                "iteration": iteration,
                 "target_authority_digest": target_authority,
+                "publication_target_binding_digest": chain["publication_before"][
+                    "composite_binding_digest"
+                ],
+                "publication_root_anchor_digest": chain[
+                    "publication_root_anchor_digest"
+                ],
                 "snapshot_id": "sealed-snapshot-1",
                 "snapshot_digest": staged["final_digest"],
                 "snapshot_size": 17,
                 "before_binding": chain["publication_before"],
                 "published_binding": chain["published"],
                 "publisher_subject": publisher_subject,
+                "profile_digest": chain["payload"]["profile_digest"],
+                "placement_digest": chain["payload"]["placement_digest"],
+                "session_id": chain["payload"]["session_id"],
+                "revocation_epoch": 7,
+                "fencing_epoch": 11,
                 "authorization_digest": m2._digest("5"),
                 "publication_method": "ATOMIC_REPLACE_FSYNC",
+                "issued_at": "2026-08-25T12:02:10Z",
                 "observed_at": "2026-08-25T12:02:10Z",
+                "expires_at": chain["payload"]["expires_at"],
             }
             authorization_body = {
                 "authorization_version": 1,
@@ -479,10 +806,14 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 "capability_id": chain["capability_id"],
                 "contract_digest": chain["contract"]["contract_digest"],
                 "d2_frontier_digest": chain["d2_frontier_digest"],
+                "attempt_cursor": iteration,
                 "iteration": iteration,
                 "target_authority_digest": target_authority,
                 "publication_target_binding_digest": chain["publication_before"][
                     "composite_binding_digest"
+                ],
+                "publication_root_anchor_digest": chain[
+                    "publication_root_anchor_digest"
                 ],
                 "snapshot_id": "sealed-snapshot-1",
                 "snapshot_digest": staged["final_digest"],
@@ -496,6 +827,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 "fencing_epoch": 11,
                 "publisher_principal": "publisher-1",
                 "publisher_session": "publisher-session-1",
+                "issued_at": "2026-08-25T12:02:10Z",
                 "observed_at": "2026-08-25T12:02:10Z",
                 "expires_at": "2026-08-25T12:04:00Z",
             }
@@ -615,9 +947,66 @@ class M4DurableLifecycleTests(unittest.TestCase):
         self.assertEqual(self.row("SELECT remaining, reserved, spent FROM budgets"), (9, 0, 1))
         recovered = self.store().recover()
         self.assertEqual(recovered.m4_recovery[0].state, "JOINED")
+        self.assertEqual(
+            (
+                recovered.m4_recovery[0].record_digest,
+                recovered.m4_recovery[0].frontier_record_digest,
+                recovered.m4_recovery[0].iteration,
+                recovered.m4_recovery[0].frontier_attempt_cursor,
+                recovered.m4_recovery[0].frontier_joined_iteration,
+                recovered.m4_recovery[0].attempt_cursor,
+                recovered.m4_recovery[0].joined_iteration,
+                recovered.m4_recovery[0].intent_state,
+            ),
+            (
+                chain["records"]["JOINED"],
+                chain["frontier"]["frontier_record_digest"],
+                1,
+                0,
+                0,
+                1,
+                1,
+                "SPENT",
+            ),
+        )
         self.assertFalse(recovered.m4_recovery[0].resume_allowed)
         self.assertFalse(recovered.m4_recovery[0].retry_allowed)
         self.assertEqual(chain["state"], "JOINED")
+
+    def test_m4_terminal_atomically_closes_matching_prepared_m3_session(self) -> None:
+        chain = self.chain()
+        prepared = chain["store"].prepare_runtime_session(
+            m3_lifecycle._prepare_raw(chain["claim_digest"])
+        )
+        self.assertEqual(
+            (prepared.outcome, prepared.reason),
+            (DurableOutcome.COMMITTED, DurableReason.RUNTIME_SESSION_PREPARED),
+        )
+
+        for state in ("STAGED", "QUIESCED", "SEALED", "POSTCHECKED", "COMMITTED", "JOINED"):
+            result = self.advance(chain, state)
+            self.assertEqual((result.outcome, result.m4_state), (DurableOutcome.COMMITTED, state))
+
+        recovered = self.store().recover()
+        self.assertEqual(recovered.recovery_intents, ())
+        self.assertEqual(len(recovered.recovery_sessions), 1)
+        self.assertEqual(recovered.recovery_sessions[0].state, "STOPPED")
+        self.assertEqual(recovered.m4_recovery[0].state, "JOINED")
+        self.assertEqual(
+            self.row(
+                "SELECT state, terminal_reason FROM execution_sessions "
+                "WHERE transaction_id='transaction-0001'"
+            ),
+            ("STOPPED", "SPENT"),
+        )
+        self.assertEqual(
+            self.row(
+                "SELECT COUNT(*) FROM journal_entries "
+                "WHERE event_type='RUNTIME_SESSION_STOPPED' "
+                "AND subject_id='session-record-1'"
+            ),
+            (1,),
+        )
 
     def test_contract_and_d2_records_fail_closed_on_q40_q44_mutations(self) -> None:
         contract_cases = {
@@ -893,8 +1282,18 @@ class M4DurableLifecycleTests(unittest.TestCase):
             "envelope": lambda receipt: receipt.update(
                 authorized_envelope_digest=m2._digest("9")
             ),
+            "contract": lambda receipt: receipt.update(contract_digest=m2._digest("9")),
+            "frontier": lambda receipt: receipt.update(d2_frontier_digest=m2._digest("9")),
+            "attempt-cursor": lambda receipt: receipt.update(attempt_cursor=2),
+            "iteration": lambda receipt: receipt.update(iteration=2),
             "target-authority": lambda receipt: receipt.update(
                 target_authority_digest=m2._digest("9")
+            ),
+            "target-binding": lambda receipt: receipt.update(
+                publication_target_binding_digest=m2._digest("9")
+            ),
+            "root-anchor": lambda receipt: receipt.update(
+                publication_root_anchor_digest=m2._digest("9")
             ),
             "profile": lambda receipt: receipt.update(profile_digest=m2._digest("9")),
             "placement": lambda receipt: receipt.update(placement_digest=m2._digest("9")),
@@ -959,6 +1358,9 @@ class M4DurableLifecycleTests(unittest.TestCase):
             "target-binding": lambda value: value.update(
                 publication_target_binding_digest=m2._digest("9")
             ),
+            "root-anchor": lambda value: value.update(
+                publication_root_anchor_digest=m2._digest("9")
+            ),
             "snapshot-id": lambda value: value.update(snapshot_id="snapshot-other"),
             "snapshot-digest": lambda value: value.update(snapshot_digest=m2._digest("9")),
             "snapshot-size": lambda value: value.update(snapshot_size=18),
@@ -973,6 +1375,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
             "publisher-session": lambda value: value.update(
                 publisher_session="publisher-session-other"
             ),
+            "issued": lambda value: value.update(issued_at="2026-08-25T12:02:09Z"),
             "time": lambda value: value.update(observed_at="2026-08-25T12:02:09Z"),
             "expiry": lambda value: value.update(expires_at="2026-08-25T12:02:10Z"),
             "unknown": lambda value: value.update(verified=True),
@@ -1013,8 +1416,25 @@ class M4DurableLifecycleTests(unittest.TestCase):
 
         receipt_cases = {
             "transaction": lambda value: value.update(transaction_id="transaction-other"),
+            "decision": lambda value: value.update(decision_digest=m2._digest("9")),
+            "envelope": lambda value: value.update(
+                authorized_envelope_digest=m2._digest("9")
+            ),
+            "claim": lambda value: value.update(claim_digest=m2._digest("9")),
+            "intent": lambda value: value.update(intent_digest=m2._digest("9")),
+            "capability": lambda value: value.update(capability_id=m2._digest("9")),
+            "contract": lambda value: value.update(contract_digest=m2._digest("9")),
+            "frontier": lambda value: value.update(d2_frontier_digest=m2._digest("9")),
+            "attempt-cursor": lambda value: value.update(attempt_cursor=2),
+            "iteration": lambda value: value.update(iteration=2),
             "target-authority": lambda value: value.update(
                 target_authority_digest=m2._digest("9")
+            ),
+            "target-binding": lambda value: value.update(
+                publication_target_binding_digest=m2._digest("9")
+            ),
+            "root-anchor": lambda value: value.update(
+                publication_root_anchor_digest=m2._digest("9")
             ),
             "snapshot-id": lambda value: value.update(snapshot_id="snapshot-other"),
             "snapshot-digest": lambda value: value.update(snapshot_digest=m2._digest("9")),
@@ -1038,6 +1458,11 @@ class M4DurableLifecycleTests(unittest.TestCase):
             "publisher": lambda value: value["publisher_subject"].update(
                 principal_id=chain["payload"]["principal_id"]
             ),
+            "profile": lambda value: value.update(profile_digest=m2._digest("9")),
+            "placement": lambda value: value.update(placement_digest=m2._digest("9")),
+            "session": lambda value: value.update(session_id="session-other"),
+            "revocation": lambda value: value.update(revocation_epoch=8),
+            "fence": lambda value: value.update(fencing_epoch=12),
             "authorization": lambda value: value.update(authorization_digest=m2._digest("9")),
             "method": lambda value: value.update(publication_method="PLAIN_RENAME"),
             "time": lambda value: value.update(observed_at="2026-08-25T12:02:09Z"),
@@ -1293,6 +1718,10 @@ class M4DurableLifecycleTests(unittest.TestCase):
                     "transaction_id": "transaction-0002",
                     "d2_frontier_digest": bound.d2_frontier_digest,
                     "target_binding": _path_binding(m2._digest("e")),
+                    "publication_target_binding_digest": _publication_binding(
+                        m2._digest("e"), 91
+                    )["composite_binding_digest"],
+                    "publication_root_anchor_digest": m2._digest("6"),
                     "observed_at": "2026-08-25T12:02:10Z",
                     "stage_authorization_verification": m2._verification_source(),
                 }
@@ -1483,6 +1912,10 @@ class M4DurableLifecycleTests(unittest.TestCase):
                         "transaction_id": "transaction-0001",
                         "d2_frontier_digest": bound.d2_frontier_digest,
                         "target_binding": _path_binding(m2._digest("e")),
+                        "publication_target_binding_digest": _publication_binding(
+                            m2._digest("e"), 91
+                        )["composite_binding_digest"],
+                        "publication_root_anchor_digest": m2._digest("6"),
                         "observed_at": "2026-08-25T12:02:02Z",
                         "stage_authorization_verification": m2._verification_source(),
                     }
@@ -1714,6 +2147,10 @@ class M4DurableLifecycleTests(unittest.TestCase):
                 "transaction_id": transaction_id,
                 "d2_frontier_digest": bound.d2_frontier_digest,
                 "target_binding": before,
+                "publication_target_binding_digest": _publication_binding(
+                    m2._digest("e"), 91
+                )["composite_binding_digest"],
+                "publication_root_anchor_digest": m2._digest("6"),
                 "observed_at": "2026-08-25T12:02:02Z",
                 "stage_authorization_verification": m2._verification_source(),
             }
@@ -1728,6 +2165,7 @@ class M4DurableLifecycleTests(unittest.TestCase):
             staged=_path_binding(m2._digest("a")),
             publication_before=_publication_binding(m2._digest("e"), 91),
             published=_publication_binding(m2._digest("a"), 92),
+            publication_root_anchor_digest=m2._digest("6"),
             state="DISPATCHED",
             records={},
         )

@@ -28,7 +28,15 @@ from enum import Enum
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 
-from .durable import DispatchClaim, DurableOutcome, DurableStore, VerificationResult, VerificationStatus
+from .durable import (
+    DispatchClaim,
+    DurableOutcome,
+    DurableStore,
+    StageExecutionGrant,
+    VerificationResult,
+    VerificationStatus,
+    verify_stage_execution_grant,
+)
 
 PROFILE_ID = "L0-LX-A"
 WORKLOAD_CLASS = "DISCONNECTED_STAGEABLE_WORKER"
@@ -3724,6 +3732,8 @@ def stage_committed_intent(
     raw: object,
     *,
     durable_store: object | None = None,
+    stage_execution_grant: object | None = None,
+    m4_verifier: object | None = None,
     executor_claim_verifier: object | None = None,
     supply_verifier: object | None = None,
     _fault: object | None = None,
@@ -3818,19 +3828,37 @@ def stage_committed_intent(
             binding.resolution_epoch,
         ) != binding:
             raise _Stop(L0Reason.OBJECT_MISMATCH)
-        if type(durable_store) is not DurableStore:
-            raise _Stop(L0Reason.STAGE_AUTHORIZATION_REQUIRED)
-        authorization = durable_store.consume_m4_stage_authorization(
-            {
-                "transaction_id": transaction_id,
-                "stage_authorization_digest": stage_authorization_digest,
-                "target_binding": binding.data(),
-                "observed_at": observed_at,
-            }
+        legacy_authority = (
+            type(durable_store) is DurableStore
+            and stage_execution_grant is None
+            and m4_verifier is None
         )
-        if (
-            authorization.outcome is not DurableOutcome.COMMITTED
-            or authorization.record_digest != stage_authorization_digest
+        runtime_authority = (
+            durable_store is None
+            and type(stage_execution_grant) is StageExecutionGrant
+            and m4_verifier is not None
+        )
+        if legacy_authority:
+            authorization = durable_store.consume_m4_stage_authorization(
+                {
+                    "transaction_id": transaction_id,
+                    "stage_authorization_digest": stage_authorization_digest,
+                    "target_binding": binding.data(),
+                    "observed_at": observed_at,
+                }
+            )
+            if (
+                authorization.outcome is not DurableOutcome.COMMITTED
+                or authorization.record_digest != stage_authorization_digest
+            ):
+                raise _Stop(L0Reason.STAGE_AUTHORIZATION_REQUIRED)
+        elif not runtime_authority or not verify_stage_execution_grant(
+            stage_execution_grant,
+            m4_verifier,
+            durable_claim,
+            stage_authorization_digest,
+            binding.data(),
+            observed_at,
         ):
             raise _Stop(L0Reason.STAGE_AUTHORIZATION_REQUIRED)
         effect_started = True

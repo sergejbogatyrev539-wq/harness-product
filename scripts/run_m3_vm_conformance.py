@@ -62,6 +62,9 @@ SOURCE_FIXED = (
     "STATUS.json",
     "docs/ARCHITECTURE.md",
     "profiles/harness-m3-controller@.service",
+    "profiles/harness-m4-controller@.service",
+    "profiles/m4-lx-a.apparmor",
+    "profiles/m4-lx-a.json",
     "spec/MANIFEST.sha256",
 )
 
@@ -906,12 +909,14 @@ def _durable_result_data(result: object) -> dict[str, object]:
         or result.m4_iteration is not None
         or result.frontier_record_digest is not None
         or result.m4_recovery
+        or result.stage_execution_grant is not None
     ):
         _stop("CONTROLLER_RESULT_MALFORMED")
     data = asdict(result)
     for key in (
         "contract_digest", "d2_frontier_digest", "record_digest", "m4_state",
         "m4_iteration", "frontier_record_digest", "m4_recovery",
+        "stage_execution_grant",
     ):
         del data[key]
     data["outcome"] = result.outcome.value
@@ -1779,6 +1784,11 @@ def _m2_chain(
     manager: "CgroupManager",
     registry_digest: str,
     controller: ControllerSession,
+    *,
+    target_authority_digest: str | None = None,
+    contract_digest: str | None = None,
+    budget_limit: int = 1,
+    m4_contract: dict[str, object] | None = None,
 ) -> dict[str, object]:
     kernel, durable, _ = _load_project()
     request = _m1_request(times, content)
@@ -1806,6 +1816,14 @@ def _m2_chain(
         )
     )
     scope = durable.canonical_digest({"kind": "PATH_EXACT", "value": "/staging/artifact.txt"})
+    if (
+        target_authority_digest is not None
+        and not re.fullmatch(r"sha256:[0-9a-f]{64}", target_authority_digest)
+    ) or (
+        contract_digest is not None
+        and not re.fullmatch(r"sha256:[0-9a-f]{64}", contract_digest)
+    ) or type(budget_limit) is not int or budget_limit < 1 or budget_limit > 16:
+        _stop("M4_AUTHORITY_BINDING_MALFORMED")
     bootstrap = {
         "lineage_root": lineage,
         "revocation_epoch": 0,
@@ -1813,7 +1831,7 @@ def _m2_chain(
         "budgets": [
             {
                 "name": "writes", "unit": "FILES", "scope_digest": scope,
-                "lineage_root": lineage, "limit": 1,
+                "lineage_root": lineage, "limit": budget_limit,
             }
         ],
     }
@@ -1821,12 +1839,51 @@ def _m2_chain(
     bootstrapped = controller.bootstrap(bootstrap)
     if bootstrapped.outcome is not durable.DurableOutcome.COMMITTED:
         _stop("DURABLE_BOOTSTRAP_FAILED")
+    activated_contract = None
+    if m4_contract is not None:
+        signer = getattr(controller, "sign", None)
+        activator = getattr(controller, "activate_m4_contract", None)
+        if not callable(signer) or not callable(activator):
+            _stop("M4_CONTROLLER_AUTHORITY_ABSENT")
+        contract_payload = {
+            "record_type": "ACTIVE_CONTRACT",
+            "contract": m4_contract,
+        }
+        contract_source = signer(
+            _canonical(contract_payload), times["issued_at"], "ACTIVE_CONTRACT"
+        )
+        activated_contract = activator(
+            {
+                "contract": m4_contract,
+                "observed_at": times["issued_at"],
+                "resolver_verification": contract_source,
+            }
+        )
+        if (
+            activated_contract.outcome is not durable.DurableOutcome.COMMITTED
+            or activated_contract.reason
+            is not durable.DurableReason.ACTIVE_CONTRACT_BOUND
+            or activated_contract.contract_digest != contract_digest
+        ):
+            _stop("M4_CONTRACT_ACTIVATION_FAILED")
+    m4_verifier = None
+    if m4_contract is not None:
+        verifier_factory = getattr(controller, "m4_verifier", None)
+        if not callable(verifier_factory):
+            _stop("M4_CONTROLLER_VERIFIER_ABSENT")
+        m4_verifier = verifier_factory()
     issue = {
         "request": request,
         "audience_id": "executor-3",
         "purpose": "stageable-local-write",
-        "target_authority_digest": scope,
-        "contract_digest": _digest_bytes(_canonical({"contract": "l0-stage-write-v1"})),
+        "target_authority_digest": (
+            scope if target_authority_digest is None else target_authority_digest
+        ),
+        "contract_digest": (
+            _digest_bytes(_canonical({"contract": "l0-stage-write-v1"}))
+            if contract_digest is None
+            else contract_digest
+        ),
         "registry_digest": registry_digest,
         "profile_digest": profile.profile_digest,
         "placement_digest": supply.placement_digest,
@@ -1852,6 +1909,7 @@ def _m2_chain(
         str(database), issue_capture,
         executor_claim_verifier=verifier,
         runtime_session_verifier=verifier,
+        m4_verifier=m4_verifier,
     )
     rejected = capture_store.issue(issue)
     if (
@@ -1912,6 +1970,7 @@ def _m2_chain(
         str(database), verifier,
         executor_claim_verifier=claim_capture,
         runtime_session_verifier=verifier,
+        m4_verifier=m4_verifier,
     )
     rejected = capture_store.claim_dispatch(claim_raw)
     if (
@@ -1936,6 +1995,7 @@ def _m2_chain(
         "database": database,
         "request": request,
         "evaluated": evaluated,
+        "activated_contract": activated_contract,
         "controller_evaluation": controller_evaluation,
         "lineage": lineage,
         "scope": scope,
@@ -3987,6 +4047,8 @@ def _authority_chain(
     tools: dict[str, dict[str, str]],
     manager: CgroupManager,
     controller: ControllerSession,
+    *,
+    m4_authority_builder: object | None = None,
 ) -> dict[str, object]:
     measurement = _delegated_measurement(profile, measurement, manager)
     times = _qualification_times()
@@ -4057,6 +4119,35 @@ def _authority_chain(
     }
     supply_raw = _supply_raw(profile, measurement, artifacts, supply_material, placement, times)
     supply, attestor_facts = _verified_supply(profile, measurement, supply_raw, manager)
+    m4_authority: dict[str, object] | None = None
+    if m4_authority_builder is not None:
+        if not callable(m4_authority_builder):
+            _stop("M4_AUTHORITY_BUILDER_MALFORMED")
+        candidate = m4_authority_builder(
+            profile=profile,
+            supply=supply,
+            staging=staging,
+            request=request,
+            times=times,
+        )
+        if (
+            type(candidate) is not dict
+            or frozenset(candidate)
+            != {"target_authority_digest", "contract", "budget_limit", "context"}
+            or type(candidate["contract"]) is not dict
+            or candidate["contract"].get("contract_digest")
+            != _digest_bytes(
+                _canonical(
+                    {
+                        key: value
+                        for key, value in candidate["contract"].items()
+                        if key != "contract_digest"
+                    }
+                )
+            )
+        ):
+            _stop("M4_AUTHORITY_BUILDER_MALFORMED")
+        m4_authority = candidate
     chain = _m2_chain(
         profile,
         supply,
@@ -4065,6 +4156,16 @@ def _authority_chain(
         manager,
         str(supply_material["registry_snapshot_digest"]),
         controller,
+        target_authority_digest=(
+            None if m4_authority is None else str(m4_authority["target_authority_digest"])
+        ),
+        contract_digest=(
+            None
+            if m4_authority is None
+            else str(m4_authority["contract"]["contract_digest"])
+        ),
+        budget_limit=(1 if m4_authority is None else int(m4_authority["budget_limit"])),
+        m4_contract=(None if m4_authority is None else m4_authority["contract"]),
     )
     if chain["request"] != request:
         _stop("WORKER_CONTROLLER_REQUEST_MISMATCH")
@@ -4106,6 +4207,11 @@ def _authority_chain(
         verifier,
         executor_claim_verifier=verifier,
         runtime_session_verifier=capture,
+        m4_verifier=(
+            None
+            if m4_authority is None
+            else controller.m4_verifier()
+        ),
     )
     rejected = capture_store.prepare_runtime_session(prepare_raw)
     if (
@@ -4155,6 +4261,7 @@ def _authority_chain(
         "prepare_raw": prepare_raw,
         "runtime_session": prepared.runtime_session,
         "worker_cgroup": worker_cgroup,
+        "m4_authority": m4_authority,
         **chain,
     }
 
@@ -6364,6 +6471,8 @@ def _execute_prepared_proposal(
     policy: dict[str, object],
     manager: CgroupManager,
     controller: ControllerSession,
+    *,
+    m4_authority_builder: object | None = None,
 ) -> dict[str, object]:
     chain = _authority_chain(
         raw_profile,
@@ -6374,6 +6483,7 @@ def _execute_prepared_proposal(
         tools,
         manager,
         controller,
+        m4_authority_builder=m4_authority_builder,
     )
     broker_process, broker_status, broker_report, broker_facts = _launch_prepared_broker(
         chain, str(policy["digest"]), role_seccomp["BROKER"]

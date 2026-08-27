@@ -86,9 +86,11 @@ _AUTHORIZATION_KEYS = frozenset(
         "capability_id",
         "contract_digest",
         "d2_frontier_digest",
+        "attempt_cursor",
         "iteration",
         "target_authority_digest",
         "publication_target_binding_digest",
+        "publication_root_anchor_digest",
         "snapshot_id",
         "snapshot_digest",
         "snapshot_size",
@@ -101,6 +103,7 @@ _AUTHORIZATION_KEYS = frozenset(
         "fencing_epoch",
         "publisher_principal",
         "publisher_session",
+        "issued_at",
         "observed_at",
         "expires_at",
         "authorization_digest",
@@ -261,15 +264,33 @@ class TopologyResult:
 @dataclass(frozen=True, slots=True)
 class PublicationFact:
     transaction_id: str
+    decision_digest: str
+    authorized_envelope_digest: str
+    claim_digest: str
+    intent_digest: str
+    capability_id: str
+    contract_digest: str
+    d2_frontier_digest: str
+    attempt_cursor: int
+    iteration: int
     target_authority_digest: str
+    publication_target_binding_digest: str
+    publication_root_anchor_digest: str
     snapshot_id: str
     snapshot_digest: str
     snapshot_size: int
     before_binding: l0.PathBinding
     published_binding: l0.PathBinding
     publisher_subject: SecuritySubject
+    profile_digest: str
+    placement_digest: str
+    session_id: str
+    revocation_epoch: int
+    fencing_epoch: int
     authorization_digest: str
+    issued_at: str
     observed_at: str
+    expires_at: str
     receipt_digest: str
 
     def data(self) -> dict[str, object]:
@@ -277,16 +298,34 @@ class PublicationFact:
             "receipt_version": 1,
             "outcome": "PUBLISHED",
             "transaction_id": self.transaction_id,
+            "decision_digest": self.decision_digest,
+            "authorized_envelope_digest": self.authorized_envelope_digest,
+            "claim_digest": self.claim_digest,
+            "intent_digest": self.intent_digest,
+            "capability_id": self.capability_id,
+            "contract_digest": self.contract_digest,
+            "d2_frontier_digest": self.d2_frontier_digest,
+            "attempt_cursor": self.attempt_cursor,
+            "iteration": self.iteration,
             "target_authority_digest": self.target_authority_digest,
+            "publication_target_binding_digest": self.publication_target_binding_digest,
+            "publication_root_anchor_digest": self.publication_root_anchor_digest,
             "snapshot_id": self.snapshot_id,
             "snapshot_digest": self.snapshot_digest,
             "snapshot_size": self.snapshot_size,
             "before_binding": self.before_binding.data(),
             "published_binding": self.published_binding.data(),
             "publisher_subject": self.publisher_subject.data(),
+            "profile_digest": self.profile_digest,
+            "placement_digest": self.placement_digest,
+            "session_id": self.session_id,
+            "revocation_epoch": self.revocation_epoch,
+            "fencing_epoch": self.fencing_epoch,
             "authorization_digest": self.authorization_digest,
             "publication_method": "ATOMIC_REPLACE_FSYNC",
+            "issued_at": self.issued_at,
             "observed_at": self.observed_at,
+            "expires_at": self.expires_at,
             "receipt_digest": self.receipt_digest,
         }
 
@@ -783,7 +822,11 @@ class TrustedPublisher:
             if canonical_digest(body) != auth_digest:
                 raise _Stop(PublisherReason.AUTHORIZATION_REJECTED)
             expires = _time(value["expires_at"])
-            if observed >= expires or value["observed_at"] != observed_at:
+            if (
+                observed >= expires
+                or value["issued_at"] != observed_at
+                or value["observed_at"] != observed_at
+            ):
                 raise _Stop(PublisherReason.AUTHORIZATION_REJECTED)
             publisher = self._topology.subject("PUBLISHER")
             if (
@@ -791,6 +834,9 @@ class TrustedPublisher:
                 or value["target_authority_digest"] != self._topology.topology_digest
                 or value["publication_target_binding_digest"]
                 != self._topology.publication_target_binding.composite_binding_digest
+                or value["publication_root_anchor_digest"]
+                != self._topology.publication_root_anchor.anchor_digest
+                or value["attempt_cursor"] != value["iteration"]
                 or value["profile_digest"] != self._topology.profile_digest
                 or value["placement_digest"] != self._topology.placement_digest
                 or value["session_id"] != self._topology.session_id
@@ -808,10 +854,12 @@ class TrustedPublisher:
                 "decision_digest", "authorized_envelope_digest", "claim_digest",
                 "intent_digest", "capability_id", "contract_digest", "d2_frontier_digest",
                 "target_authority_digest", "publication_target_binding_digest",
+                "publication_root_anchor_digest",
                 "snapshot_digest", "seal_record_digest", "postcheck_record_digest",
                 "profile_digest", "placement_digest",
             ):
                 _digest(value[field])
+            _integer(value["attempt_cursor"], 1)
             _integer(value["iteration"], 1)
             _integer(value["snapshot_size"])
             _integer(value["revocation_epoch"])
@@ -885,6 +933,12 @@ class TrustedPublisher:
                 raise _Stop(PublisherReason.TOPOLOGY_UNVERIFIED)
             if not self.continuity():
                 raise _Stop(PublisherReason.TARGET_MISMATCH)
+            if _fault is not None:
+                # The deployment conformance runtime pauses here to prove that
+                # a denied principal cannot relocate the physical root after
+                # the final pre-replace checks.  The hook supplies no authority
+                # and the publication still uses the already-bound parent FD.
+                _fault("publisher_after_pre_replace_checks")
             publication_attempted = True
             os.replace(temporary_name, basename, src_dir_fd=parent, dst_dir_fd=parent)
             temporary_name = None
@@ -907,28 +961,68 @@ class TrustedPublisher:
                 "receipt_version": 1,
                 "outcome": "PUBLISHED",
                 "transaction_id": value["transaction_id"],
+                "decision_digest": value["decision_digest"],
+                "authorized_envelope_digest": value["authorized_envelope_digest"],
+                "claim_digest": value["claim_digest"],
+                "intent_digest": value["intent_digest"],
+                "capability_id": value["capability_id"],
+                "contract_digest": value["contract_digest"],
+                "d2_frontier_digest": value["d2_frontier_digest"],
+                "attempt_cursor": value["attempt_cursor"],
+                "iteration": value["iteration"],
                 "target_authority_digest": self._topology.topology_digest,
+                "publication_target_binding_digest": value[
+                    "publication_target_binding_digest"
+                ],
+                "publication_root_anchor_digest": value[
+                    "publication_root_anchor_digest"
+                ],
                 "snapshot_id": value["snapshot_id"],
                 "snapshot_digest": value["snapshot_digest"],
                 "snapshot_size": value["snapshot_size"],
                 "before_binding": before.data(),
                 "published_binding": published.data(),
                 "publisher_subject": publisher.data(),
+                "profile_digest": value["profile_digest"],
+                "placement_digest": value["placement_digest"],
+                "session_id": value["session_id"],
+                "revocation_epoch": value["revocation_epoch"],
+                "fencing_epoch": value["fencing_epoch"],
                 "authorization_digest": auth_digest,
                 "publication_method": "ATOMIC_REPLACE_FSYNC",
+                "issued_at": observed_at,
                 "observed_at": observed_at,
+                "expires_at": value["expires_at"],
             }
             fact = PublicationFact(
                 value["transaction_id"],
+                value["decision_digest"],
+                value["authorized_envelope_digest"],
+                value["claim_digest"],
+                value["intent_digest"],
+                value["capability_id"],
+                value["contract_digest"],
+                value["d2_frontier_digest"],
+                value["attempt_cursor"],
+                value["iteration"],
                 self._topology.topology_digest,
+                value["publication_target_binding_digest"],
+                value["publication_root_anchor_digest"],
                 value["snapshot_id"],
                 value["snapshot_digest"],
                 value["snapshot_size"],
                 before,
                 published,
                 publisher,
+                value["profile_digest"],
+                value["placement_digest"],
+                value["session_id"],
+                value["revocation_epoch"],
+                value["fencing_epoch"],
                 auth_digest,
                 observed_at,
+                observed_at,
+                value["expires_at"],
                 canonical_digest(receipt_body),
             )
             return PublicationResult(PublisherOutcome.PUBLISHED, PublisherReason.PUBLISHED, fact)

@@ -1,0 +1,24 @@
+[Unit]
+Description=Disposable Harness M4 exact-profile controller (%i)
+After=local-fs.target
+ConditionVirtualization=vm
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3.12 /opt/harness-m3-source/scripts/run_m4_vm_conformance.py --phase %i
+WorkingDirectory=/
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=LC_ALL=C
+Delegate=yes
+CPUAccounting=yes
+IOAccounting=yes
+MemoryAccounting=yes
+TasksAccounting=yes
+TasksMax=128
+TimeoutStartSec=180
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

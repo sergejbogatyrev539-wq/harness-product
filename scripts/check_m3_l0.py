@@ -57,6 +57,8 @@ _QEMU_DIGEST = "sha256:8a35ccba41582fc6c38b9df85fc9e35fa1d42f414d2d7d8090ee9b2f5
 _SOURCE_FIXED = (
     "AGENTS.md", "README.md", "ROADMAP.md", "SECURITY.md", "STATUS.json",
     "docs/ARCHITECTURE.md", "profiles/harness-m3-controller@.service",
+    "profiles/harness-m4-controller@.service", "profiles/m4-lx-a.apparmor",
+    "profiles/m4-lx-a.json",
     "spec/MANIFEST.sha256",
 )
 _RESIDUAL_RISK = (
