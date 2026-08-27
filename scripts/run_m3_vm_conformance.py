@@ -1825,6 +1825,7 @@ def _m2_chain(
         "request": request,
         "audience_id": "executor-3",
         "purpose": "stageable-local-write",
+        "target_authority_digest": scope,
         "contract_digest": _digest_bytes(_canonical({"contract": "l0-stage-write-v1"})),
         "registry_digest": registry_digest,
         "profile_digest": profile.profile_digest,
@@ -1888,7 +1889,7 @@ def _m2_chain(
                     "request_digest", "authorized_envelope_digest", "manifest_digest", "policy_digest",
                     "physical_ceiling_digest", "trusted_facts_digest", "contract_digest", "registry_digest",
                     "profile_digest", "placement_digest", "session_id", "lineage_root", "revocation_epoch",
-                    "fencing_epoch", "idempotency_key_digest",
+                    "fencing_epoch", "idempotency_key_digest", "target_authority_digest",
                 )
             },
             "observed_at": times["consume_at"],

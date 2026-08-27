@@ -116,6 +116,7 @@ _ACTIVE_CONTRACT_KEYS = frozenset(
         "contract_digest",
         "lineage_root",
         "authority_digest",
+        "target_authority_digest",
         "profile_digest",
         "operation_kind",
         "external_branch",
@@ -177,6 +178,95 @@ _STAGE_RECORD_KEYS = frozenset(
         "record_digest",
     }
 )
+_SECURITY_SUBJECT_KEYS = frozenset(
+    {
+        "principal_id",
+        "session_id",
+        "uid",
+        "gid",
+        "security_label",
+        "credential_namespace",
+        "namespace_id",
+        "executable_digest",
+    }
+)
+_OBSERVER_RECEIPT_KEYS = frozenset(
+    {
+        "receipt_version",
+        "outcome",
+        "transaction_id",
+        "capability_id",
+        "claim_digest",
+        "intent_digest",
+        "decision_digest",
+        "authorized_envelope_digest",
+        "target_authority_digest",
+        "profile_digest",
+        "placement_digest",
+        "session_id",
+        "seal_record_digest",
+        "snapshot_id",
+        "snapshot_device",
+        "snapshot_inode",
+        "snapshot_size",
+        "snapshot_digest",
+        "observer_subject",
+        "proposal_digest",
+        "revocation_epoch",
+        "fencing_epoch",
+        "observed_at",
+        "receipt_digest",
+    }
+)
+_PUBLICATION_AUTHORIZATION_KEYS = frozenset(
+    {
+        "authorization_version",
+        "transaction_id",
+        "decision_digest",
+        "authorized_envelope_digest",
+        "claim_digest",
+        "intent_digest",
+        "capability_id",
+        "contract_digest",
+        "d2_frontier_digest",
+        "iteration",
+        "target_authority_digest",
+        "publication_target_binding_digest",
+        "snapshot_id",
+        "snapshot_digest",
+        "snapshot_size",
+        "seal_record_digest",
+        "postcheck_record_digest",
+        "profile_digest",
+        "placement_digest",
+        "session_id",
+        "revocation_epoch",
+        "fencing_epoch",
+        "publisher_principal",
+        "publisher_session",
+        "observed_at",
+        "expires_at",
+        "authorization_digest",
+    }
+)
+_PUBLICATION_RECEIPT_KEYS = frozenset(
+    {
+        "receipt_version",
+        "outcome",
+        "transaction_id",
+        "target_authority_digest",
+        "snapshot_id",
+        "snapshot_digest",
+        "snapshot_size",
+        "before_binding",
+        "published_binding",
+        "publisher_subject",
+        "authorization_digest",
+        "publication_method",
+        "observed_at",
+        "receipt_digest",
+    }
+)
 _M4_EVIDENCE_KEYS = {
     "STAGED": frozenset(
         {"evidence_version", "stage_record", "source_object_binding", "staged_object_binding"}
@@ -219,13 +309,8 @@ _M4_EVIDENCE_KEYS = {
             "snapshot_inode",
             "snapshot_size",
             "snapshot_digest",
-            "observer_principal",
-            "observer_session",
-            "observer_uid",
-            "observer_gid",
-            "observer_writer_fds",
-            "outcome",
-            "postcheck_digest",
+            "observer_receipt",
+            "observer_verification",
             "evidence_digest",
         }
     ),
@@ -239,9 +324,10 @@ _M4_EVIDENCE_KEYS = {
             "snapshot_inode",
             "snapshot_size",
             "snapshot_digest",
-            "object_binding",
-            "committer_principal",
-            "committer_session",
+            "publication_authorization",
+            "publication_authorization_verification",
+            "publication_receipt",
+            "publication_verification",
             "evidence_digest",
         }
     ),
@@ -285,6 +371,7 @@ _M4_RECORD_KEYS = frozenset(
         "object_binding_digest",
         "budget_vector",
         "budget_vector_digest",
+        "target_authority_digest",
         "revocation_epoch",
         "fencing_epoch",
         "previous_record_digest",
@@ -330,6 +417,7 @@ _CAPABILITY_PAYLOAD_KEYS = frozenset(
         "idempotency_key_digest",
         "budget_vector",
         "budget_vector_digest",
+        "target_authority_digest",
     }
 )
 _VERIFICATION_RECORD_KEYS = frozenset(
@@ -375,6 +463,7 @@ _INTENT_KEYS = frozenset(
         "budget_vector",
         "budget_vector_digest",
         "dispatch_counter",
+        "target_authority_digest",
     }
 )
 _CLAIM_KEYS = frozenset(
@@ -403,6 +492,7 @@ _CLAIM_KEYS = frozenset(
         "capability_payload",
         "capability_verification",
         "intent",
+        "target_authority_digest",
     }
 )
 
@@ -547,6 +637,7 @@ class DispatchClaim:
     observed_at: str
     target_scope_digest: str
     material_digest: str
+    target_authority_digest: str
     request_json: str
     decision_json: str
     authorized_envelope_json: str
@@ -1179,6 +1270,7 @@ def _parse_active_contract(raw: object, observed_at: str) -> tuple[dict[str, obj
             "contract_digest",
             "lineage_root",
             "authority_digest",
+            "target_authority_digest",
             "profile_digest",
         )
     ):
@@ -1286,6 +1378,30 @@ def _same_snapshot(left: object, right: object) -> bool:
     return type(left) is dict and type(right) is dict and all(left.get(key) == right.get(key) for key in fields)
 
 
+def _valid_security_subject(value: object) -> bool:
+    return bool(
+        _closed_dict(value, _SECURITY_SUBJECT_KEYS)
+        and all(
+            _valid_identifier(value[field])
+            for field in (
+                "principal_id",
+                "session_id",
+                "security_label",
+                "credential_namespace",
+                "namespace_id",
+            )
+        )
+        and _bounded_integer(value["uid"], 1)
+        and _bounded_integer(value["gid"], 1)
+        and _valid_digest(value["executable_digest"])
+    )
+
+
+def _valid_receipt_digest(value: dict[str, object]) -> bool:
+    body = {key: value[key] for key in value if key != "receipt_digest"}
+    return _valid_digest(value.get("receipt_digest")) and canonical_digest(body) == value["receipt_digest"]
+
+
 def _m4_evidence_object_digest(
     state: str,
     evidence: object,
@@ -1294,6 +1410,8 @@ def _m4_evidence_object_digest(
     intent: dict[str, object],
     frontier: dict[str, object],
     prior: dict[str, tuple[str, dict[str, object]]],
+    observed_at: str,
+    verification_check: object,
 ) -> str | None:
     """Validate one closed stage record and return its continuing object binding."""
 
@@ -1372,27 +1490,47 @@ def _m4_evidence_object_digest(
     if state == "POSTCHECKED":
         sealed_digest, sealed = prior["SEALED"]
         sealed_evidence = sealed["evidence"]
+        receipt = evidence["observer_receipt"]
+        subject = receipt.get("observer_subject") if type(receipt) is dict else None
         if (
             current is None
             or evidence["seal_record_digest"] != sealed_digest
             or not _same_snapshot(evidence, sealed_evidence)
-            or not all(
-                _valid_identifier(evidence[field])
-                for field in ("observer_principal", "observer_session")
-            )
-            or evidence["observer_principal"]
+            or not _closed_dict(receipt, _OBSERVER_RECEIPT_KEYS)
+            or receipt["receipt_version"] != FORMAT_VERSION
+            or receipt["outcome"] != "PASS"
+            or receipt["transaction_id"] != transaction["transaction_id"]
+            or receipt["capability_id"] != transaction["capability_id"]
+            or receipt["claim_digest"] != transaction["claim_digest"]
+            or receipt["intent_digest"] != transaction["intent_digest"]
+            or receipt["decision_digest"] != transaction["decision_digest"]
+            or receipt["authorized_envelope_digest"]
+            != transaction["authorized_envelope_digest"]
+            or receipt["target_authority_digest"] != capability["target_authority_digest"]
+            or receipt["profile_digest"] != capability["profile_digest"]
+            or receipt["placement_digest"] != capability["placement_digest"]
+            or receipt["session_id"] != capability["session_id"]
+            or receipt["seal_record_digest"] != sealed_digest
+            or not _same_snapshot(receipt, sealed_evidence)
+            or not _valid_security_subject(subject)
+            or subject["principal_id"]
             in {
                 capability["principal_id"],
                 capability["audience_id"],
                 sealed_evidence["sealer_principal"],
             }
-            or evidence["observer_session"]
+            or subject["session_id"]
             in {capability["session_id"], sealed_evidence["sealer_session"]}
-            or not _bounded_integer(evidence["observer_uid"], 1)
-            or not _bounded_integer(evidence["observer_gid"], 1)
-            or evidence["observer_writer_fds"] != []
-            or evidence["outcome"] != "PASS"
-            or not _valid_digest(evidence["postcheck_digest"])
+            or receipt["revocation_epoch"] != transaction["revocation_epoch"]
+            or receipt["fencing_epoch"] != transaction["fencing_epoch"]
+            or not _valid_digest(receipt["proposal_digest"])
+            or receipt["observed_at"] != observed_at
+            or _parse_time(receipt["observed_at"]) is None
+            or not _valid_receipt_digest(receipt)
+            or not callable(verification_check)
+            or not verification_check(
+                receipt, evidence["observer_verification"], observed_at
+            )
             or not _valid_digest(evidence["evidence_digest"])
         ):
             raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
@@ -1400,26 +1538,95 @@ def _m4_evidence_object_digest(
     if state == "COMMITTED":
         seal_digest, sealed = prior["SEALED"]
         postcheck_digest, postchecked = prior["POSTCHECKED"]
-        binding = evidence["object_binding"]
+        authorization = evidence["publication_authorization"]
+        receipt = evidence["publication_receipt"]
+        before = receipt.get("before_binding") if type(receipt) is dict else None
+        published = receipt.get("published_binding") if type(receipt) is dict else None
+        subject = receipt.get("publisher_subject") if type(receipt) is dict else None
         if (
             current is None
             or evidence["seal_record_digest"] != seal_digest
             or evidence["postcheck_record_digest"] != postcheck_digest
             or not _same_snapshot(evidence, sealed["evidence"])
             or not _same_snapshot(evidence, postchecked["evidence"])
-            or not _valid_path_binding(binding)
-            or binding["composite_binding_digest"] != current
-            or binding["final_digest"] != evidence["snapshot_digest"]
-            or not all(
-                _valid_identifier(evidence[field])
-                for field in ("committer_principal", "committer_session")
+            or not _closed_dict(authorization, _PUBLICATION_AUTHORIZATION_KEYS)
+            or authorization["authorization_version"] != FORMAT_VERSION
+            or authorization["transaction_id"] != transaction["transaction_id"]
+            or authorization["decision_digest"] != transaction["decision_digest"]
+            or authorization["authorized_envelope_digest"]
+            != transaction["authorized_envelope_digest"]
+            or authorization["claim_digest"] != transaction["claim_digest"]
+            or authorization["intent_digest"] != transaction["intent_digest"]
+            or authorization["capability_id"] != transaction["capability_id"]
+            or authorization["contract_digest"] != transaction["contract_digest"]
+            or authorization["d2_frontier_digest"] != transaction["d2_frontier_digest"]
+            or authorization["iteration"] != transaction["iteration"]
+            or authorization["target_authority_digest"]
+            != capability["target_authority_digest"]
+            or authorization["snapshot_id"] != evidence["snapshot_id"]
+            or authorization["snapshot_digest"] != evidence["snapshot_digest"]
+            or authorization["snapshot_size"] != evidence["snapshot_size"]
+            or authorization["seal_record_digest"] != seal_digest
+            or authorization["postcheck_record_digest"] != postcheck_digest
+            or authorization["profile_digest"] != capability["profile_digest"]
+            or authorization["placement_digest"] != capability["placement_digest"]
+            or authorization["session_id"] != capability["session_id"]
+            or authorization["revocation_epoch"] != transaction["revocation_epoch"]
+            or authorization["fencing_epoch"] != transaction["fencing_epoch"]
+            or authorization["observed_at"] != observed_at
+            or _parse_time(authorization["expires_at"]) is None
+            or _parse_time(authorization["expires_at"]) <= _parse_time(observed_at)
+            or not _valid_identifier(authorization["publisher_principal"])
+            or not _valid_identifier(authorization["publisher_session"])
+            or not _valid_digest(authorization["authorization_digest"])
+            or canonical_digest(
+                {
+                    key: authorization[key]
+                    for key in authorization
+                    if key != "authorization_digest"
+                }
             )
-            or evidence["committer_principal"] in {capability["principal_id"], capability["audience_id"]}
-            or evidence["committer_session"] == capability["session_id"]
+            != authorization["authorization_digest"]
+            or not callable(verification_check)
+            or not verification_check(
+                authorization,
+                evidence["publication_authorization_verification"],
+                observed_at,
+            )
+            or not _closed_dict(receipt, _PUBLICATION_RECEIPT_KEYS)
+            or receipt["receipt_version"] != FORMAT_VERSION
+            or receipt["outcome"] != "PUBLISHED"
+            or receipt["transaction_id"] != transaction["transaction_id"]
+            or receipt["target_authority_digest"] != capability["target_authority_digest"]
+            or receipt["snapshot_id"] != evidence["snapshot_id"]
+            or receipt["snapshot_digest"] != evidence["snapshot_digest"]
+            or receipt["snapshot_size"] != evidence["snapshot_size"]
+            or not _valid_path_binding(before)
+            or not _valid_path_binding(published)
+            or authorization["publication_target_binding_digest"]
+            != before["composite_binding_digest"]
+            or before["canonical_path"] != published["canonical_path"]
+            or before["root_identity"] != published["root_identity"]
+            or before["mount_identity"] != published["mount_identity"]
+            or published["final_digest"] != evidence["snapshot_digest"]
+            or not _valid_security_subject(subject)
+            or receipt["authorization_digest"] != authorization["authorization_digest"]
+            or subject["principal_id"] != authorization["publisher_principal"]
+            or subject["session_id"] != authorization["publisher_session"]
+            or subject["principal_id"] in {capability["principal_id"], capability["audience_id"]}
+            or subject["session_id"] == capability["session_id"]
+            or not _valid_digest(receipt["authorization_digest"])
+            or receipt["publication_method"] != "ATOMIC_REPLACE_FSYNC"
+            or receipt["observed_at"] != observed_at
+            or _parse_time(receipt["observed_at"]) is None
+            or not _valid_receipt_digest(receipt)
+            or not verification_check(
+                receipt, evidence["publication_verification"], observed_at
+            )
             or not _valid_digest(evidence["evidence_digest"])
         ):
             raise _Rejected(DurableOutcome.DENY, DurableReason.M4_EVIDENCE_INVALID)
-        return current
+        return published["composite_binding_digest"]
     if state == "JOINED":
         commit_digest, _ = prior["COMMITTED"]
         if (
@@ -2430,6 +2637,7 @@ class DurableStore:
                         "lineage_root",
                         "idempotency_key_digest",
                         "budget_vector_digest",
+                        "target_authority_digest",
                     )
                 )
                 or type(source_digests) is not list
@@ -2656,6 +2864,7 @@ class DurableStore:
                         "target_scope_digest",
                         "material_digest",
                         "budget_vector_digest",
+                        "target_authority_digest",
                     )
                 )
                 or _parse_time(intent.get("observed_at")) is None
@@ -2678,6 +2887,9 @@ class DurableStore:
                 "SELECT * FROM capabilities WHERE capability_id=?",
                 (intent_row["capability_id"],),
             ).fetchone()
+            capability_payload = (
+                None if capability is None else _json_value(capability["payload_json"])
+            )
             capability_bindings = {
                 "capability_payload_digest": "payload_digest",
                 "decision_digest": "decision_digest",
@@ -2704,9 +2916,12 @@ class DurableStore:
             }
             if (
                 capability is None
+                or type(capability_payload) is not dict
                 or capability["state"] != "CONSUMED"
                 or capability["consumed_transaction_id"] != intent_row["transaction_id"]
                 or _json_value(capability["budget_vector_json"]) != intent.get("budget_vector")
+                or intent.get("target_authority_digest")
+                != capability_payload.get("target_authority_digest")
                 or any(
                     intent.get(intent_field) != capability[column]
                     for intent_field, column in capability_bindings.items()
@@ -2745,6 +2960,7 @@ class DurableStore:
                 "dispatch_counter": intent_row["dispatch_counter"],
                 "fencing_epoch": intent_row["fencing_epoch"],
                 "intent": intent,
+                "target_authority_digest": intent["target_authority_digest"],
             }
             if (
                 event_payload != expected_intent_event
@@ -2906,6 +3122,7 @@ class DurableStore:
                         "lineage_root",
                         "target_scope_digest",
                         "material_digest",
+                        "target_authority_digest",
                     )
                 )
                 or not _bounded_integer(claim.get("revocation_epoch"))
@@ -2949,6 +3166,7 @@ class DurableStore:
                 "fencing_epoch": "fencing_epoch",
                 "target_scope_digest": "target_scope_digest",
                 "material_digest": "material_digest",
+                "target_authority_digest": "target_authority_digest",
             }
             if (
                 intent_row["capability_id"] != capability["capability_id"]
@@ -3236,6 +3454,9 @@ class DurableStore:
             ).fetchone()
             if frontier is None or claim is None or intent is None or capability is None:
                 raise _StoreCorrupt("missing M4 transaction source")
+            capability_payload = _json_value(capability["payload_json"])
+            if type(capability_payload) is not dict:
+                raise _StoreCorrupt("invalid M4 capability payload")
             budget_vector = _json_value(row["budget_vector_json"])
             reservations = [
                 {
@@ -3265,6 +3486,7 @@ class DurableStore:
                 "decision_digest": row["decision_digest"],
                 "authorized_envelope_digest": row["authorized_envelope_digest"],
                 "lineage_root": row["lineage_root"],
+                "target_authority_digest": capability_payload["target_authority_digest"],
                 "iteration": row["iteration"],
                 "budget_vector": budget_vector,
                 "budget_vector_digest": row["budget_vector_digest"],
@@ -3302,7 +3524,7 @@ class DurableStore:
             if not transitions:
                 raise _StoreCorrupt("missing M4 transition")
             frontier_value = _json_value(frontier["frontier_json"])
-            capability_value = _json_value(capability["payload_json"])
+            capability_value = capability_payload
             capability_verification = _json_value(capability["verification_json"])
             claim_value = _json_value(claim["claim_json"])
             claim_verification = _json_value(claim["executor_verification_json"])
@@ -3354,6 +3576,8 @@ class DurableStore:
                         intent_value,
                         frontier_value,
                         prior,
+                        transition_row["observed_at"],
+                        self._embedded_m4_verification_is_valid,
                     )
                 except (KeyError, _Rejected) as error:
                     raise _StoreCorrupt("invalid M4 transition evidence") from error
@@ -3399,6 +3623,8 @@ class DurableStore:
                     or record["decision_digest"] != row["decision_digest"]
                     or record["authorized_envelope_digest"] != row["authorized_envelope_digest"]
                     or record["lineage_root"] != row["lineage_root"]
+                    or record["target_authority_digest"]
+                    != capability_value["target_authority_digest"]
                     or record["object_binding_digest"] != expected_object
                     or record["budget_vector"] != budget_vector
                     or record["budget_vector_digest"] != row["budget_vector_digest"]
@@ -3658,6 +3884,37 @@ class DurableStore:
         except Exception:
             return False
 
+    def _embedded_m4_verification_is_valid(
+        self,
+        payload: object,
+        verification: object,
+        observed_at: str,
+    ) -> bool:
+        try:
+            if type(payload) is not dict or not _closed_dict(
+                verification, _VERIFICATION_RECORD_KEYS
+            ):
+                return False
+            payload_text = _canonical_text(payload)
+            payload_digest = canonical_digest(payload)
+            verification_text = _canonical_text(verification)
+            verification_digest = canonical_digest(verification)
+            return (
+                verification["verification_version"] == FORMAT_VERSION
+                and verification["payload_digest"] == payload_digest
+                and verification["bindings"] == payload
+                and self._m4_verification_is_valid(
+                    payload_text,
+                    payload_digest,
+                    verification,
+                    verification_text,
+                    verification_digest,
+                    observed_at,
+                )
+            )
+        except Exception:
+            return False
+
     def _load_verified_contract(
         self,
         connection: sqlite3.Connection,
@@ -3669,6 +3926,11 @@ class DurableStore:
             "SELECT * FROM active_contracts WHERE contract_digest=?", (contract_digest,)
         ).fetchone()
         if row is None:
+            return None
+        if connection.execute(
+            "SELECT 1 FROM m4_transactions WHERE contract_digest=? AND state='RECONCILING'",
+            (contract_digest,),
+        ).fetchone() is not None:
             return None
         contract = _json_value(row["contract_json"])
         verification = _json_value(row["resolver_verification_json"])
@@ -3750,6 +4012,8 @@ class DurableStore:
                 capability_payload.get("contract_digest") != contract["contract_digest"]
                 or capability_payload.get("lineage_root") != contract["lineage_root"]
                 or capability_payload.get("profile_digest") != contract["profile_digest"]
+                or capability_payload.get("target_authority_digest")
+                != contract["target_authority_digest"]
                 or capability_payload.get("revocation_epoch") != contract["revocation_epoch"]
                 or capability_payload.get("fencing_epoch") != contract["fencing_epoch"]
                 or type(authority) is not dict
@@ -3948,7 +4212,7 @@ class DurableStore:
             digest = canonical_digest(row)
             values["BUDGET_RESERVATION"].append(artifact(digest, digest))
         values["TARGET_BINDING"] = [
-            artifact("target/" + transaction_id, intent["target_scope_digest"])
+            artifact("target/" + transaction_id, intent["target_authority_digest"])
         ]
         values["DISPATCH_INTENT"] = [artifact(transaction_id, intent_row["intent_digest"])]
         values["STAGED_OUTPUT"] = [
@@ -4395,6 +4659,7 @@ class DurableStore:
                 "decision_digest": capability["decision_digest"],
                 "authorized_envelope_digest": capability["authorized_envelope_digest"],
                 "lineage_root": capability["lineage_root"],
+                "target_authority_digest": capability_payload["target_authority_digest"],
                 "iteration": frontier["iteration"],
                 "budget_vector": budget_vector,
                 "budget_vector_digest": budget_digest,
@@ -4762,7 +5027,15 @@ class DurableStore:
                 connection.rollback()
                 return _result(DurableOutcome.DENY, DurableReason.EXPIRED)
             object_binding_digest = _m4_evidence_object_digest(
-                state, raw["evidence"], transaction, capability, intent, frontier, prior
+                state,
+                raw["evidence"],
+                transaction,
+                capability,
+                intent,
+                frontier,
+                prior,
+                raw["observed_at"],
+                self._embedded_m4_verification_is_valid,
             )
             budget_vector = _json_value(transaction["budget_vector_json"])
             if type(budget_vector) is not list or canonical_digest(budget_vector) != transaction["budget_vector_digest"]:
@@ -4783,6 +5056,7 @@ class DurableStore:
                 "decision_digest": transaction["decision_digest"],
                 "authorized_envelope_digest": transaction["authorized_envelope_digest"],
                 "lineage_root": transaction["lineage_root"],
+                "target_authority_digest": capability["target_authority_digest"],
                 "object_binding_digest": object_binding_digest,
                 "budget_vector": budget_vector,
                 "budget_vector_digest": transaction["budget_vector_digest"],
@@ -4935,6 +5209,7 @@ class DurableStore:
                 "idempotency_key_digest",
                 "budget",
                 "verification",
+                "target_authority_digest",
             }
         )
         if not _closed_dict(raw, keys):
@@ -4949,6 +5224,7 @@ class DurableStore:
             "placement_digest",
             "lineage_root",
             "idempotency_key_digest",
+            "target_authority_digest",
         ):
             if not _valid_digest(raw[field]):
                 raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
@@ -5077,6 +5353,7 @@ class DurableStore:
             "idempotency_key_digest": raw["idempotency_key_digest"],
             "budget_vector": budget_data,
             "budget_vector_digest": budget_digest,
+            "target_authority_digest": raw["target_authority_digest"],
         }
         capability_id = canonical_digest(payload)
         verification = {
@@ -5325,6 +5602,7 @@ class DurableStore:
                 "fencing_epoch",
                 "idempotency_key_digest",
                 "budget",
+                "target_authority_digest",
             }
         )
         if not _closed_dict(raw, keys):
@@ -5354,6 +5632,7 @@ class DurableStore:
             "placement_digest",
             "lineage_root",
             "idempotency_key_digest",
+            "target_authority_digest",
         ):
             if not _valid_digest(raw[field]):
                 raise _Rejected(DurableOutcome.STOP, DurableReason.MALFORMED_INPUT)
@@ -5450,7 +5729,13 @@ class DurableStore:
                 "fencing_epoch",
                 "idempotency_key_digest",
             )
-            if any(prepared.raw[field] != capability[field] for field in exact_fields):
+            stored_payload = _json_value(capability["payload_json"])
+            if (
+                type(stored_payload) is not dict
+                or any(prepared.raw[field] != capability[field] for field in exact_fields)
+                or prepared.raw["target_authority_digest"]
+                != stored_payload.get("target_authority_digest")
+            ):
                 connection.rollback()
                 return _result(DurableOutcome.DENY, DurableReason.BINDING_MISMATCH)
             if prepared.raw["lineage_root"] != meta["lineage_root"]:
@@ -5519,7 +5804,7 @@ class DurableStore:
             sequence = meta["journal_head_sequence"] + 1
             if not _bounded_integer(counter, 1) or not _bounded_integer(sequence, 1):
                 raise _StoreCorrupt("monotonic counter overflow")
-            capability_payload = _json_value(capability["payload_json"])
+            capability_payload = stored_payload
             target_scope = prepared.budget_rows[0].scope_digest
             intent = {
                 "intent_version": FORMAT_VERSION,
@@ -5552,6 +5837,7 @@ class DurableStore:
                 "budget_vector": [item.data() for item in prepared.budget_rows],
                 "budget_vector_digest": capability["budget_vector_digest"],
                 "dispatch_counter": counter,
+                "target_authority_digest": capability_payload["target_authority_digest"],
             }
             intent_text = _canonical_text(intent)
             intent_digest = canonical_digest(intent)
@@ -5598,6 +5884,7 @@ class DurableStore:
                 "dispatch_counter": counter,
                 "fencing_epoch": capability["fencing_epoch"],
                 "intent": intent,
+                "target_authority_digest": intent["target_authority_digest"],
             }
             observed_sequence = self._append_event(
                 connection,
@@ -5791,6 +6078,7 @@ class DurableStore:
                 "capability_payload": payload,
                 "capability_verification": capability_verification,
                 "intent": intent,
+                "target_authority_digest": intent["target_authority_digest"],
             }
             claim_text = _canonical_text(claim)
             claim_digest = canonical_digest(claim)
@@ -5890,6 +6178,7 @@ class DurableStore:
                 observed_at=raw["observed_at"],
                 target_scope_digest=intent["target_scope_digest"],
                 material_digest=intent["material_digest"],
+                target_authority_digest=intent["target_authority_digest"],
                 request_json=capability["request_json"],
                 decision_json=capability["decision_json"],
                 authorized_envelope_json=capability["authorized_envelope_json"],
@@ -6047,6 +6336,7 @@ class DurableStore:
                     observed_at=claim_row["observed_at"],
                     target_scope_digest=intent["target_scope_digest"],
                     material_digest=intent["material_digest"],
+                    target_authority_digest=intent["target_authority_digest"],
                     request_json=capability["request_json"],
                     decision_json=capability["decision_json"],
                     authorized_envelope_json=capability["authorized_envelope_json"],

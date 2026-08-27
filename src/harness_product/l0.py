@@ -354,6 +354,7 @@ _DURABLE_CLAIM_KEYS = frozenset(
         "observed_at",
         "target_scope_digest",
         "material_digest",
+        "target_authority_digest",
         "request",
         "decision",
         "authorized_envelope",
@@ -2291,6 +2292,7 @@ def _verified_claim(
         "observed_at": claim.observed_at,
         "target_scope_digest": claim.target_scope_digest,
         "material_digest": claim.material_digest,
+        "target_authority_digest": claim.target_authority_digest,
     }
     try:
         nested_bindings = {
@@ -3715,7 +3717,7 @@ def stage_committed_intent(
     supply_verifier: object | None = None,
     _fault: object | None = None,
 ) -> StageResult:
-    """Perform the sole M3 effect: one exact replace inside a trusted staging root."""
+    """Executor-internal M3 staging primitive; never a controller publication API."""
 
     root = -1
     target = -1
@@ -4191,7 +4193,6 @@ __all__ = [
     "receive_broker_message",
     "resolve_target",
     "runtime_conformance",
-    "stage_committed_intent",
     "supervise_session",
     "verify_supply",
 ]

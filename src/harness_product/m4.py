@@ -13,13 +13,14 @@ import fcntl
 import json
 import os
 import re
+import resource
 import select
 import signal
 import stat
 import time
 from typing import Callable
 
-from . import kernel, l0
+from . import kernel, l0, publisher
 from .durable import DispatchClaim, DurableOutcome, DurableStore, canonical_digest
 from .model import (
     EffectKind,
@@ -38,11 +39,10 @@ _INPUT_KEYS = frozenset(
     {
         "transaction_id",
         "d2_frontier_digest",
-        "root_descriptor",
-        "source_object_binding",
         "stage_request",
         "observed_at",
         "verifications",
+        "external_verifications",
     }
 )
 _TIME_KEYS = frozenset(
@@ -59,8 +59,15 @@ _TIME_KEYS = frozenset(
     }
 )
 _VERIFICATION_KEYS = _TIME_KEYS - {"BEGIN"}
+_EXTERNAL_VERIFICATION_KEYS = frozenset(
+    {
+        "OBSERVER_RECEIPT",
+        "PUBLICATION_AUTHORIZATION",
+        "PUBLICATION_RECEIPT",
+    }
+)
 _STAGE_KEYS = frozenset(
-    {"transaction_id", "claim_digest", "operation", "content", "content_digest", "target_binding"}
+    {"transaction_id", "claim_digest", "operation", "content", "content_digest"}
 )
 _STAGE_RECORD_KEYS = frozenset(
     {
@@ -103,6 +110,7 @@ class M4Reason(str, Enum):
     QUIESCENCE_FAILED = "QUIESCENCE_FAILED"
     SEAL_FAILED = "SEAL_FAILED"
     POSTCHECK_FAILED = "POSTCHECK_FAILED"
+    PUBLICATION_FAILED = "PUBLICATION_FAILED"
     DURABLE_TRANSITION_FAILED = "DURABLE_TRANSITION_FAILED"
     RECONCILING = "RECONCILING"
     INTERNAL_ERROR = "INTERNAL_ERROR"
@@ -221,16 +229,24 @@ def _evidence(body: dict[str, object]) -> dict[str, object]:
 
 
 def _close_except(keep: set[int]) -> None:
-    try:
-        descriptors = [int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()]
-    except OSError:
-        descriptors = list(range(0, 1024))
-    for descriptor in descriptors:
-        if descriptor not in keep:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
+    hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+    if (
+        type(hard) is not int
+        or hard == resource.RLIM_INFINITY
+        or hard < 0
+        or hard > 1 << 20
+        or any(type(descriptor) is not int or descriptor < 0 or descriptor >= hard for descriptor in keep)
+    ):
+        raise OSError(errno.EOVERFLOW, "unbounded descriptor table")
+    start = 0
+    for descriptor in sorted(keep):
+        if start < descriptor:
+            os.closerange(start, descriptor)
+        start = descriptor + 1
+    if start < hard:
+        os.closerange(start, hard)
+    for descriptor in keep:
+        fcntl.fcntl(descriptor, fcntl.F_GETFD)
 
 
 def _write_all(descriptor: int, value: bytes) -> None:
@@ -672,14 +688,43 @@ class M4Coordinator:
         *,
         store: DurableStore,
         profile: l0.CompiledL0Profile,
+        staging_root_descriptor: int,
+        topology: publisher.PublisherTopology,
+        topology_verification: object,
+        trusted_publisher: publisher.TrustedPublisher,
         executor_claim_verifier_factory: object,
         supply_verifier_factory: object,
+        external_verifier_factory: object,
         principals: M4Principals,
     ) -> None:
+        if type(staging_root_descriptor) is not int or staging_root_descriptor < 0:
+            raise ValueError("invalid trusted staging root")
+        if (
+            type(profile) is not l0.CompiledL0Profile
+            or not l0._profile_is_valid(profile)
+            or type(topology) is not publisher.PublisherTopology
+            or type(trusted_publisher) is not publisher.TrustedPublisher
+            or trusted_publisher.topology != topology
+            or type(principals) is not M4Principals
+            or not all(
+                callable(value)
+                for value in (
+                    executor_claim_verifier_factory,
+                    supply_verifier_factory,
+                    external_verifier_factory,
+                )
+            )
+        ):
+            raise ValueError("invalid trusted M4 publication boundary")
         self._store = store
         self._profile = profile
+        self._staging_root = fcntl.fcntl(staging_root_descriptor, fcntl.F_DUPFD_CLOEXEC, 3)
+        self._topology = topology
+        self._topology_verification = topology_verification
+        self._publisher = trusted_publisher
         self._claim_verifier_factory = executor_claim_verifier_factory
         self._supply_verifier_factory = supply_verifier_factory
+        self._external_verifier_factory = external_verifier_factory
         self._principals = principals
 
     def _advance(
@@ -721,6 +766,17 @@ class M4Coordinator:
         if self._principals.observer_principal in {claim.principal_id, claim.audience_id}:
             raise _M4Stop(M4Reason.CLAIM_REJECTED)
         if self._principals.controller_session == claim.session_id or self._principals.observer_session == claim.session_id:
+            raise _M4Stop(M4Reason.CLAIM_REJECTED)
+        subjects = {name: subject for name, subject in self._topology.subjects}
+        if (
+            subjects["WORKER"].principal_id != claim.principal_id
+            or subjects["WORKER"].session_id != claim.session_id
+            or subjects["EXECUTOR"].principal_id != claim.audience_id
+            or subjects["CONTROLLER"].principal_id != self._principals.controller_principal
+            or subjects["CONTROLLER"].session_id != self._principals.controller_session
+            or subjects["OBSERVER"].principal_id != self._principals.observer_principal
+            or subjects["OBSERVER"].session_id != self._principals.observer_session
+        ):
             raise _M4Stop(M4Reason.CLAIM_REJECTED)
 
     def _admit(self, claim: DispatchClaim, source: l0.PathBinding) -> None:
@@ -777,21 +833,24 @@ class M4Coordinator:
             _digest(value["d2_frontier_digest"])
             if transaction_id != claim.transaction_id:
                 raise _M4Stop(M4Reason.CLAIM_REJECTED)
-            if type(value["root_descriptor"]) is not int or value["root_descriptor"] < 0:
-                raise _M4Stop(M4Reason.MALFORMED_INPUT)
-            root_descriptor = value["root_descriptor"]
+            root_descriptor = fcntl.fcntl(self._staging_root, fcntl.F_DUPFD_CLOEXEC, 3)
             if _fault is not None and not callable(_fault):
                 raise _M4Stop(M4Reason.MALFORMED_INPUT)
             times = _closed(value["observed_at"], _TIME_KEYS)
             verifications = _closed(value["verifications"], _VERIFICATION_KEYS)
+            external_verifications = _closed(
+                value["external_verifications"], _EXTERNAL_VERIFICATION_KEYS
+            )
             if not all(type(item) is str for item in times.values()):
                 raise _M4Stop(M4Reason.MALFORMED_INPUT)
-            if not all(type(item) is dict for item in verifications.values()):
+            if not all(
+                type(item) is dict
+                for item in (*verifications.values(), *external_verifications.values())
+            ):
                 raise _M4Stop(M4Reason.MALFORMED_INPUT)
-            stage_request = _closed(value["stage_request"], _STAGE_KEYS)
-            source = l0._parse_path_binding(value["source_object_binding"])
-            if stage_request["target_binding"] != source.data():
-                raise _M4Stop(M4Reason.MALFORMED_INPUT)
+            stage_input = _closed(value["stage_request"], _STAGE_KEYS)
+            source = self._topology.staging_binding
+            stage_request = {**stage_input, "target_binding": source.data()}
             if (
                 stage_request["transaction_id"] != claim.transaction_id
                 or stage_request["claim_digest"] != claim.claim_digest
@@ -808,6 +867,20 @@ class M4Coordinator:
                 or supply.session_id != claim.session_id
                 or supply.revocation_epoch != claim.revocation_epoch
                 or supply.fencing_epoch != claim.fencing_epoch
+                or claim.target_authority_digest != self._topology.topology_digest
+                or self._topology.profile_digest != claim.profile_digest
+                or self._topology.placement_digest != claim.placement_digest
+                or self._topology.session_id != claim.session_id
+                or self._topology.revocation_epoch != claim.revocation_epoch
+                or self._topology.fencing_epoch != claim.fencing_epoch
+                or self._publisher.topology != self._topology
+            ):
+                raise _M4Stop(M4Reason.CLAIM_REJECTED)
+            if not publisher.verify_external(
+                self._external_verifier_factory,
+                self._topology.data(),
+                self._topology_verification,
+                times["BEGIN"],
             ):
                 raise _M4Stop(M4Reason.CLAIM_REJECTED)
             l0._root_identity(root_descriptor)
@@ -908,17 +981,14 @@ class M4Coordinator:
                 staged,
             )
             _assert_read_lease(self._profile, read_lease, staged)
-            revoked_root_descriptor = root_descriptor
-            os.close(root_descriptor)
-            root_descriptor = -1
-            _assert_read_lease(self._profile, read_lease, staged)
+            _recheck_bound_path(self._profile, root_descriptor, staged)
             quiesce = _evidence(
                 {
                     "evidence_version": 1,
                     "process_tree_id": supply.process_tree_id,
                     "session_id": claim.session_id,
                     "writer_fencing_epoch": claim.fencing_epoch,
-                    "revoked_writer_fds": [revoked_root_descriptor],
+                    "revoked_writer_fds": [root_descriptor],
                     "remaining_writer_fds": [],
                     "writer_leases_revoked": True,
                     "process_tree_quiesced": True,
@@ -929,10 +999,12 @@ class M4Coordinator:
             )
             state = "QUIESCED"
             _assert_read_lease(self._profile, read_lease, staged)
+            _recheck_bound_path(self._profile, root_descriptor, staged)
             snapshot_descriptor, snapshot = _seal_snapshot(
                 self._profile, target_descriptor, staged, _fault
             )
             _assert_read_lease(self._profile, read_lease, staged)
+            _recheck_bound_path(self._profile, root_descriptor, staged)
             seal = _evidence(
                 {
                     "evidence_version": 1,
@@ -954,13 +1026,63 @@ class M4Coordinator:
             seal_record_digest = current_record_digest
             state = "SEALED"
             _assert_read_lease(self._profile, read_lease, staged)
+            _recheck_bound_path(self._profile, root_descriptor, staged)
             if _fault is not None:
                 _fault("after_seal")
             _assert_read_lease(self._profile, read_lease, staged)
+            _recheck_bound_path(self._profile, root_descriptor, staged)
             observer_pid, observer_session, observer_uid, observer_gid, postcheck_digest = _postcheck_child(
                 self._profile, snapshot_descriptor, snapshot
             )
             _assert_read_lease(self._profile, read_lease, staged)
+            _recheck_bound_path(self._profile, root_descriptor, staged)
+            capability_payload = _strict_json(claim.capability_payload_json)
+            if type(capability_payload) is not dict:
+                raise _M4Stop(M4Reason.CLAIM_REJECTED)
+            observer_subject = self._topology.subject("OBSERVER")
+            observer_body = {
+                "receipt_version": 1,
+                "outcome": "PASS",
+                "transaction_id": transaction_id,
+                "capability_id": claim.capability_id,
+                "claim_digest": claim.claim_digest,
+                "intent_digest": claim.intent_digest,
+                "decision_digest": capability_payload["decision_digest"],
+                "authorized_envelope_digest": capability_payload[
+                    "authorized_envelope_digest"
+                ],
+                "target_authority_digest": self._topology.topology_digest,
+                "profile_digest": claim.profile_digest,
+                "placement_digest": claim.placement_digest,
+                "session_id": claim.session_id,
+                "seal_record_digest": seal_record_digest,
+                "snapshot_id": snapshot.snapshot_id,
+                "snapshot_device": snapshot.device,
+                "snapshot_inode": snapshot.inode,
+                "snapshot_size": snapshot.size,
+                "snapshot_digest": snapshot.digest,
+                "observer_subject": observer_subject.data(),
+                "proposal_digest": postcheck_digest,
+                "revocation_epoch": claim.revocation_epoch,
+                "fencing_epoch": claim.fencing_epoch,
+                "observed_at": times["POSTCHECKED"],
+            }
+            observer_receipt = {
+                **observer_body,
+                "receipt_digest": canonical_digest(observer_body),
+            }
+            if not publisher.verify_external(
+                self._external_verifier_factory,
+                observer_receipt,
+                external_verifications["OBSERVER_RECEIPT"],
+                times["POSTCHECKED"],
+            ):
+                raise _M4Stop(M4Reason.POSTCHECK_FAILED)
+            observer_verification = publisher._external_verification_record(
+                observer_receipt, external_verifications["OBSERVER_RECEIPT"]
+            )
+            if observer_verification is None:
+                raise _M4Stop(M4Reason.POSTCHECK_FAILED)
             postcheck = _evidence(
                 {
                     "evidence_version": 1,
@@ -970,13 +1092,8 @@ class M4Coordinator:
                     "snapshot_inode": snapshot.inode,
                     "snapshot_size": snapshot.size,
                     "snapshot_digest": snapshot.digest,
-                    "observer_principal": self._principals.observer_principal,
-                    "observer_session": self._principals.observer_session,
-                    "observer_uid": observer_uid,
-                    "observer_gid": observer_gid,
-                    "observer_writer_fds": [],
-                    "outcome": "PASS",
-                    "postcheck_digest": postcheck_digest,
+                    "observer_receipt": observer_receipt,
+                    "observer_verification": observer_verification,
                 }
             )
             current_record_digest = self._advance(
@@ -988,6 +1105,80 @@ class M4Coordinator:
             if _fault is not None:
                 _fault("after_postcheck")
             _assert_read_lease(self._profile, read_lease, staged)
+            _recheck_bound_path(self._profile, root_descriptor, staged)
+            authorization_body = {
+                "authorization_version": 1,
+                "transaction_id": transaction_id,
+                "decision_digest": capability_payload["decision_digest"],
+                "authorized_envelope_digest": capability_payload[
+                    "authorized_envelope_digest"
+                ],
+                "claim_digest": claim.claim_digest,
+                "intent_digest": claim.intent_digest,
+                "capability_id": claim.capability_id,
+                "contract_digest": capability_payload["contract_digest"],
+                "d2_frontier_digest": value["d2_frontier_digest"],
+                "iteration": begun.m4_iteration,
+                "target_authority_digest": self._topology.topology_digest,
+                "publication_target_binding_digest": (
+                    self._topology.publication_target_binding.composite_binding_digest
+                ),
+                "snapshot_id": snapshot.snapshot_id,
+                "snapshot_digest": snapshot.digest,
+                "snapshot_size": snapshot.size,
+                "seal_record_digest": seal_record_digest,
+                "postcheck_record_digest": postcheck_record_digest,
+                "profile_digest": claim.profile_digest,
+                "placement_digest": claim.placement_digest,
+                "session_id": claim.session_id,
+                "revocation_epoch": claim.revocation_epoch,
+                "fencing_epoch": claim.fencing_epoch,
+                "publisher_principal": self._topology.subject("PUBLISHER").principal_id,
+                "publisher_session": self._topology.subject("PUBLISHER").session_id,
+                "observed_at": times["COMMITTED"],
+                "expires_at": self._topology.expires_at,
+            }
+            authorization = {
+                **authorization_body,
+                "authorization_digest": canonical_digest(authorization_body),
+            }
+            publication_result = self._publisher.publish(
+                snapshot_descriptor,
+                authorization,
+                external_verifications["PUBLICATION_AUTHORIZATION"],
+                times["COMMITTED"],
+                _fault=_fault,
+            )
+            if (
+                publication_result.outcome is not publisher.PublisherOutcome.PUBLISHED
+                or publication_result.fact is None
+            ):
+                raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+            publication_receipt = publication_result.fact.data()
+            if not publisher.verify_external(
+                self._external_verifier_factory,
+                publication_receipt,
+                external_verifications["PUBLICATION_RECEIPT"],
+                times["COMMITTED"],
+            ):
+                raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+            publication_authorization_verification = publisher._external_verification_record(
+                authorization, external_verifications["PUBLICATION_AUTHORIZATION"]
+            )
+            publication_verification = publisher._external_verification_record(
+                publication_receipt, external_verifications["PUBLICATION_RECEIPT"]
+            )
+            if (
+                publication_authorization_verification is None
+                or publication_verification is None
+            ):
+                raise _M4Stop(M4Reason.PUBLICATION_FAILED)
+            _assert_read_lease(self._profile, read_lease, staged)
+            _recheck_bound_path(self._profile, root_descriptor, staged)
+            if _fault is not None:
+                _fault("before_commit_record")
+            _assert_read_lease(self._profile, read_lease, staged)
+            _recheck_bound_path(self._profile, root_descriptor, staged)
             commit = _evidence(
                 {
                     "evidence_version": 1,
@@ -998,19 +1189,20 @@ class M4Coordinator:
                     "snapshot_inode": snapshot.inode,
                     "snapshot_size": snapshot.size,
                     "snapshot_digest": snapshot.digest,
-                    "object_binding": staged.data(),
-                    "committer_principal": self._principals.controller_principal,
-                    "committer_session": self._principals.controller_session,
+                    "publication_authorization": authorization,
+                    "publication_authorization_verification": publication_authorization_verification,
+                    "publication_receipt": publication_receipt,
+                    "publication_verification": publication_verification,
                 }
             )
             current_record_digest = self._advance(
                 transaction_id, state, "COMMITTED", times, verifications, commit
             )
             state = "COMMITTED"
-            _assert_read_lease(self._profile, read_lease, staged)
             if _fault is not None:
                 _fault("after_commit")
             _assert_read_lease(self._profile, read_lease, staged)
+            _recheck_bound_path(self._profile, root_descriptor, staged)
             join = _evidence(
                 {
                     "evidence_version": 1,
@@ -1021,14 +1213,10 @@ class M4Coordinator:
                     "controller_session": self._principals.controller_session,
                 }
             )
-            _assert_read_lease(self._profile, read_lease, staged)
             current_record_digest = self._advance(
                 transaction_id, state, "JOINED", times, verifications, join
             )
             state = "JOINED"
-            if _fault is not None:
-                _fault("after_join_record")
-            _assert_read_lease(self._profile, read_lease, staged)
             return M4Result(
                 M4Outcome.JOINED,
                 M4Reason.JOINED,
@@ -1057,7 +1245,7 @@ class M4Coordinator:
 
         if transaction_id is not None and state is not None and times is not None and verifications is not None:
             try:
-                if state in {"COMMITTED", "JOINED"} and current_record_digest is not None:
+                if state == "COMMITTED" and current_record_digest is not None:
                     record_digest = self._advance(
                         transaction_id,
                         state,

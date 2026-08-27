@@ -126,32 +126,42 @@ readiness.
 ## M4 exact local stage/seal boundary
 
 `harness_product.m4` is one direct Controller/PEP coordinator for the existing
-local stageable-file profile. It cannot dispatch from a bare decision or
-caller digest: it reruns M1 admission, rechecks the committed M2 claim/current
-fence, consumes the trusted active contract and complete D2 frontier, then uses
-the existing M3 staging API. ENDPOINT and other non-stageable work is rejected
-before M4 dispatch; no connector, external receipt, compensation, or retry path
+local stageable-file profile, paired with one exact `harness_product.publisher`
+boundary. It cannot dispatch from a bare decision or caller digest: it reruns
+M1 admission, rechecks the committed M2 claim/current fence, consumes the
+trusted active contract and complete D2 frontier, and binds an exact trusted
+staging root plus separately configured publication target. The caller supplies
+neither root descriptor. ENDPOINT and other non-stageable work is rejected
+before M4 dispatch; no connector, compensation, automatic retry, or M5 route
 exists.
 
-Quiescence is fail-closed Linux inode enforcement. The controller re-resolves
-the canonical path while the trusted root is still open, then holds and checks
-an `F_RDLCK` lease on the exact read-only staged inode until JOIN. Existing or
-new writers, a lease-break request, forced lease loss, unsupported filesystem,
-or device/inode/mount/content mismatch prevents COMMIT/JOIN and leaves escrow
-quarantined. A file lease protects that exact inode, not arbitrary directory
-names; after root revocation, all authoritative records follow the bound inode
-into the sealed snapshot rather than reinterpreting a path string.
+Quiescence is fail-closed Linux inode enforcement. The controller retains its
+trusted resolver, repeatedly re-resolves the canonical path, and holds and
+checks an `F_RDLCK` lease on the exact read-only staged inode until JOIN.
+Existing or new writers, a lease-break request, forced lease loss, unsupported
+filesystem, rename/path substitution, or device/inode/mount/content mismatch
+prevents COMMIT/JOIN and leaves escrow quarantined. The lease and canonical
+namespace binding are both required; neither substitutes for the other.
 
 The snapshot is a memfd carrying all four Linux write/grow/shrink/seal locks.
-The postcheck runs in a distinct process/session with only a read-only snapshot
-descriptor and verifies the same device, inode, size, digest and seal mask plus
-kernel denial of writes and truncation. Durable typed records are externally
-verified at each transition. A missing, stale, substituted, or unverifiable
-contract/frontier/object/seal/postcheck/observer/fence record is a denial.
-Unknown state after staging is `QUARANTINED_ESCROW`; a crash does not authorize
-resume, retry, a second commit, or a second JOIN.
+A separate observer child receives only a read-only snapshot descriptor and
+produces no authority; a full externally verified observer receipt is required.
+The trusted publisher then independently verifies a full publication
+authorization, accepts only the sealed descriptor, replaces only its configured
+descriptor-rooted target, fsyncs, and returns a separately verified receipt.
+Durable COMMITTED rechecks both external records and every target, snapshot,
+subject, time, revocation and fence binding before spending escrow. A missing,
+stale, substituted, or unverifiable record is a denial. Unknown publication
+state is `QUARANTINED_ESCROW`; a crash does not authorize resume, retry, a
+second commit, or a second JOIN. A reconciling lineage is fenced from fresh
+issue, consume, claim, frontier and M4 begin transitions.
 
-These are local code and regression properties for the current tree. They do
-not requalify the historical M3 VM candidate, establish a production observer
-principal/trust root, prove whole-database rollback resistance, or make the
-product implemented, attested, or ready.
+The code-model topology rejects shared worker/controller/executor/observer/
+publisher subjects, any non-publisher writer, and any `.git` authority. Its
+`DEPLOYMENT_ATTESTED` preflight is deliberately `ABSENT` on a shared developer
+host. These local code and regression properties do not requalify the historical
+M3 VM candidate, establish production principals/trust roots or enforcement,
+prove whole-database rollback resistance, or make the product implemented,
+attested, or ready. The current checkout and `.git` keep their existing host
+permissions and remain outside this disposable boundary. Status remains
+`NOT_IMPLEMENTED`, `NOT_ATTESTED`, and `NOT_READY`.

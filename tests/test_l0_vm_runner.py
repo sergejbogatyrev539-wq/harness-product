@@ -730,6 +730,7 @@ class VMRunnerBoundaryTests(unittest.TestCase):
                     "request": request,
                     "audience_id": "executor-3",
                     "purpose": "stageable-local-write",
+                    "target_authority_digest": scope,
                     "contract_digest": RUNNER._digest_bytes(b"contract"),
                     "registry_digest": RUNNER._digest_bytes(b"registry"),
                     "profile_digest": profile.profile_digest,

@@ -109,28 +109,40 @@ evidence, not a reusable claim about later commits and not production
 attestation.
 
 M4 keeps the same deep-module shape. `harness_product.m4` is one direct
-Controller/PEP coordinator which reruns M1 admission, uses only an existing M2
-dispatch claim plus trusted active-contract/D2 state, and invokes the existing
-M3 stage operation. Schema v4 stores fenced, verified records for `STAGED`,
-`QUIESCED`, `SEALED`, `POSTCHECKED`, `COMMITTED`, `JOINED`, `DISCARDED`,
-`QUARANTINED`, and `RECONCILING`. Every record preserves the exact four-part
-budget key; only COMMITTED spends escrow, while uncertainty and recovery never
-resume or retry.
+Controller/PEP coordinator and `harness_product.publisher` is one exact trusted
+publication boundary. The coordinator reruns M1 admission and uses only an
+existing M2 dispatch claim plus trusted active-contract/D2 state. One immutable
+topology binds the disposable staging object, separate publication target,
+worker/controller/executor/observer/publisher subjects, sole publisher writer,
+and denied `.git` authority. Neither root descriptor is accepted from the M4
+request. Schema v4 stores fenced, verified records for `STAGED`, `QUIESCED`,
+`SEALED`, `POSTCHECKED`, `COMMITTED`, `JOINED`, `DISCARDED`, `QUARANTINED`, and
+`RECONCILING`. Every record preserves the exact four-part budget key; only a
+COMMITTED record containing verified publication authorization and receipt
+spends escrow, while uncertainty and recovery never resume or retry.
 
-The exact staged inode is rechecked by descriptor and canonical path before the
-root descriptor is revoked. The controller then holds a Linux read lease with
-no fallback and rechecks its break flag, lease state, owner, device/inode,
-mount, and content through JOIN. It copies that inode into a memfd and applies
-all four immutable seals. A distinct observer process/session sees only a
-read-only sealed-snapshot descriptor and independently checks its identity,
-digest, seal mask, and kernel write/truncate denial. Existing writers, new
-writer races, lease loss, unsupported filesystems, path/inode substitution,
-crashes, or record mutations prohibit JOIN and preserve quarantine/no-retry
-semantics. The external branch remains explicitly disabled.
+The controller retains the trusted staging resolver and rechecks the exact inode
+by descriptor and canonical path at every boundary. A Linux read lease has no
+fallback; its break flag, state, owner, device/inode, mount and content remain
+checked through JOIN. The controller copies that inode into a memfd and applies
+all four immutable seals. A separate observer child sees only a read-only
+snapshot and emits a powerless proposal; a full external observer receipt is
+mandatory. A separately verified publication authorization then permits the
+trusted publisher to consume only the sealed descriptor, atomically replace its
+fixed descriptor-rooted target, fsync, and return a mandatory verified receipt.
+The controller performs one final lease/path check before JOIN. Existing or new
+writers, lease loss, unsupported filesystems, path/inode/target substitution,
+crashes, publication uncertainty, or record mutations prohibit JOIN and
+preserve quarantine/no-retry semantics. A reconciling lineage also fences fresh
+issue, consume, claim, frontier and begin transitions. The external branch
+remains explicitly disabled.
 
-The boundaries above implement the powerless proposal/claim/session/staging
-edges. The following physical principal topology remains unattested on this
-host; a compiled role record is not proof that the processes were separated.
+The boundaries above implement the powerless proposal/claim/session/staging and
+trusted-publication code edges. The physical M4 principal topology remains
+unattested on this host; a compiled role record and local child process are not
+proof of deployment separation. `DEPLOYMENT_ATTESTED` therefore remains
+`ABSENT`, and product status remains `NOT_IMPLEMENTED`, `NOT_ATTESTED`, and
+`NOT_READY`.
 
 The safe regression mapping is explicit; `UNIT` below proves the closed code
 boundary only, while `ABSENT` means the physical exact-profile oracle still
@@ -145,7 +157,8 @@ requires the non-skipping conformance environment.
 | `ATK-007`, `ATK-010`, `ATK-022` | exact Q-56 compiler rows, lifecycle cgroup/RLIMIT/watchdog plan, durable budget conservation | UNIT; physical limit receipts ABSENT |
 | `ATK-011`, `ATK-012`, `ATK-026` | no checkout/`.git`/home/staging visibility, disposable-root stage tests, durable cleanup/quarantine state | UNIT; cross-session cleanup proof ABSENT |
 | `T-Q40-*`, `T-Q44-*`, `T-Q49-*`, `T-Q50-*` | `test_m4_durable.py` complete D2, contract/lineage, typed evidence and four-part budget mutation matrices | UNIT; production external anchor ABSENT |
-| `T-Q45-STAGEABLE-CRASH-QUARANTINES`, `T-Q48-POLICY-SCOPE-KIND-CROSS-MATRIX` | `test_m4.py` process/fault recovery, no-retry escrow, endpoint deny and exact inode lease races | UNIT; current physical M4 qualification ABSENT |
+| `T-Q45-STAGEABLE-CRASH-QUARANTINES`, `T-Q48-POLICY-SCOPE-KIND-CROSS-MATRIX` | `test_m4.py` process/fault recovery, no-retry escrow, endpoint deny, exact inode lease races and atomic publication uncertainty | UNIT; current physical M4 qualification ABSENT |
+| `M4-SEC-001`–`M4-SEC-005`, `INT-001`–`INT-003` | `test_m4.py` and `test_m4_durable.py` trusted-root, canonical-path, observer, full-FD closure, lineage-fence, publisher and no-public-effect-surface matrices | UNIT; `DEPLOYMENT_ATTESTED` topology ABSENT on this host |
 
 ```text
 untrusted worker ── powerless proposal ──> Controller / PEP
@@ -154,10 +167,13 @@ untrusted worker ── powerless proposal ──> Controller / PEP
                                   durable broker + journal + capability store
                                               │ exact-bound, one-use dispatch
                                               v
-                         executor / model gateway / other declared sink
-                                              │ authoritative receipt
+                              exact staging executor
+                                              │ sealed read-only snapshot
                                               v
-                               independent observer / postcheck → evidence
+                       observer proposal → verified observer receipt
+                                              │ verified publish authorization
+                                              v
+                  trusted publisher → verified receipt → COMMIT → JOIN
 ```
 
 ## Core

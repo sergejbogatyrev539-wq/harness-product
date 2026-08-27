@@ -124,25 +124,39 @@ disposable staging root only after an exact M2 claim, external claim-verifier
 recheck, M1 selector/material match, and immutable descriptor/root/mount/epoch/
 object match. Unknown post-write outcome is quarantined and never retried.
 
-M4 adds one direct, non-root-exported `harness_product.m4` coordinator for that
-same local stageable-file profile. It reuses M1 admission, M2 claim/frontier
-state, and M3 `stage_committed_intent`; external and non-stageable requests are
-deny-only. The v4 durable schema stores the active contract, complete D2
-frontier, and fenced canonical records for `STAGED → QUIESCED → SEALED →
-POSTCHECKED → COMMITTED → JOINED`, plus discard/quarantine/reconciliation.
-Budget escrow becomes `SPENT` only at verified commit, and recovery never
-resumes or retries an incomplete M4 transaction.
+M4 adds one direct, non-root-exported `harness_product.m4` coordinator and one
+non-root-exported `harness_product.publisher` boundary for that same local
+stageable-file profile. M1 admission, the M2 claim/frontier and the exact
+publication topology bind both the disposable staging inode and the separately
+configured publication target; caller input supplies neither root descriptor.
+External and non-stageable requests are deny-only. The v4 durable schema stores
+the active contract, complete D2 frontier, target-authority digest, and fenced
+canonical records for `STAGED → QUIESCED → SEALED → POSTCHECKED → publication
+authorization/receipt → COMMITTED → JOINED`, plus discard, quarantine and
+reconciliation. Budget escrow becomes `SPENT` only after a verified publication
+receipt, and recovery never resumes or retries an incomplete M4 transaction.
 
 Before sealing, the coordinator re-resolves the canonical path through its
 trusted root and acquires a Linux `F_RDLCK` lease on the exact read-only staged
-inode. The lease has no weaker fallback and remains checked through JOIN;
-existing writers, a break request, lease loss, unsupported filesystems, or
-identity mismatch quarantine the transaction. The immutable snapshot is a
-real sealed memfd with `F_SEAL_GROW|F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_WRITE`.
-A distinct observer process/session receives only a read-only view of that
-sealed snapshot and independently checks identity, bytes, seals, and kernel
-write/truncate denial before commit. This is current code and local regression
-evidence, not a new physical-runtime qualification or production attestation.
+inode. It retains that resolver capability and rechecks both the lease and the
+canonical binding through JOIN. There is no weaker fallback: existing writers,
+a break request, lease loss, unsupported filesystems, rename/substitution, or
+identity mismatch quarantine the transaction. The immutable snapshot is a real
+sealed memfd with `F_SEAL_GROW|F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_WRITE`.
+
+A separate observer child produces a powerless proposal from a read-only
+snapshot; a full externally verified observer receipt is mandatory before a
+separately verified publication authorization can reach the trusted publisher.
+The publisher accepts only that authorization and the sealed descriptor, uses
+its configured descriptor-rooted target, performs one atomic replace plus
+fsync, and returns a mandatory verified publication receipt. Unknown outcome is
+quarantined without retry. The closed topology also requires pairwise-distinct
+worker/controller/executor/observer/publisher subjects, a sole publisher writer,
+and no `.git` authority. These are code-model and local regression properties.
+`DEPLOYMENT_ATTESTED` preflight remains `ABSENT` on a shared developer host; no
+new physical-runtime qualification or production attestation is claimed. The
+actual checkout and `.git` retain their existing host permissions and are not
+protected by this disposable code-model boundary.
 
 Run the non-skipping exact-profile availability gate separately:
 

@@ -147,6 +147,7 @@ def _issue_raw(
         "revocation_epoch": 7,
         "fencing_epoch": 11,
         "idempotency_key_digest": idempotency_key_digest or _digest("8"),
+        "target_authority_digest": _digest("f"),
         "budget": [
             {
                 "name": "writes",
@@ -190,6 +191,7 @@ def _consume_from_payload(
         "revocation_epoch": payload["revocation_epoch"],
         "fencing_epoch": payload["fencing_epoch"],
         "idempotency_key_digest": payload["idempotency_key_digest"],
+        "target_authority_digest": payload["target_authority_digest"],
         "budget": deepcopy(payload["budget_vector"]),
     }
 
