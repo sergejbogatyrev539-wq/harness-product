@@ -913,6 +913,32 @@ printf '%s  %s\n' \
 """
 
 
+def _cloud_config(client_public: str, writes: list[str]) -> bytes:
+    lines = (
+        [
+            "#cloud-config",
+            "hostname: harness-m4-disposable",
+            "manage_etc_hosts: false",
+            "ssh_pwauth: false",
+            "disable_root: true",
+            "ssh_deletekeys: false",
+            "ssh_genkeytypes: [ed25519]",
+            "users:",
+            "  - name: lab-admin",
+            "    groups: [adm, sudo]",
+            "    shell: /bin/bash",
+            "    sudo: ALL=(ALL) NOPASSWD:ALL",
+            "    lock_passwd: true",
+            "    ssh_authorized_keys:",
+            "      - " + json.dumps(client_public),
+            "write_files:",
+        ]
+        + writes
+        + ["runcmd:", "  - [ /bin/bash, /root/harness-m4-provision.sh ]", ""]
+    )
+    return "\n".join(lines).encode("utf-8")
+
+
 def _create_seed(
     attempt_root: Path,
     *,
@@ -985,31 +1011,9 @@ def _create_seed(
     ):
         writes.extend(_cloud_file(path, raw, mode))
     client_public = _read_regular(client_key.with_suffix(".pub"), 4096).decode("ascii").strip()
-    user_data = (
-        [
-            "#cloud-config",
-            "hostname: harness-m4-disposable",
-            "manage_etc_hosts: false",
-            "ssh_pwauth: false",
-            "disable_root: true",
-            "ssh_deletekeys: false",
-            "ssh_genkeytypes: []",
-            "users:",
-            "  - name: lab-admin",
-            "    groups: [adm, sudo]",
-            "    shell: /bin/bash",
-            "    sudo: ALL=(ALL) NOPASSWD:ALL",
-            "    lock_passwd: true",
-            "    ssh_authorized_keys:",
-            "      - " + json.dumps(client_public),
-            "write_files:",
-        ]
-        + writes
-        + ["runcmd:", "  - [ /bin/bash, /root/harness-m4-provision.sh ]", ""]
-    )
     user_data_path = attempt_root / "user-data"
     meta_data_path = attempt_root / "meta-data"
-    _write_exact(user_data_path, "\n".join(user_data).encode("utf-8"), 0o600)
+    _write_exact(user_data_path, _cloud_config(client_public, writes), 0o600)
     _write_exact(
         meta_data_path,
         (

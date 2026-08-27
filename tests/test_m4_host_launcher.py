@@ -92,6 +92,17 @@ class M4HostLauncherTests(unittest.TestCase):
             script.index("nftables-offline.conf"),
         )
 
+    def test_cloud_init_seed_uses_schema_valid_host_key_generation(self) -> None:
+        raw = self.launcher._cloud_config(
+            "ssh-ed25519 AAAATEST harness-m4-client-attempt-2", []
+        ).decode("utf-8")
+        self.assertIn("ssh_deletekeys: false\n", raw)
+        self.assertIn("ssh_genkeytypes: [ed25519]\n", raw)
+        self.assertNotIn("ssh_genkeytypes: []", raw)
+        self.assertIn(
+            '      - "ssh-ed25519 AAAATEST harness-m4-client-attempt-2"\n', raw
+        )
+
     def test_ledger_consumes_failed_slot_and_rejects_third_attempt(self) -> None:
         lab = self.root / "lab"
         goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
