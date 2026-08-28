@@ -288,6 +288,7 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             stage: str = "POST_KEY_RUN_SERVICE_FAILED",
             attempt_start_digest: str = start_digest,
             key_admission_digest: str = admission_digest,
+            terminal_result: str = "QUARANTINED",
             terminal_reason: str = "RUN_FAILED",
             extra: dict[str, object] | None = None,
         ) -> list[dict[str, object]]:
@@ -306,7 +307,7 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 **terminal,
                 "sequence": 4,
                 "previous_entry_digest": _digest_bytes(_canonical(failure)),
-                "result": "QUARANTINED",
+                "result": terminal_result,
                 "terminal_reason": terminal_reason,
                 "manifest_digest": None,
                 "signed_payload_bundle_digest": None,
@@ -333,6 +334,12 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             ],
         )
         self.assertEqual(accepted[2][0]["reason"], "M4_RUNTIME_JOIN_FAILED")
+        self.assertFalse(hasattr(self.module, "POST_KEY_RUN_FAILURE_REASONS"))
+        self.assertEqual(
+            parse(rows(reason="CONTROLLER_PROTOCOL_MALFORMED"))[2][0]["reason"],
+            "CONTROLLER_PROTOCOL_MALFORMED",
+        )
+        self.assertEqual(parse(rows(reason="A" * 128))[2][0]["reason"], "A" * 128)
         self.assertEqual(parse(rows(reason="UNAVAILABLE"))[2][0]["reason"], "UNAVAILABLE")
         self.assertEqual(
             parse(rows(terminal_reason="CLEANUP_FAILED"))[-1][0]["terminal_reason"],
@@ -437,12 +444,34 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             ),
             "wrong-stage": rows(stage="PRE_KEY_RUN_SERVICE_FAILED"),
             "malformed-stage": rows(stage=["POST_KEY_RUN_SERVICE_FAILED"]),
-            "forged-reason": rows(reason="FORGED_REASON"),
             "malformed-reason": rows(reason={"reason": "M4_RUNTIME_JOIN_FAILED"}),
             "wrong-terminal-reason": rows(
                 terminal_reason="EVIDENCE_EXPORT_FAILED"
             ),
+            "verified-authority": rows(
+                terminal_result="VERIFIED",
+                terminal_reason="RUN_FAILED",
+            ),
         }
+        for name, reason in {
+            "unicode": "M4_ПРИЧИНА",
+            "control": "M4_REASON\x00",
+            "lowercase": "M4_reason",
+            "colon": "M4:REASON",
+            "path": "M4/REASON",
+            "whitespace": "M4 REASON",
+            "oversized": "A" * 129,
+        }.items():
+            mutations["unsafe-reason-" + name] = rows(reason=reason)
+        bundle_export = rows()
+        bundle_export[-1] = {
+            **deepcopy(terminal),
+            "sequence": 4,
+            "previous_entry_digest": _digest_bytes(
+                _canonical(bundle_export[-2])
+            ),
+        }
+        mutations["bundle-export-authority"] = bundle_export
         wrong_order = rows()
         wrong_order[2], wrong_order[3] = wrong_order[3], wrong_order[2]
         for sequence, row in enumerate(wrong_order, 1):
@@ -458,6 +487,24 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 self.module._InvalidEvidence
             ):
                 parse(value)
+
+        retry = deepcopy(one_use)
+        retry_start = deepcopy(one_use[0])
+        retry_start.update(
+            sequence=5,
+            previous_entry_digest=_digest_bytes(_canonical(one_use[-1])),
+        )
+        retry.append(retry_start)
+        with self.assertRaises(self.module._InvalidEvidence):
+            self.module._ledger_entries(
+                b"".join(_canonical(row) + b"\n" for row in retry),
+                now=self.now,
+                goal_reference=str(projection["user_scope_reference"]),
+                goal_digest=str(core["user_goal_digest"]),
+                mode=self.module._ONE_USE_MODE,
+                one_use_scope=projection,
+                lab=self.root / "one-use-lab",
+            )
 
     def _key(self, name: str) -> dict[str, object]:
         directory = self.root / name

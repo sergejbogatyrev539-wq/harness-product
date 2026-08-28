@@ -186,34 +186,7 @@ _LEDGER_EXTRA = {
         }
     ),
 }
-POST_KEY_RUN_FAILURE_REASONS = frozenset(
-    {
-        "UNAVAILABLE",
-        "KEY_ADMISSION_REQUIRED",
-        "L0_PROFILE_MALFORMED",
-        "L0_PROFILE_TEMPLATE_MUTATION",
-        "L0_DYNAMIC_PROFILE_COMPILE_FAILED",
-        "L0_SECCOMP_PROFILE_MALFORMED",
-        "L0_SECCOMP_BINDING_MISMATCH",
-        "M4_ROLE_ROOTFS_INPUT_MALFORMED",
-        "M4_SECCOMP_PROFILE_MALFORMED",
-        "M4_ROLE_LAUNCH_MALFORMED",
-        "M4_ROLE_CGROUP_ATTACH_FAILED",
-        "M4_ROLE_OUTER_GATE_RELEASE_FAILED",
-        "M4_ROLE_IDENTITY_MISMATCH",
-        "M4_ROLE_RESULT_MALFORMED",
-        "M4_ROLE_FAILED",
-        "M4_ROLE_CLEANUP_FAILED",
-        "M4_AUTHORITY_CONTEXT_ABSENT",
-        "M4_TOPOLOGY_ABSENT",
-        "M4_FRONTIER_BIND_FAILED",
-        "M4_RUNTIME_JOIN_FAILED",
-        "M4_PRE_RESTART_DURABLE_MISMATCH",
-        "M4_RUNTIME_STORAGE_CLEANUP_MISMATCH",
-        "M4_RUNTIME_STORAGE_CLEANUP_FAILED",
-        "M4_PUBLICATION_EVIDENCE_ABSENT",
-    }
-)
+_POST_KEY_RUN_FAILURE_REASON = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 _POST_KEY_RUN_FAILURE_STAGE = "POST_KEY_RUN_SERVICE_FAILED"
 _TERMINAL_RESULTS = frozenset({"BUNDLE_EXPORTED", "FAILED", "BLOCKED", "QUARANTINED"})
 _TERMINAL_REASON_BY_RESULT = {
@@ -363,6 +336,13 @@ def _strict_json(raw: bytes, maximum: int) -> object:
 
 def _digest_bytes(raw: bytes) -> str:
     return "sha256:" + sha256(raw).hexdigest()
+
+
+def _is_post_key_run_failure_reason(value: object) -> bool:
+    return (
+        type(value) is str
+        and _POST_KEY_RUN_FAILURE_REASON.fullmatch(value) is not None
+    )
 
 
 class OneUsePaths(NamedTuple):
@@ -1447,7 +1427,7 @@ class AttemptLedger:
                 or type(row["failure_stage"]) is not str
                 or row["failure_stage"] != _POST_KEY_RUN_FAILURE_STAGE
                 or type(row["reason"]) is not str
-                or row["reason"] not in POST_KEY_RUN_FAILURE_REASONS
+                or not _is_post_key_run_failure_reason(row["reason"])
             ):
                 _stop("LEDGER_BINDING_MISMATCH")
         elif row["entry_type"] == "ATTEMPT_TERMINAL":
@@ -1722,7 +1702,7 @@ class AttemptLedger:
             or self._active_admission is None
             or self._active_post_key_failure is not None
             or type(reason) is not str
-            or reason not in POST_KEY_RUN_FAILURE_REASONS
+            or not _is_post_key_run_failure_reason(reason)
         ):
             _stop("POST_KEY_RUN_FAILURE_ORDER_MISMATCH")
         self._active_post_key_failure = self._append(
@@ -3784,7 +3764,7 @@ def _journal_lines(raw: bytes) -> list[str]:
     return lines
 
 
-def _post_key_run_failure_reason(raw: bytes) -> str:
+def _parse_post_key_run_failure_reason(raw: bytes) -> str | None:
     if type(raw) is not bytes or len(raw) > 1 << 20:
         return "UNAVAILABLE"
     lines = raw.split(b"\n")
@@ -3836,33 +3816,51 @@ def _post_key_run_failure_reason(raw: bytes) -> str:
             or value.get("outcome") != "STOP"
             or type(value.get("status")) is not str
             or value.get("status") != "NOT_ATTESTED"
-            or type(value.get("reason")) is not str
-            or value.get("reason") not in POST_KEY_RUN_FAILURE_REASONS - {"UNAVAILABLE"}
+            or not _is_post_key_run_failure_reason(value.get("reason"))
         ):
             return "UNAVAILABLE"
         records.append(value)
+    if not records:
+        return None
     if len(records) != 1:
         return "UNAVAILABLE"
     return str(records[0]["reason"])
 
 
+def _post_key_run_failure_reason(raw: bytes) -> str:
+    return _parse_post_key_run_failure_reason(raw) or "UNAVAILABLE"
+
+
 def _capture_post_key_run_failure_reason(
     client_key: Path, known_hosts: Path, unit: str
 ) -> str:
-    try:
-        raw = _ssh(
-            client_key,
-            known_hosts,
-            [
-                "sudo", "/usr/bin/journalctl", "--boot=0", "--unit", unit,
-                "--no-pager", "--output=cat", "--lines=512",
-            ],
-            timeout=20,
-            maximum=1 << 20,
-        )
-    except QualificationStop:
-        return "UNAVAILABLE"
-    return _post_key_run_failure_reason(raw)
+    deadline = time.monotonic() + 20.0
+    for attempt in range(3):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            raw = _ssh(
+                client_key,
+                known_hosts,
+                [
+                    "sudo", "/usr/bin/journalctl", "--boot=0", "--unit", unit,
+                    "--no-pager", "--output=cat", "--lines=512",
+                ],
+                timeout=min(20.0, remaining),
+                maximum=1 << 20,
+            )
+        except QualificationStop:
+            return "UNAVAILABLE"
+        reason = _parse_post_key_run_failure_reason(raw)
+        if reason is not None:
+            return reason
+        if attempt != 2:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.1, remaining))
+    return "UNAVAILABLE"
 
 
 def _stage_markers(lines: list[str]) -> list[dict[str, object]]:

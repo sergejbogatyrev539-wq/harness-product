@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+from io import BytesIO, StringIO
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -2892,6 +2893,72 @@ class M4VMRunnerContractTests(unittest.TestCase):
         admission.assert_not_called()
         effects.assert_not_called()
         evidence.assert_not_called()
+
+    def test_main_sanitizes_unhandled_exception_without_catching_base_exception(
+        self,
+    ) -> None:
+        module = _module()
+        arguments = mock.Mock(internal_role=None, phase="run")
+
+        def invoke(error: BaseException) -> tuple[int, bytes, str]:
+            stdout = mock.Mock(buffer=BytesIO())
+            stderr = StringIO()
+            with (
+                mock.patch.object(module, "_parse_args", return_value=arguments),
+                mock.patch.object(module, "_run_phase", side_effect=error),
+                mock.patch.object(module.sys, "stdout", stdout),
+                mock.patch.object(module.sys, "stderr", stderr),
+            ):
+                result = module.main([])
+            return result, stdout.buffer.getvalue(), stderr.getvalue()
+
+        result, raw, stderr = invoke(
+            TypeError("private-value:/outside/guest/root")
+        )
+        self.assertEqual(result, 2)
+        self.assertEqual(
+            raw,
+            module._canonical(
+                {
+                    "outcome": "STOP",
+                    "reason": "M4_UNHANDLED_EXCEPTION",
+                    "status": "NOT_ATTESTED",
+                }
+            )
+            + b"\n",
+        )
+        self.assertEqual(stderr, "")
+        self.assertNotIn(b"private-value", raw)
+        self.assertNotIn(b"Traceback", raw)
+
+        result, raw, stderr = invoke(
+            module.QualificationStop("PUBLISHER_TOPOLOGY_MISMATCH")
+        )
+        self.assertEqual(result, 2)
+        self.assertEqual(
+            raw,
+            module._canonical(
+                {
+                    "outcome": "STOP",
+                    "reason": "PUBLISHER_TOPOLOGY_MISMATCH",
+                    "status": "NOT_ATTESTED",
+                }
+            )
+            + b"\n",
+        )
+        self.assertEqual(stderr, "")
+
+        for error in (SystemExit(7), KeyboardInterrupt()):
+            stdout = mock.Mock(buffer=BytesIO())
+            with (
+                self.subTest(error=type(error).__name__),
+                mock.patch.object(module, "_parse_args", return_value=arguments),
+                mock.patch.object(module, "_run_phase", side_effect=error),
+                mock.patch.object(module.sys, "stdout", stdout),
+                self.assertRaises(type(error)),
+            ):
+                module.main([])
+            self.assertEqual(stdout.buffer.getvalue(), b"")
 
 
 if __name__ == "__main__":

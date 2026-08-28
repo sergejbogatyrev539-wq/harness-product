@@ -6387,6 +6387,14 @@ def main(argv: list[str] | None = None) -> int:
         }
         sys.stdout.buffer.write(_canonical(record) + b"\n")
         return 2
+    except Exception:
+        record = {
+            "outcome": "STOP",
+            "reason": "M4_UNHANDLED_EXCEPTION",
+            "status": "NOT_ATTESTED",
+        }
+        sys.stdout.buffer.write(_canonical(record) + b"\n")
+        return 2
 
 
 if __name__ == "__main__":

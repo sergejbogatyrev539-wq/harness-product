@@ -329,6 +329,13 @@ def _digest_bytes(value: bytes) -> str:
     return "sha256:" + sha256(value).hexdigest()
 
 
+def _is_post_key_run_failure_reason(value: object) -> bool:
+    return (
+        type(value) is str
+        and re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", value) is not None
+    )
+
+
 def _digest_file(path: Path, maximum: int) -> str:
     return _digest_bytes(_read_regular(path, maximum))
 
@@ -905,34 +912,6 @@ _LEDGER_EXTRA = {
         }
     ),
 }
-POST_KEY_RUN_FAILURE_REASONS = frozenset(
-    {
-        "L0_PROFILE_MALFORMED",
-        "L0_PROFILE_TEMPLATE_MUTATION",
-        "L0_DYNAMIC_PROFILE_COMPILE_FAILED",
-        "L0_SECCOMP_PROFILE_MALFORMED",
-        "L0_SECCOMP_BINDING_MISMATCH",
-        "KEY_ADMISSION_REQUIRED",
-        "M4_ROLE_ROOTFS_INPUT_MALFORMED",
-        "M4_SECCOMP_PROFILE_MALFORMED",
-        "M4_ROLE_LAUNCH_MALFORMED",
-        "M4_ROLE_CGROUP_ATTACH_FAILED",
-        "M4_ROLE_OUTER_GATE_RELEASE_FAILED",
-        "M4_ROLE_IDENTITY_MISMATCH",
-        "M4_ROLE_RESULT_MALFORMED",
-        "M4_ROLE_FAILED",
-        "M4_ROLE_CLEANUP_FAILED",
-        "M4_AUTHORITY_CONTEXT_ABSENT",
-        "M4_TOPOLOGY_ABSENT",
-        "M4_FRONTIER_BIND_FAILED",
-        "M4_RUNTIME_JOIN_FAILED",
-        "M4_PRE_RESTART_DURABLE_MISMATCH",
-        "M4_RUNTIME_STORAGE_CLEANUP_MISMATCH",
-        "M4_RUNTIME_STORAGE_CLEANUP_FAILED",
-        "M4_PUBLICATION_EVIDENCE_ABSENT",
-        "UNAVAILABLE",
-    }
-)
 _TERMINAL_REASON_BY_RESULT = {
     "BUNDLE_EXPORTED": frozenset({"SIGNED_PAYLOAD_EXPORTED"}),
     "FAILED": frozenset({
@@ -1110,7 +1089,7 @@ def _ledger_entries(
                 type(row["failure_stage"]) is not str
                 or row["failure_stage"] != "POST_KEY_RUN_SERVICE_FAILED"
                 or type(row["reason"]) is not str
-                or row["reason"] not in POST_KEY_RUN_FAILURE_REASONS
+                or not _is_post_key_run_failure_reason(row["reason"])
             ):
                 _invalid("LEDGER_POST_KEY_RUN_FAILURE_MISMATCH")
         elif row["entry_type"] == "ATTEMPT_TERMINAL":

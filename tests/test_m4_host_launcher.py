@@ -935,6 +935,20 @@ class M4HostLauncherTests(unittest.TestCase):
         self.assertIsNone(rows[-1]["qemu_phase_outcomes"])
 
     def test_post_key_run_failure_is_sanitized_bound_and_terminalized(self) -> None:
+        self.assertFalse(hasattr(self.launcher, "POST_KEY_RUN_FAILURE_REASONS"))
+        for reason in ("A", "A0_", "A" * 128):
+            with self.subTest(valid_reason=reason):
+                self.assertTrue(
+                    self.launcher._is_post_key_run_failure_reason(reason)
+                )
+        for reason in (
+            "", "0STARTS_WITH_DIGIT", "lowercase", "HAS-HYPHEN",
+            "HAS:COLON", "HAS SPACE", "É", "A" * 129, [], {}, None,
+        ):
+            with self.subTest(invalid_reason=reason):
+                self.assertFalse(
+                    self.launcher._is_post_key_run_failure_reason(reason)
+                )
         exact_stop = self.launcher._canonical(
             {
                 "outcome": "STOP",
@@ -945,6 +959,17 @@ class M4HostLauncherTests(unittest.TestCase):
         self.assertEqual(
             self.launcher._post_key_run_failure_reason(exact_stop + b"\n"),
             "M4_ROLE_FAILED",
+        )
+        new_static_stop = self.launcher._canonical(
+            {
+                "outcome": "STOP",
+                "reason": "NEW_STATIC_GUEST_STOP_7",
+                "status": "NOT_ATTESTED",
+            }
+        )
+        self.assertEqual(
+            self.launcher._post_key_run_failure_reason(new_static_stop + b"\n"),
+            "NEW_STATIC_GUEST_STOP_7",
         )
         unrelated = self.launcher._canonical(
             {"reason": "ordinary diagnostic", "status": "NON_AUTHORIZING"}
@@ -994,7 +1019,14 @@ class M4HostLauncherTests(unittest.TestCase):
             self.launcher._canonical(
                 {
                     "outcome": "STOP",
-                    "reason": "NOT_ALLOWLISTED",
+                    "reason": "not_allowlisted",
+                    "status": "NOT_ATTESTED",
+                }
+            ),
+            self.launcher._canonical(
+                {
+                    "outcome": "STOP",
+                    "reason": "A" * 129,
                     "status": "NOT_ATTESTED",
                 }
             ),
@@ -1011,6 +1043,24 @@ class M4HostLauncherTests(unittest.TestCase):
             with self.subTest(raw=raw[:80]):
                 self.assertEqual(
                     self.launcher._post_key_run_failure_reason(raw),
+                    "UNAVAILABLE",
+                )
+        for reason in (
+            "M4_ПРИЧИНА", "M4_REASON\x00", "M4_reason", "M4:REASON",
+            "M4/REASON", "M4 REASON", "A" * 129,
+        ):
+            with self.subTest(unsafe_reason=reason):
+                self.assertEqual(
+                    self.launcher._post_key_run_failure_reason(
+                        self.launcher._canonical(
+                            {
+                                "outcome": "STOP",
+                                "reason": reason,
+                                "status": "NOT_ATTESTED",
+                            }
+                        )
+                        + b"\n"
+                    ),
                     "UNAVAILABLE",
                 )
 
@@ -1168,6 +1218,98 @@ class M4HostLauncherTests(unittest.TestCase):
                     clock=lambda: self.now,
                 ):
                     pass
+
+    def test_post_key_failure_capture_retries_bounded_journal_publication(
+        self,
+    ) -> None:
+        exact_stop = self.launcher._canonical(
+            {
+                "outcome": "STOP",
+                "reason": "NEW_STATIC_GUEST_STOP_7",
+                "status": "NOT_ATTESTED",
+            }
+        ) + b"\n"
+        conflicting_stop = self.launcher._canonical(
+            {
+                "outcome": "STOP",
+                "reason": "CONFLICTING_STATIC_STOP",
+                "status": "NOT_ATTESTED",
+            }
+        ) + b"\n"
+        expected_command = [
+            "sudo", "/usr/bin/journalctl", "--boot=0", "--unit",
+            "harness-m4-controller@run.service", "--no-pager",
+            "--output=cat", "--lines=512",
+        ]
+
+        def capture(outputs: list[object]) -> tuple[str, mock.Mock]:
+            ssh = mock.Mock(side_effect=outputs)
+            with (
+                mock.patch.object(self.launcher, "_ssh", ssh),
+                mock.patch.object(self.launcher.time, "sleep"),
+            ):
+                reason = self.launcher._capture_post_key_run_failure_reason(
+                    self.root / "client-key",
+                    self.root / "known-hosts",
+                    "harness-m4-controller@run.service",
+                )
+            for call in ssh.call_args_list:
+                self.assertEqual(call.args[2], expected_command)
+                self.assertEqual(call.kwargs["maximum"], 1 << 20)
+                self.assertGreater(call.kwargs["timeout"], 0)
+                self.assertLessEqual(call.kwargs["timeout"], 20)
+            return reason, ssh
+
+        reason, ssh = capture([b"ordinary line\n", exact_stop])
+        self.assertEqual(reason, "NEW_STATIC_GUEST_STOP_7")
+        self.assertEqual(ssh.call_count, 2)
+
+        reason, ssh = capture([exact_stop])
+        self.assertEqual(reason, "NEW_STATIC_GUEST_STOP_7")
+        self.assertEqual(ssh.call_count, 1)
+
+        reason, ssh = capture([b"ordinary line\n"] * 3)
+        self.assertEqual(reason, "UNAVAILABLE")
+        self.assertEqual(ssh.call_count, 3)
+
+        reason, ssh = capture([exact_stop + exact_stop])
+        self.assertEqual(reason, "UNAVAILABLE")
+        self.assertEqual(ssh.call_count, 1)
+
+        reason, ssh = capture([exact_stop + conflicting_stop])
+        self.assertEqual(reason, "UNAVAILABLE")
+        self.assertEqual(ssh.call_count, 1)
+
+        reason, ssh = capture(
+            [
+                b"ordinary line\n",
+                self.launcher.QualificationStop("SSH_COMMAND_FAILED"),
+            ]
+        )
+        self.assertEqual(reason, "UNAVAILABLE")
+        self.assertEqual(ssh.call_count, 2)
+
+        ssh = mock.Mock(return_value=b"ordinary line\n")
+        with (
+            mock.patch.object(self.launcher, "_ssh", ssh),
+            mock.patch.object(
+                self.launcher.time,
+                "monotonic",
+                side_effect=(0.0, 1.0, 20.0),
+            ),
+            mock.patch.object(self.launcher.time, "sleep") as sleep,
+        ):
+            self.assertEqual(
+                self.launcher._capture_post_key_run_failure_reason(
+                    self.root / "client-key",
+                    self.root / "known-hosts",
+                    "harness-m4-controller@run.service",
+                ),
+                "UNAVAILABLE",
+            )
+        self.assertEqual(ssh.call_count, 1)
+        self.assertEqual(ssh.call_args.kwargs["timeout"], 19.0)
+        sleep.assert_not_called()
 
     def test_ledger_rejects_unresolved_or_repeated_pair_and_wrong_metadata(self) -> None:
         lab = self.root / "lab"
