@@ -1,6 +1,6 @@
 {
   "additional_syscalls": [18, 73, 77, 437],
-  "base_profile_digest": "sha256:9cb79c8d1e8326a12f027bfdc05fae396be20c4cc84ca6dd62b84a569867e1ed",
+  "base_profile_digest": "sha256:e83c1507c68922fcc1686ec008560b92c4b53bb57867e8b5845b788c640ffb6a",
   "format_version": "1.0.0",
   "role": "EXECUTOR"
 }

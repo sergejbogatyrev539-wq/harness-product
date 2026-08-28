@@ -7,6 +7,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -16,6 +17,11 @@ PROFILE = ROOT / "profiles/m4-lx-a.json"
 POLICY = ROOT / "profiles/m4-lx-a.apparmor"
 RUNNER = ROOT / "scripts/run_m4_vm_conformance.py"
 SERVICE = ROOT / "profiles/harness-m4-controller@.service"
+L0_PROFILE = ROOT / "profiles/l0-lx-a.json"
+L0_SECCOMP = ROOT / "profiles/l0-lx-a-seccomp.json"
+L0_BROKER_SECCOMP = ROOT / "profiles/l0-lx-a-broker-seccomp.json"
+L0_EXECUTOR_SECCOMP = ROOT / "profiles/l0-lx-a-executor-seccomp.json"
+M3_RUNNER = ROOT / "scripts/run_m3_vm_conformance.py"
 
 
 def _module():
@@ -532,6 +538,110 @@ class M4VMRunnerContractTests(unittest.TestCase):
                     module.QualificationStop, "NONCANONICAL_JSON"
                 ):
                     module._profile()
+
+    def test_inherited_l0_json_inputs_are_exact_canonical_and_digest_bound(
+        self,
+    ) -> None:
+        module = _module()
+        expected = {
+            L0_PROFILE: (
+                6210,
+                "sha256:72ebbc0899870d304b29f0dfe24c6001f55fa1cf2efa84f1a08c41f47f9afcb5",
+            ),
+            L0_SECCOMP: (
+                411,
+                "sha256:e83c1507c68922fcc1686ec008560b92c4b53bb57867e8b5845b788c640ffb6a",
+            ),
+        }
+        for path, (size, digest) in expected.items():
+            raw = path.read_bytes()
+            with self.subTest(path=path.name):
+                self.assertEqual(raw, module._canonical(json.loads(raw)))
+                self.assertFalse(raw.endswith(b"\n"))
+                self.assertEqual(len(raw), size)
+                self.assertEqual(module._digest_bytes(raw), digest)
+
+        specification = importlib.util.spec_from_file_location(
+            "harness_m3_vm_runner_digest_binding", M3_RUNNER
+        )
+        self.assertIsNotNone(specification)
+        self.assertIsNotNone(specification.loader)
+        m3 = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(m3)
+        base_digest = module._digest_bytes(L0_SECCOMP.read_bytes())
+        self.assertEqual(m3.BASE_SECCOMP_POLICY_DIGEST, base_digest)
+        for path in (L0_BROKER_SECCOMP, L0_EXECUTOR_SECCOMP):
+            with self.subTest(role=path.name):
+                self.assertEqual(
+                    json.loads(path.read_bytes())["base_profile_digest"],
+                    base_digest,
+                )
+
+        draft = object()
+        ready = object()
+        compile_seccomp = mock.Mock(return_value=b"unreached")
+        l0 = SimpleNamespace(
+            L0Outcome=SimpleNamespace(COMPILED_DRAFT=draft, READY=ready),
+            compile_profile=lambda value: SimpleNamespace(
+                outcome=draft, profile=value
+            ),
+            host_preflight=lambda value: SimpleNamespace(
+                outcome=ready, measurement=value
+            ),
+            _compile_seccomp_bpf=compile_seccomp,
+        )
+        supply = {
+            "directory": "/tmp/attestor",
+            "private_key": "/tmp/private.pem",
+            "public_key": "/tmp/public.pem",
+            "state": "/tmp/state.json",
+            "public_key_digest": "sha256:" + "1" * 64,
+            "trust_root_id": "test-root",
+            "signer_id": "test-signer",
+            "key_id": "test-key",
+        }
+        profile_raw = L0_PROFILE.read_bytes()
+        seccomp_raw = L0_SECCOMP.read_bytes()
+        with tempfile.TemporaryDirectory(prefix="harness-m4-l0-canonical-") as directory:
+            root = Path(directory)
+            profile_path = root / "l0-lx-a.json"
+            profiles = root / "profiles"
+            profiles.mkdir()
+            seccomp_path = profiles / "l0-lx-a-seccomp.json"
+            libcrypto = root / "libcrypto.so.3"
+            libcrypto.write_bytes(b"test-only")
+            for target in ("profile", "seccomp"):
+                for suffix in (b"\n", b" "):
+                    profile_path.write_bytes(
+                        profile_raw + suffix if target == "profile" else profile_raw
+                    )
+                    seccomp_path.write_bytes(
+                        seccomp_raw + suffix if target == "seccomp" else seccomp_raw
+                    )
+                    with (
+                        self.subTest(target=target, suffix=suffix),
+                        mock.patch.object(module, "L0_PROFILE", profile_path),
+                        mock.patch.object(module, "SOURCE", root),
+                        mock.patch.object(module, "LIBCRYPTO", str(libcrypto)),
+                        mock.patch.object(
+                            module,
+                            "_load_project",
+                            return_value=(None, l0, None, None, None),
+                        ),
+                        mock.patch.object(
+                            module,
+                            "_digest_file",
+                            return_value="sha256:" + "2" * 64,
+                        ),
+                        self.assertRaisesRegex(
+                            module.QualificationStop, "NONCANONICAL_JSON"
+                        ),
+                    ):
+                        module._configure_m3_supply_trust(
+                            SimpleNamespace(), supply
+                        )
+                    compile_seccomp.assert_not_called()
+                    compile_seccomp.reset_mock()
 
     def test_apparmor_has_exact_observer_and_publisher_domains(self) -> None:
         policy = POLICY.read_text(encoding="utf-8")
