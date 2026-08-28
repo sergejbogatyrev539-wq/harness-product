@@ -3834,8 +3834,11 @@ def _post_key_run_failure_reason(raw: bytes) -> str:
 def _capture_post_key_run_failure_reason(
     client_key: Path, known_hosts: Path, unit: str
 ) -> str:
-    deadline = time.monotonic() + 20.0
-    for attempt in range(3):
+    window_seconds = 20.0
+    cadence_seconds = 0.1
+    deadline = time.monotonic() + window_seconds
+    poll_ceiling = int(window_seconds / cadence_seconds) + 1
+    for _ in range(poll_ceiling):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
@@ -3847,19 +3850,23 @@ def _capture_post_key_run_failure_reason(
                     "sudo", "/usr/bin/journalctl", "--boot=0", "--unit", unit,
                     "--no-pager", "--output=cat", "--lines=512",
                 ],
-                timeout=min(20.0, remaining),
+                timeout=min(window_seconds, remaining),
                 maximum=1 << 20,
             )
-        except QualificationStop:
-            return "UNAVAILABLE"
-        reason = _parse_post_key_run_failure_reason(raw)
-        if reason is not None:
-            return reason
-        if attempt != 2:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(0.1, remaining))
+        except QualificationStop as error:
+            detail = str(error)
+            if detail != "SSH_COMMAND_FAILED" and not detail.startswith(
+                "SSH_COMMAND_FAILED:"
+            ):
+                return "UNAVAILABLE"
+        else:
+            reason = _parse_post_key_run_failure_reason(raw)
+            if reason is not None:
+                return reason
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(cadence_seconds, remaining))
     return "UNAVAILABLE"
 
 

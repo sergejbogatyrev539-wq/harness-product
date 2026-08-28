@@ -1236,17 +1236,39 @@ class M4HostLauncherTests(unittest.TestCase):
                 "status": "NOT_ATTESTED",
             }
         ) + b"\n"
+        malformed_stop = (
+            b'{"outcome": "STOP", "reason": "NEW_STATIC_GUEST_STOP_7", '
+            b'"status": "NOT_ATTESTED"}\n'
+        )
         expected_command = [
             "sudo", "/usr/bin/journalctl", "--boot=0", "--unit",
             "harness-m4-controller@run.service", "--no-pager",
             "--output=cat", "--lines=512",
         ]
 
-        def capture(outputs: list[object]) -> tuple[str, mock.Mock]:
+        class FakeClock:
+            def __init__(self) -> None:
+                self.now = 0.0
+
+            def monotonic(self) -> float:
+                return self.now
+
+            def sleep(self, delay: float) -> None:
+                self.now += delay
+
+        def capture(
+            outputs: object, *, clock: FakeClock | None = None
+        ) -> tuple[str, mock.Mock, FakeClock]:
+            active_clock = FakeClock() if clock is None else clock
             ssh = mock.Mock(side_effect=outputs)
             with (
                 mock.patch.object(self.launcher, "_ssh", ssh),
-                mock.patch.object(self.launcher.time, "sleep"),
+                mock.patch.object(
+                    self.launcher.time, "monotonic", active_clock.monotonic
+                ),
+                mock.patch.object(
+                    self.launcher.time, "sleep", active_clock.sleep
+                ),
             ):
                 reason = self.launcher._capture_post_key_run_failure_reason(
                     self.root / "client-key",
@@ -1258,58 +1280,63 @@ class M4HostLauncherTests(unittest.TestCase):
                 self.assertEqual(call.kwargs["maximum"], 1 << 20)
                 self.assertGreater(call.kwargs["timeout"], 0)
                 self.assertLessEqual(call.kwargs["timeout"], 20)
-            return reason, ssh
+            return reason, ssh, active_clock
 
-        reason, ssh = capture([b"ordinary line\n", exact_stop])
+        reason, ssh, _ = capture([b"ordinary line\n"] * 4 + [exact_stop])
         self.assertEqual(reason, "NEW_STATIC_GUEST_STOP_7")
-        self.assertEqual(ssh.call_count, 2)
+        self.assertEqual(ssh.call_count, 5)
 
-        reason, ssh = capture([exact_stop])
-        self.assertEqual(reason, "NEW_STATIC_GUEST_STOP_7")
-        self.assertEqual(ssh.call_count, 1)
-
-        reason, ssh = capture([b"ordinary line\n"] * 3)
-        self.assertEqual(reason, "UNAVAILABLE")
-        self.assertEqual(ssh.call_count, 3)
-
-        reason, ssh = capture([exact_stop + exact_stop])
-        self.assertEqual(reason, "UNAVAILABLE")
-        self.assertEqual(ssh.call_count, 1)
-
-        reason, ssh = capture([exact_stop + conflicting_stop])
-        self.assertEqual(reason, "UNAVAILABLE")
-        self.assertEqual(ssh.call_count, 1)
-
-        reason, ssh = capture(
+        reason, ssh, _ = capture(
             [
-                b"ordinary line\n",
                 self.launcher.QualificationStop("SSH_COMMAND_FAILED"),
+                self.launcher.QualificationStop("SSH_COMMAND_FAILED"),
+                b"ordinary line\n",
+                exact_stop,
             ]
         )
-        self.assertEqual(reason, "UNAVAILABLE")
-        self.assertEqual(ssh.call_count, 2)
+        self.assertEqual(reason, "NEW_STATIC_GUEST_STOP_7")
+        self.assertEqual(ssh.call_count, 4)
 
-        ssh = mock.Mock(return_value=b"ordinary line\n")
-        with (
-            mock.patch.object(self.launcher, "_ssh", ssh),
-            mock.patch.object(
-                self.launcher.time,
-                "monotonic",
-                side_effect=(0.0, 1.0, 20.0),
-            ),
-            mock.patch.object(self.launcher.time, "sleep") as sleep,
-        ):
-            self.assertEqual(
-                self.launcher._capture_post_key_run_failure_reason(
-                    self.root / "client-key",
-                    self.root / "known-hosts",
-                    "harness-m4-controller@run.service",
-                ),
-                "UNAVAILABLE",
-            )
+        near_deadline_clock = FakeClock()
+        near_deadline_calls = 0
+
+        def near_deadline(*_args: object, **_kwargs: object) -> bytes:
+            nonlocal near_deadline_calls
+            near_deadline_calls += 1
+            if near_deadline_calls == 4:
+                near_deadline_clock.now = 19.8
+            return exact_stop if near_deadline_calls == 5 else b"ordinary line\n"
+
+        reason, ssh, _ = capture(near_deadline, clock=near_deadline_clock)
+        self.assertEqual(reason, "NEW_STATIC_GUEST_STOP_7")
+        self.assertEqual(ssh.call_count, 5)
+        self.assertGreaterEqual(near_deadline_clock.now, 19.9)
+
+        reason, ssh, exhausted_clock = capture(
+            lambda *_args, **_kwargs: b"ordinary line\n"
+        )
+        self.assertEqual(reason, "UNAVAILABLE")
+        self.assertGreater(ssh.call_count, 3)
+        self.assertLessEqual(ssh.call_count, 201)
+        self.assertGreaterEqual(exhausted_clock.now, 20.0)
+
+        reason, ssh, _ = capture([exact_stop + exact_stop, exact_stop])
+        self.assertEqual(reason, "UNAVAILABLE")
         self.assertEqual(ssh.call_count, 1)
-        self.assertEqual(ssh.call_args.kwargs["timeout"], 19.0)
-        sleep.assert_not_called()
+
+        reason, ssh, _ = capture([exact_stop + conflicting_stop, exact_stop])
+        self.assertEqual(reason, "UNAVAILABLE")
+        self.assertEqual(ssh.call_count, 1)
+
+        reason, ssh, _ = capture([malformed_stop, exact_stop])
+        self.assertEqual(reason, "UNAVAILABLE")
+        self.assertEqual(ssh.call_count, 1)
+
+        reason, ssh, _ = capture(
+            [self.launcher.QualificationStop("SSH_OUTPUT_UNBOUNDED"), exact_stop]
+        )
+        self.assertEqual(reason, "UNAVAILABLE")
+        self.assertEqual(ssh.call_count, 1)
 
     def test_ledger_rejects_unresolved_or_repeated_pair_and_wrong_metadata(self) -> None:
         lab = self.root / "lab"
