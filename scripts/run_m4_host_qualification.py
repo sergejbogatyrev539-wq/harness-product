@@ -25,6 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 LAB = Path("/home/a1/Загрузки/harness/harness-m4-qualification-v2")
 OLD_QUALIFICATION_LAB = Path("/home/a1/Загрузки/harness/harness-m4-lab")
 DIAGNOSTIC_LAB = Path("/home/a1/Загрузки/harness/harness-m4-diagnostic-lab")
+POST_V2_DIAGNOSTIC_LAB = Path(
+    "/home/a1/Загрузки/harness/harness-m4-post-v2-diagnostic"
+)
 IMAGE_LAB = Path("/home/a1/Загрузки/harness/harness-m3-lab")
 EVIDENCE_ROOT = Path("/home/a1/Загрузки/harness/harness-m4-evidence-v2")
 USER_GOAL = Path(
@@ -34,6 +37,7 @@ USER_GOAL = Path(
 LEDGER_NAME = "m4-attempt-ledger.jsonl"
 INDEPENDENT_VERIFICATION_NAME = "independent-verification.json"
 DIAGNOSTIC_LEDGER_NAME = "m4-key-ready-diagnostic-ledger.jsonl"
+POST_V2_DIAGNOSTIC_LEDGER_NAME = "m4-post-v2-diagnostic-ledger.jsonl"
 OLD_LEDGER = OLD_QUALIFICATION_LAB / LEDGER_NAME
 OLD_LEDGER_DIGEST = "sha256:719505206caf364c6c0d40983687416bcca5644f879a46254714621cb070d5f9"
 PREDECESSOR_DIAGNOSTIC_LEDGER = DIAGNOSTIC_LAB / DIAGNOSTIC_LEDGER_NAME
@@ -45,6 +49,18 @@ PREDECESSOR_DIAGNOSTIC_BUNDLE = (
 )
 PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST = (
     "sha256:91abc47ad6070c8b9c8cad89369780b698a696c3e90aed5e2c84cb45f0b1418d"
+)
+FAILED_QUALIFICATION_V2_LEDGER = LAB / LEDGER_NAME
+FAILED_QUALIFICATION_V2_LEDGER_DIGEST = (
+    "sha256:c80f4eb33b811b59a4f80aee5fdf781964b441d20e1620ca4b1f2b63f30c479a"
+)
+FAILED_QUALIFICATION_V2_CANDIDATE = "a2336eb987364cc6bff0fdcdc7d7bfb8b21b3db8"
+FAILED_QUALIFICATION_V2_TREE = "106facb47f1b203ed121917adfa7c885374d9fdc"
+POST_V2_DIAGNOSTIC_GOAL_REFERENCE = (
+    "thread:/goal/m4-post-v2-pre-admission-diagnostic/2026-08-28"
+)
+POST_V2_DIAGNOSTIC_GOAL_DIGEST = (
+    "sha256:7e171d5a592859fc7a49e91ec1dca61d11ec326bbe1083ee5511f70163b9bc70"
 )
 _QEMU_PATH = "/usr/bin/qemu-system-x86_64"
 _QEMU_DIGEST = "sha256:8a35ccba41582fc6c38b9df85fc9e35fa1d42f414d2d7d8090ee9b2f5e7c0854"
@@ -354,6 +370,222 @@ def _validate_qualification_contract(value: object) -> dict[str, object]:
 
 def _qualification_contract_digest(contract: object) -> str:
     return _digest_bytes(_canonical(_validate_qualification_contract(contract)))
+
+
+def _post_v2_diagnostic_goal_record() -> dict[str, object]:
+    return {
+        "goal_version": "1.0.0",
+        "goal_kind": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+        "user_scope_reference": POST_V2_DIAGNOSTIC_GOAL_REFERENCE,
+        "predecessor_qualification_ledger_digest": (
+            FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        ),
+        "max_attempts": 1,
+        "allowed_phases": ["provision", "run"],
+        "allowed_outcome": "SANITIZED_DIAGNOSTIC_ONLY",
+        "forbidden_operations": [
+            "AUTOMATIC_RETRY",
+            "KEY_ADMISSION_ARTIFACT",
+            "QUALIFICATION_EVIDENCE_EXPORT",
+            "QUALIFICATION_V2_LEDGER_WRITE",
+            "REBOOT_OR_RECOVERY",
+            "RUNTIME_VERIFIED_CLAIM",
+            "WORKER_OR_EFFECT_EXECUTION",
+        ],
+    }
+
+
+def _validate_post_v2_diagnostic_goal_record(value: object) -> dict[str, object]:
+    expected = _post_v2_diagnostic_goal_record()
+    if (
+        type(value) is not dict
+        or _canonical(value) != _canonical(expected)
+        or len(_canonical(value)) != 582
+        or _digest_bytes(_canonical(value)) != POST_V2_DIAGNOSTIC_GOAL_DIGEST
+    ):
+        _stop("POST_V2_DIAGNOSTIC_GOAL_MISMATCH")
+    return value
+
+
+def _post_v2_diagnostic_contract(
+    *,
+    goal_record: object,
+    candidate: str,
+    tree: str,
+    source_files_digest: str,
+    source_archive_digest: str,
+    seed_digest: str,
+    package_runtime_plan_digest: str,
+    host_provenance_digest: str,
+) -> dict[str, object]:
+    goal = _validate_post_v2_diagnostic_goal_record(goal_record)
+    core = {
+        "contract_version": "1.0.0",
+        "contract_kind": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+        "goal_record": goal,
+        "goal_record_digest": _digest_bytes(_canonical(goal)),
+        "failed_v2_candidate": FAILED_QUALIFICATION_V2_CANDIDATE,
+        "failed_v2_tree": FAILED_QUALIFICATION_V2_TREE,
+        "failed_qualification_v2_ledger_digest": (
+            FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        ),
+        "candidate": candidate,
+        "tree": tree,
+        "attempt": 1,
+        "source_files_digest": source_files_digest,
+        "canonical_profile_digest": _M4_PROFILE_DIGEST,
+        "raw_profile_artifact_digest": _M4_PROFILE_DIGEST,
+        "base_image_digest": _IMAGE_DIGEST,
+        "max_attempts": 1,
+        "allowed_phases": ["provision", "run"],
+        "non_authorizing": True,
+    }
+    core_digest = _digest_bytes(_canonical(core))
+    environment_preimage = {
+        "contract_core_digest": core_digest,
+        "source_archive_digest": source_archive_digest,
+        "seed_digest": seed_digest,
+        "package_runtime_plan_digest": package_runtime_plan_digest,
+        "host_provenance_digest": host_provenance_digest,
+    }
+    return _validate_post_v2_diagnostic_contract(
+        {
+            "contract_core": core,
+            "contract_core_digest": core_digest,
+            "environment_preimage": environment_preimage,
+            "environment_digest": _digest_bytes(_canonical(environment_preimage)),
+        }
+    )
+
+
+def _validate_post_v2_diagnostic_contract(value: object) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != {
+        "contract_core", "contract_core_digest", "environment_preimage",
+        "environment_digest",
+    }:
+        _stop("POST_V2_DIAGNOSTIC_CONTRACT_MALFORMED")
+    core = value["contract_core"]
+    core_keys = {
+        "contract_version", "contract_kind", "goal_record",
+        "goal_record_digest", "failed_v2_candidate", "failed_v2_tree",
+        "failed_qualification_v2_ledger_digest", "candidate", "tree",
+        "attempt", "source_files_digest", "canonical_profile_digest",
+        "raw_profile_artifact_digest", "base_image_digest", "max_attempts",
+        "allowed_phases", "non_authorizing",
+    }
+    if type(core) is not dict or frozenset(core) != core_keys:
+        _stop("POST_V2_DIAGNOSTIC_CONTRACT_MALFORMED")
+    goal = _validate_post_v2_diagnostic_goal_record(core["goal_record"])
+    digests = (
+        core["goal_record_digest"], core["failed_qualification_v2_ledger_digest"],
+        core["source_files_digest"], core["canonical_profile_digest"],
+        core["raw_profile_artifact_digest"], core["base_image_digest"],
+    )
+    if (
+        core["contract_version"] != "1.0.0"
+        or core["contract_kind"] != "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC"
+        or core["goal_record_digest"] != _digest_bytes(_canonical(goal))
+        or core["failed_v2_candidate"] != FAILED_QUALIFICATION_V2_CANDIDATE
+        or core["failed_v2_tree"] != FAILED_QUALIFICATION_V2_TREE
+        or core["failed_qualification_v2_ledger_digest"]
+        != FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        or type(core["candidate"]) is not str
+        or _COMMIT.fullmatch(core["candidate"]) is None
+        or core["candidate"] == FAILED_QUALIFICATION_V2_CANDIDATE
+        or type(core["tree"]) is not str
+        or _COMMIT.fullmatch(core["tree"]) is None
+        or core["tree"] == FAILED_QUALIFICATION_V2_TREE
+        or type(core["attempt"]) is not int
+        or core["attempt"] != 1
+        or any(type(item) is not str or _DIGEST.fullmatch(item) is None for item in digests)
+        or core["canonical_profile_digest"] != _M4_PROFILE_DIGEST
+        or core["raw_profile_artifact_digest"] != _M4_PROFILE_DIGEST
+        or core["base_image_digest"] != _IMAGE_DIGEST
+        or type(core["max_attempts"]) is not int
+        or core["max_attempts"] != 1
+        or core["allowed_phases"] != ["provision", "run"]
+        or core["non_authorizing"] is not True
+    ):
+        _stop("POST_V2_DIAGNOSTIC_CONTRACT_BINDING_MISMATCH")
+    core_digest = _digest_bytes(_canonical(core))
+    environment = value["environment_preimage"]
+    if (
+        value["contract_core_digest"] != core_digest
+        or type(environment) is not dict
+        or frozenset(environment) != {
+            "contract_core_digest", "source_archive_digest", "seed_digest",
+            "package_runtime_plan_digest", "host_provenance_digest",
+        }
+        or environment["contract_core_digest"] != core_digest
+        or any(
+            type(environment[name]) is not str
+            or _DIGEST.fullmatch(environment[name]) is None
+            for name in (
+                "source_archive_digest", "seed_digest",
+                "package_runtime_plan_digest", "host_provenance_digest",
+            )
+        )
+        or value["environment_digest"] != _digest_bytes(_canonical(environment))
+    ):
+        _stop("POST_V2_DIAGNOSTIC_CONTRACT_DIGEST_MISMATCH")
+    return value
+
+
+def _post_v2_diagnostic_contract_digest(contract: object) -> str:
+    return _digest_bytes(
+        _canonical(_validate_post_v2_diagnostic_contract(contract))
+    )
+
+
+def _post_v2_diagnostic_request(contract: object) -> dict[str, object]:
+    value = _strict_json(
+        _canonical(_validate_post_v2_diagnostic_contract(contract)), 1 << 20
+    )
+    return {
+        "request_version": "2.1.0",
+        "mode": "POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+        "diagnostic_contract": value,
+        "diagnostic_contract_digest": _post_v2_diagnostic_contract_digest(value),
+    }
+
+
+def _validate_post_v2_key_ready(
+    value: object, contract: object
+) -> dict[str, object]:
+    expected_contract = _validate_post_v2_diagnostic_contract(contract)
+    expected_digest = _post_v2_diagnostic_contract_digest(expected_contract)
+    if type(value) is not dict or frozenset(value) != {
+        "ready_version", "mode", "non_authorizing", "diagnostic_contract",
+        "diagnostic_contract_digest", "contract_core_digest",
+        "receipt_public_key_digests", "supply_public_key_digest",
+        "runtime_trust_digest",
+    }:
+        _stop("POST_V2_KEY_READY_MALFORMED")
+    ready_contract = _validate_post_v2_diagnostic_contract(
+        value["diagnostic_contract"]
+    )
+    keys = value["receipt_public_key_digests"]
+    if (
+        value["ready_version"] != "2.1.0"
+        or value["mode"] != "POST_V2_PRE_ADMISSION_DIAGNOSTIC"
+        or value["non_authorizing"] is not True
+        or _canonical(ready_contract) != _canonical(expected_contract)
+        or value["diagnostic_contract_digest"] != expected_digest
+        or value["contract_core_digest"]
+        != expected_contract["contract_core_digest"]
+        or type(keys) is not dict
+        or frozenset(keys) != {"M4_AUTHORITY", "OBSERVER", "PUBLISHER"}
+        or any(
+            type(item) is not str or _DIGEST.fullmatch(item) is None
+            for item in keys.values()
+        )
+        or type(value["supply_public_key_digest"]) is not str
+        or _DIGEST.fullmatch(value["supply_public_key_digest"]) is None
+        or type(value["runtime_trust_digest"]) is not str
+        or _DIGEST.fullmatch(value["runtime_trust_digest"]) is None
+    ):
+        _stop("POST_V2_KEY_READY_MALFORMED")
+    return value
 
 
 def _package_runtime_plan() -> dict[str, object]:
@@ -957,6 +1189,65 @@ class AttemptLedger:
         return digest
 
 
+def _verify_failed_v2_qualification_ledger(
+    path: Path = FAILED_QUALIFICATION_V2_LEDGER,
+    expected_digest: str = FAILED_QUALIFICATION_V2_LEDGER_DIGEST,
+) -> str:
+    raw = _read_regular(path, 4 << 20)
+    if (
+        type(expected_digest) is not str
+        or _DIGEST.fullmatch(expected_digest) is None
+        or _digest_bytes(raw) != expected_digest
+    ):
+        _stop("POST_V2_PREDECESSOR_DIGEST_MISMATCH")
+    if not raw.endswith(b"\n") or b"\n\n" in raw:
+        _stop("POST_V2_PREDECESSOR_MALFORMED")
+    lines = raw[:-1].split(b"\n")
+    if len(lines) != 2:
+        _stop("POST_V2_PREDECESSOR_NOT_EXACT_FAILED_ATTEMPT")
+    rows: list[tuple[dict[str, object], str]] = []
+    previous: str | None = None
+    for sequence, line in enumerate(lines, 1):
+        row = _strict_json(line, 1 << 20)
+        if (
+            type(row) is not dict
+            or row.get("entry_type")
+            != ("ATTEMPT_STARTED" if sequence == 1 else "ATTEMPT_TERMINAL")
+            or frozenset(row)
+            != _LEDGER_COMMON | _LEDGER_EXTRA[str(row.get("entry_type"))]
+            or row.get("ledger_version") != "2.0.0"
+            or row.get("sequence") != sequence
+            or row.get("previous_entry_digest") != previous
+        ):
+            _stop("POST_V2_PREDECESSOR_MALFORMED")
+        AttemptLedger._validate_row(row)
+        digest = _digest_bytes(line)
+        rows.append((row, digest))
+        previous = digest
+    AttemptLedger._validate_lifecycle(rows)
+    started = rows[0][0]
+    terminal = rows[1][0]
+    contract = started["qualification_contract"]
+    core = contract["contract_core"] if type(contract) is dict else None
+    if (
+        type(core) is not dict
+        or started["candidate"] != FAILED_QUALIFICATION_V2_CANDIDATE
+        or started["tree"] != FAILED_QUALIFICATION_V2_TREE
+        or core["candidate"] != FAILED_QUALIFICATION_V2_CANDIDATE
+        or core["tree"] != FAILED_QUALIFICATION_V2_TREE
+        or started["max_attempts"] != 2
+        or terminal["max_attempts"] != 2
+        or terminal["result"] != "FAILED"
+        or terminal["terminal_reason"] != "KEY_READY_TIMEOUT"
+        or terminal["key_admission_digest"] is not None
+        or terminal["manifest_digest"] is not None
+        or terminal["signed_payload_bundle_digest"] is not None
+        or terminal["qemu_phase_outcomes"] is not None
+    ):
+        _stop("POST_V2_PREDECESSOR_NOT_EXACT_FAILED_ATTEMPT")
+    return expected_digest
+
+
 class DiagnosticStart(NamedTuple):
     candidate: str
     tree: str
@@ -1293,6 +1584,430 @@ def _validate_diagnostic_phase_outcomes(value: object) -> dict[str, object]:
         ):
             _stop("DIAGNOSTIC_QEMU_OUTCOME_MISMATCH")
     return value
+
+
+class PostV2DiagnosticStart(NamedTuple):
+    candidate: str
+    tree: str
+    environment: str
+    goal_record_digest: str
+    source_files_digest: str
+    canonical_profile_digest: str
+    raw_profile_artifact_digest: str
+    base_image_digest: str
+    contract_core_digest: str
+    diagnostic_contract_digest: str
+    diagnostic_contract: dict[str, object]
+    digest: str
+
+
+def _validate_post_v2_diagnostic_phase_outcomes(
+    value: object, lab: Path
+) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != {"provision", "run"}:
+        _stop("POST_V2_DIAGNOSTIC_QEMU_OUTCOME_MISMATCH")
+    for phase, row in value.items():
+        if row is None:
+            continue
+        if (
+            type(row) is not dict
+            or frozenset(row) != {"argv_digest", "return_code"}
+            or row["argv_digest"]
+            != _digest_bytes(_canonical(_qemu_argv(1, phase, lab=lab)))
+            or type(row["return_code"]) is not int
+            or isinstance(row["return_code"], bool)
+            or not -255 <= row["return_code"] <= 255
+        ):
+            _stop("POST_V2_DIAGNOSTIC_QEMU_OUTCOME_MISMATCH")
+    return value
+
+
+class PostV2DiagnosticLedger:
+    """Exact one-slot ledger for the post-v2 pre-admission diagnostic."""
+
+    def __init__(
+        self,
+        lab: Path,
+        *,
+        goal_record: object,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self.lab = lab
+        self.goal_record = _strict_json(
+            _canonical(_validate_post_v2_diagnostic_goal_record(goal_record)),
+            1 << 20,
+        )
+        self.goal_record_digest = _digest_bytes(_canonical(self.goal_record))
+        self.clock = (lambda: datetime.now(UTC)) if clock is None else clock
+        self._directory_descriptor = -1
+        self._descriptor = -1
+        self._rows: list[tuple[dict[str, object], str]] = []
+        self._active: PostV2DiagnosticStart | None = None
+
+    def __enter__(self) -> PostV2DiagnosticLedger:
+        created = False
+        try:
+            os.mkdir(self.lab, 0o700)
+            created = True
+        except FileExistsError:
+            pass
+        except OSError as error:
+            raise QualificationStop("POST_V2_DIAGNOSTIC_LEDGER_UNTRUSTED") from error
+        try:
+            self._directory_descriptor = os.open(
+                self.lab,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+            directory = os.fstat(self._directory_descriptor)
+            if (
+                not stat.S_ISDIR(directory.st_mode)
+                or directory.st_uid != os.geteuid()
+                or stat.S_IMODE(directory.st_mode) != 0o700
+            ):
+                _stop("POST_V2_DIAGNOSTIC_LEDGER_UNTRUSTED")
+            if created:
+                _fsync_directory(self.lab.parent)
+            names = set(os.listdir(self.lab))
+            if (
+                POST_V2_DIAGNOSTIC_LEDGER_NAME not in names
+                and names
+                or POST_V2_DIAGNOSTIC_LEDGER_NAME in names
+                and not names <= {
+                    POST_V2_DIAGNOSTIC_LEDGER_NAME, "runs", "diagnostics"
+                }
+            ):
+                _stop("POST_V2_DIAGNOSTIC_LAB_REUSE_FORBIDDEN")
+            ledger_created = False
+            try:
+                self._descriptor = os.open(
+                    POST_V2_DIAGNOSTIC_LEDGER_NAME,
+                    os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL
+                    | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=self._directory_descriptor,
+                )
+                ledger_created = True
+            except FileExistsError:
+                self._descriptor = os.open(
+                    POST_V2_DIAGNOSTIC_LEDGER_NAME,
+                    os.O_RDWR | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=self._directory_descriptor,
+                )
+            fcntl.flock(self._descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            info = os.fstat(self._descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_size > 4 << 20
+            ):
+                _stop("POST_V2_DIAGNOSTIC_LEDGER_UNTRUSTED")
+            if ledger_created:
+                os.fsync(self._descriptor)
+                os.fsync(self._directory_descriptor)
+            self._rows = self._read_rows()
+            return self
+        except (OSError, BlockingIOError) as error:
+            self.__exit__(None, None, None)
+            raise QualificationStop("POST_V2_DIAGNOSTIC_LEDGER_UNTRUSTED") from error
+        except Exception:
+            self.__exit__(None, None, None)
+            raise
+
+    def __exit__(self, _kind: object, _value: object, _traceback: object) -> None:
+        if self._descriptor >= 0:
+            try:
+                fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(self._descriptor)
+            self._descriptor = -1
+        if self._directory_descriptor >= 0:
+            os.close(self._directory_descriptor)
+            self._directory_descriptor = -1
+
+    def _read_rows(self) -> list[tuple[dict[str, object], str]]:
+        size = os.fstat(self._descriptor).st_size
+        os.lseek(self._descriptor, 0, os.SEEK_SET)
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining:
+            chunk = os.read(self._descriptor, min(65536, remaining))
+            if not chunk:
+                _stop("POST_V2_DIAGNOSTIC_LEDGER_MALFORMED")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if not raw:
+            return []
+        if not raw.endswith(b"\n") or b"\n\n" in raw:
+            _stop("POST_V2_DIAGNOSTIC_LEDGER_MALFORMED")
+        lines = raw[:-1].split(b"\n")
+        if len(lines) not in {1, 2}:
+            _stop("POST_V2_DIAGNOSTIC_LEDGER_MALFORMED")
+        rows: list[tuple[dict[str, object], str]] = []
+        previous: str | None = None
+        for sequence, line in enumerate(lines, 1):
+            row = _strict_json(line, 1 << 20)
+            self._validate_row(row, sequence, previous)
+            digest = _digest_bytes(line)
+            rows.append((row, digest))
+            previous = digest
+        if len(rows) == 1:
+            _stop("POST_V2_DIAGNOSTIC_PRIOR_ATTEMPT_UNRESOLVED")
+        if rows[1][0]["diagnostic_start_digest"] != rows[0][1]:
+            _stop("POST_V2_DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+        for name in self._common_keys() - {
+            "post_v2_diagnostic_ledger_version", "sequence",
+            "previous_entry_digest", "entry_type", "recorded_at",
+        }:
+            if rows[1][0][name] != rows[0][0][name]:
+                _stop("POST_V2_DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+        return rows
+
+    @staticmethod
+    def _common_keys() -> set[str]:
+        return {
+            "post_v2_diagnostic_ledger_version", "sequence",
+            "previous_entry_digest", "entry_type", "recorded_at",
+            "diagnostic_kind", "candidate", "tree", "environment",
+            "goal_record_digest", "failed_qualification_v2_ledger_digest",
+            "source_files_digest", "canonical_profile_digest",
+            "raw_profile_artifact_digest", "base_image_digest",
+            "contract_core_digest", "diagnostic_contract_digest",
+            "max_attempts", "attempt",
+        }
+
+    def _validate_row(
+        self, row: object, sequence: int, previous: str | None
+    ) -> None:
+        started = {"diagnostic_contract"}
+        terminal = {
+            "diagnostic_start_digest", "terminal_reason",
+            "diagnostic_bundle_digest", "key_ready_digest",
+            "systemd_properties_digest", "cleanup_digest",
+            "qemu_phase_outcomes",
+        }
+        if type(row) is not dict or row.get("entry_type") not in {
+            "DIAGNOSTIC_STARTED", "DIAGNOSTIC_TERMINAL"
+        }:
+            _stop("POST_V2_DIAGNOSTIC_LEDGER_MALFORMED")
+        extra = started if row["entry_type"] == "DIAGNOSTIC_STARTED" else terminal
+        if frozenset(row) != self._common_keys() | extra:
+            _stop("POST_V2_DIAGNOSTIC_LEDGER_MALFORMED")
+        digest_names = (
+            "environment", "goal_record_digest",
+            "failed_qualification_v2_ledger_digest", "source_files_digest",
+            "canonical_profile_digest", "raw_profile_artifact_digest",
+            "base_image_digest", "contract_core_digest",
+            "diagnostic_contract_digest",
+        )
+        if (
+            row["post_v2_diagnostic_ledger_version"] != "2.0.0"
+            or type(row["sequence"]) is not int
+            or row["sequence"] != sequence
+            or row["previous_entry_digest"] != previous
+            or row["entry_type"]
+            != ("DIAGNOSTIC_STARTED" if sequence == 1 else "DIAGNOSTIC_TERMINAL")
+            or row["diagnostic_kind"] != "M4_POST_V2_PRE_ADMISSION"
+            or type(row["candidate"]) is not str
+            or _COMMIT.fullmatch(row["candidate"]) is None
+            or type(row["tree"]) is not str
+            or _COMMIT.fullmatch(row["tree"]) is None
+            or any(
+                type(row[name]) is not str or _DIGEST.fullmatch(row[name]) is None
+                for name in digest_names
+            )
+            or row["goal_record_digest"] != self.goal_record_digest
+            or row["failed_qualification_v2_ledger_digest"]
+            != FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+            or row["canonical_profile_digest"] != _M4_PROFILE_DIGEST
+            or row["raw_profile_artifact_digest"] != _M4_PROFILE_DIGEST
+            or row["base_image_digest"] != _IMAGE_DIGEST
+            or type(row["max_attempts"]) is not int
+            or row["max_attempts"] != 1
+            or type(row["attempt"]) is not int
+            or row["attempt"] != 1
+            or type(row["recorded_at"]) is not str
+            or _TIME.fullmatch(row["recorded_at"]) is None
+        ):
+            _stop("POST_V2_DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+        recorded = datetime.strptime(
+            row["recorded_at"], "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=UTC)
+        if recorded > self.clock().astimezone(UTC).replace(microsecond=0):
+            _stop("POST_V2_DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+        if row["entry_type"] == "DIAGNOSTIC_STARTED":
+            contract = _validate_post_v2_diagnostic_contract(
+                row["diagnostic_contract"]
+            )
+            core = contract["contract_core"]
+            if (
+                core["goal_record"] != self.goal_record
+                or row["candidate"] != core["candidate"]
+                or row["tree"] != core["tree"]
+                or row["environment"] != contract["environment_digest"]
+                or row["source_files_digest"] != core["source_files_digest"]
+                or row["canonical_profile_digest"]
+                != core["canonical_profile_digest"]
+                or row["raw_profile_artifact_digest"]
+                != core["raw_profile_artifact_digest"]
+                or row["base_image_digest"] != core["base_image_digest"]
+                or row["contract_core_digest"] != contract["contract_core_digest"]
+                or row["diagnostic_contract_digest"]
+                != _post_v2_diagnostic_contract_digest(contract)
+            ):
+                _stop("POST_V2_DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+        else:
+            values = (
+                row["diagnostic_start_digest"], row["diagnostic_bundle_digest"],
+                row["systemd_properties_digest"], row["cleanup_digest"],
+            )
+            if (
+                row["terminal_reason"] not in _DIAGNOSTIC_REASONS
+                or any(
+                    type(item) is not str or _DIGEST.fullmatch(item) is None
+                    for item in values
+                )
+                or (
+                    row["key_ready_digest"] is not None
+                    and (
+                        type(row["key_ready_digest"]) is not str
+                        or _DIGEST.fullmatch(row["key_ready_digest"]) is None
+                    )
+                )
+            ):
+                _stop("POST_V2_DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
+            _validate_post_v2_diagnostic_phase_outcomes(
+                row["qemu_phase_outcomes"], self.lab
+            )
+
+    def _append(
+        self,
+        entry_type: str,
+        start: PostV2DiagnosticStart,
+        extra: dict[str, object],
+    ) -> str:
+        row = {
+            "post_v2_diagnostic_ledger_version": "2.0.0",
+            "sequence": len(self._rows) + 1,
+            "previous_entry_digest": None if not self._rows else self._rows[-1][1],
+            "entry_type": entry_type,
+            "recorded_at": self.clock().astimezone(UTC).replace(
+                microsecond=0
+            ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "diagnostic_kind": "M4_POST_V2_PRE_ADMISSION",
+            "candidate": start.candidate,
+            "tree": start.tree,
+            "environment": start.environment,
+            "goal_record_digest": start.goal_record_digest,
+            "failed_qualification_v2_ledger_digest": (
+                FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+            ),
+            "source_files_digest": start.source_files_digest,
+            "canonical_profile_digest": start.canonical_profile_digest,
+            "raw_profile_artifact_digest": start.raw_profile_artifact_digest,
+            "base_image_digest": start.base_image_digest,
+            "contract_core_digest": start.contract_core_digest,
+            "diagnostic_contract_digest": start.diagnostic_contract_digest,
+            "max_attempts": 1,
+            "attempt": 1,
+            **extra,
+        }
+        raw = _canonical(row)
+        digest = _digest_bytes(raw)
+        line = raw + b"\n"
+        try:
+            if os.write(self._descriptor, line) != len(line):
+                _stop("POST_V2_DIAGNOSTIC_LEDGER_APPEND_FAILED")
+            os.fsync(self._descriptor)
+        except OSError as error:
+            raise QualificationStop(
+                "POST_V2_DIAGNOSTIC_LEDGER_APPEND_FAILED"
+            ) from error
+        self._rows.append((row, digest))
+        return digest
+
+    def ensure_available(self) -> None:
+        if self._rows or self._active is not None:
+            _stop("POST_V2_DIAGNOSTIC_ATTEMPT_LIMIT_REACHED")
+
+    def begin(self, diagnostic_contract: object) -> PostV2DiagnosticStart:
+        self.ensure_available()
+        contract = _strict_json(
+            _canonical(_validate_post_v2_diagnostic_contract(diagnostic_contract)),
+            1 << 20,
+        )
+        core = contract["contract_core"]
+        if type(core) is not dict or core["goal_record"] != self.goal_record:
+            _stop("POST_V2_DIAGNOSTIC_ATTEMPT_BINDING_MISMATCH")
+        provisional = PostV2DiagnosticStart(
+            str(core["candidate"]),
+            str(core["tree"]),
+            str(contract["environment_digest"]),
+            str(core["goal_record_digest"]),
+            str(core["source_files_digest"]),
+            str(core["canonical_profile_digest"]),
+            str(core["raw_profile_artifact_digest"]),
+            str(core["base_image_digest"]),
+            str(contract["contract_core_digest"]),
+            _post_v2_diagnostic_contract_digest(contract),
+            contract,
+            "",
+        )
+        digest = self._append(
+            "DIAGNOSTIC_STARTED", provisional, {"diagnostic_contract": contract}
+        )
+        self._active = PostV2DiagnosticStart(*provisional[:-1], digest)
+        return self._active
+
+    def terminalize(
+        self,
+        start: PostV2DiagnosticStart,
+        terminal_reason: str,
+        *,
+        diagnostic_bundle_digest: str,
+        key_ready_digest: str | None,
+        systemd_properties_digest: str,
+        cleanup_digest: str,
+        qemu_phase_outcomes: dict[str, object],
+    ) -> str:
+        values = (
+            diagnostic_bundle_digest, systemd_properties_digest, cleanup_digest,
+        )
+        if (
+            start != self._active
+            or terminal_reason not in _DIAGNOSTIC_REASONS
+            or any(
+                type(item) is not str or _DIGEST.fullmatch(item) is None
+                for item in values
+            )
+            or (
+                key_ready_digest is not None
+                and (
+                    type(key_ready_digest) is not str
+                    or _DIGEST.fullmatch(key_ready_digest) is None
+                )
+            )
+        ):
+            _stop("POST_V2_DIAGNOSTIC_TERMINAL_ORDER_MISMATCH")
+        _validate_post_v2_diagnostic_phase_outcomes(qemu_phase_outcomes, self.lab)
+        digest = self._append(
+            "DIAGNOSTIC_TERMINAL",
+            start,
+            {
+                "diagnostic_start_digest": start.digest,
+                "terminal_reason": terminal_reason,
+                "diagnostic_bundle_digest": diagnostic_bundle_digest,
+                "key_ready_digest": key_ready_digest,
+                "systemd_properties_digest": systemd_properties_digest,
+                "cleanup_digest": cleanup_digest,
+                "qemu_phase_outcomes": qemu_phase_outcomes,
+            },
+        )
+        self._active = None
+        return digest
 
 
 def _run(
@@ -2631,14 +3346,14 @@ def _run_vm_phase(
 
 
 def _diagnostic_qemu_outcome(
-    qemu: QemuProcess, phase: str
+    qemu: QemuProcess, phase: str, *, lab: Path = DIAGNOSTIC_LAB
 ) -> dict[str, object] | None:
     process = qemu.process
     if process is None or process.returncode is None:
         return None
     return {
         "argv_digest": _digest_bytes(
-            _canonical(_qemu_argv(1, phase, lab=DIAGNOSTIC_LAB))
+            _canonical(_qemu_argv(1, phase, lab=lab))
         ),
         "return_code": process.returncode,
     }
@@ -2682,6 +3397,63 @@ def _run_diagnostic_vm_phase(
     return (
         observation, boot_id, unit_lines, kernel_lines, markers,
         _diagnostic_qemu_outcome(qemu, "run"),
+    )
+
+
+def _run_post_v2_diagnostic_vm_phase(
+    attempt_root: Path,
+    client_key: Path,
+    known_hosts: Path,
+    contract: dict[str, object],
+) -> tuple[
+    dict[str, object], str, list[str], list[str], list[dict[str, object]],
+    dict[str, object] | None,
+]:
+    unit = "harness-m4-controller@run.service"
+    with QemuProcess(
+        attempt_root, 1, "run", lab=POST_V2_DIAGNOSTIC_LAB
+    ) as qemu:
+        _wait_for_ssh(qemu, client_key, known_hosts)
+        boot_id = _guest_boot_id(client_key, known_hosts)
+        _ssh(
+            client_key,
+            known_hosts,
+            ["sudo", "/usr/bin/systemctl", "start", "--no-block", unit],
+        )
+        observation = _wait_key_ready_diagnostic(
+            qemu, client_key, known_hosts, unit
+        )
+        unit_lines, kernel_lines, markers = _collect_pre_key_diagnostics(
+            qemu, client_key, known_hosts, unit
+        )
+        ready = observation["key_ready"]
+        if ready is not None:
+            try:
+                _validate_post_v2_key_ready(ready, contract)
+            except QualificationStop:
+                observation = {
+                    **observation,
+                    "terminal_reason": "SERVICE_FAILED_PRE_KEY_READY",
+                    "key_ready": None,
+                }
+                unit_lines = (
+                    unit_lines + ["HOST:POST_V2_KEY_READY_MALFORMED"]
+                )[-512:]
+        if qemu.alive():
+            try:
+                _poweroff(qemu, client_key, known_hosts)
+            except QualificationStop:
+                observation = {
+                    **observation,
+                    "terminal_reason": "QEMU_EXITED",
+                    "qemu_return_code": getattr(qemu.process, "returncode", None),
+                }
+    _verify_management_port_free()
+    return (
+        observation, boot_id, unit_lines, kernel_lines, markers,
+        _diagnostic_qemu_outcome(
+            qemu, "run", lab=POST_V2_DIAGNOSTIC_LAB
+        ),
     )
 
 
@@ -2884,6 +3656,258 @@ def _sanitize_diagnostic_line(line: object) -> str:
     ):
         return "[REDACTED]"
     return value
+
+
+def _read_post_v2_phase_log(path: Path) -> bytes | None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise QualificationStop("POST_V2_DIAGNOSTIC_LOG_UNTRUSTED") from error
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) & 0o022
+            or info.st_size > _MAX_PHASE_LOG_BYTES
+        ):
+            _stop("POST_V2_DIAGNOSTIC_LOG_UNTRUSTED")
+        chunks: list[bytes] = []
+        remaining = info.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                _stop("POST_V2_DIAGNOSTIC_LOG_SHORT_READ")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            _stop("POST_V2_DIAGNOSTIC_LOG_UNBOUNDED")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _capture_post_v2_qemu_logs(attempt_root: Path) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for phase in ("provision", "run"):
+        for suffix in ("qemu.log", "serial.log"):
+            name = f"{phase}.{suffix}"
+            raw = _read_post_v2_phase_log(attempt_root / name)
+            if raw is None:
+                result[name] = {
+                    "bytes": 0,
+                    "digest": None,
+                    "lines": ["UNAVAILABLE:LOG_ABSENT"],
+                }
+                continue
+            lines = raw.decode("utf-8", "replace").splitlines()[-128:]
+            result[name] = {
+                "bytes": len(raw),
+                "digest": _digest_bytes(raw),
+                "lines": [_sanitize_diagnostic_line(line) for line in lines],
+            }
+    return _validate_post_v2_qemu_log_capture(result)
+
+
+def _validate_post_v2_qemu_log_capture(value: object) -> dict[str, object]:
+    expected = {
+        f"{phase}.{suffix}"
+        for phase in ("provision", "run")
+        for suffix in ("qemu.log", "serial.log")
+    }
+    if type(value) is not dict or frozenset(value) != expected:
+        _stop("POST_V2_DIAGNOSTIC_LOG_CAPTURE_MALFORMED")
+    for row in value.values():
+        if (
+            type(row) is not dict
+            or frozenset(row) != {"bytes", "digest", "lines"}
+            or type(row["bytes"]) is not int
+            or not 0 <= row["bytes"] <= _MAX_PHASE_LOG_BYTES
+            or (
+                row["digest"] is not None
+                and (
+                    type(row["digest"]) is not str
+                    or _DIGEST.fullmatch(row["digest"]) is None
+                )
+            )
+            or (row["digest"] is None and row["bytes"] != 0)
+            or type(row["lines"]) is not list
+            or len(row["lines"]) > 128
+            or any(
+                type(line) is not str or len(line) > 1024
+                for line in row["lines"]
+            )
+        ):
+            _stop("POST_V2_DIAGNOSTIC_LOG_CAPTURE_MALFORMED")
+    return value
+
+
+def _sanitize_post_v2_diagnostic_record(
+    record: object, *, lab: Path = POST_V2_DIAGNOSTIC_LAB
+) -> dict[str, object]:
+    if type(record) is not dict:
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    value = dict(record)
+    for name in ("unit_journal", "kernel_events"):
+        rows = value.get(name)
+        if type(rows) is not list or len(rows) > 512:
+            _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+        value[name] = [_sanitize_diagnostic_line(line) for line in rows]
+    captures = value.get("qemu_log_captures")
+    if type(captures) is not dict:
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    value["qemu_log_captures"] = {
+        name: {
+            **row,
+            "lines": [_sanitize_diagnostic_line(line) for line in row["lines"]],
+        }
+        for name, row in captures.items()
+        if type(row) is dict and type(row.get("lines")) is list
+    }
+    return _validate_post_v2_diagnostic_record(value, lab=lab)
+
+
+def _validate_post_v2_diagnostic_record(
+    value: object, *, lab: Path = POST_V2_DIAGNOSTIC_LAB
+) -> dict[str, object]:
+    expected = {
+        "diagnostic_version", "claim", "status", "goal_record",
+        "goal_record_digest", "diagnostic_contract",
+        "diagnostic_contract_digest", "contract_core_digest",
+        "diagnostic_start_digest", "boot_id", "observed_terminal_reason",
+        "systemd_properties", "unit_journal", "kernel_events",
+        "stage_markers", "artifact_digests", "qemu_phase_outcomes",
+        "qemu_log_captures", "key_ready_digest",
+    }
+    if type(value) is not dict or frozenset(value) != expected:
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    goal = _validate_post_v2_diagnostic_goal_record(value["goal_record"])
+    contract = _validate_post_v2_diagnostic_contract(
+        value["diagnostic_contract"]
+    )
+    core = contract["contract_core"]
+    properties = value["systemd_properties"]
+    artifacts = value["artifact_digests"]
+    markers = value["stage_markers"]
+    digests = (
+        value["goal_record_digest"], value["diagnostic_contract_digest"],
+        value["contract_core_digest"], value["diagnostic_start_digest"],
+    )
+    if (
+        value["diagnostic_version"] != "2.0.0"
+        or value["claim"] != "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY"
+        or value["status"] != "NOT_ATTESTED"
+        or core["goal_record"] != goal
+        or value["goal_record_digest"] != _digest_bytes(_canonical(goal))
+        or value["diagnostic_contract_digest"]
+        != _post_v2_diagnostic_contract_digest(contract)
+        or value["contract_core_digest"] != contract["contract_core_digest"]
+        or any(
+            type(item) is not str or _DIGEST.fullmatch(item) is None
+            for item in digests
+        )
+        or type(value["boot_id"]) is not str
+        or (
+            value["boot_id"] != "UNAVAILABLE"
+            and re.fullmatch(r"[0-9a-f-]{36}", value["boot_id"]) is None
+        )
+        or value["observed_terminal_reason"] not in _DIAGNOSTIC_REASONS
+        or type(properties) is not dict
+        or frozenset(properties) != frozenset(_SERVICE_PROPERTIES)
+        or any(
+            type(item) is not str or len(item) > 128
+            for item in properties.values()
+        )
+        or type(artifacts) is not dict
+        or frozenset(artifacts) != {"host_launcher", "runner", "service", "profile"}
+        or any(
+            type(item) is not str or _DIGEST.fullmatch(item) is None
+            for item in artifacts.values()
+        )
+        or type(value["unit_journal"]) is not list
+        or type(value["kernel_events"]) is not list
+        or len(value["unit_journal"]) > 512
+        or len(value["kernel_events"]) > 512
+        or any(
+            type(line) is not str or len(line) > 1024
+            for line in [*value["unit_journal"], *value["kernel_events"]]
+        )
+        or type(markers) is not list
+        or len(markers) > 7
+        or (
+            value["key_ready_digest"] is not None
+            and (
+                type(value["key_ready_digest"]) is not str
+                or _DIGEST.fullmatch(value["key_ready_digest"]) is None
+            )
+        )
+    ):
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    order = (
+        "SERVICE_ENTERED", "REQUEST_VALIDATED", "PRE_KEY_CHECKS_COMPLETE",
+        "KEY_GENERATION_STARTED", "KEY_GENERATION_COMPLETE",
+        "RUNTIME_TRUST_READY", "KEY_READY_WRITTEN",
+    )
+    seen: list[str] = []
+    for marker in markers:
+        if (
+            type(marker) is not dict
+            or frozenset(marker) != {"record_type", "stage", "non_authorizing"}
+            or marker["record_type"] != "M4_PRE_KEY_STAGE"
+            or marker["stage"] not in order
+            or marker["non_authorizing"] is not True
+            or marker["stage"] in seen
+        ):
+            _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+        seen.append(marker["stage"])
+    if seen != sorted(seen, key=order.index):
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    _validate_post_v2_diagnostic_phase_outcomes(
+        value["qemu_phase_outcomes"], lab
+    )
+    _validate_post_v2_qemu_log_capture(value["qemu_log_captures"])
+    raw = _canonical(value)
+    if len(raw) > 2 << 20 or any(
+        token in raw.lower()
+        for token in (
+            b"private key", b"-----begin", b"ssh-ed25519 ", b"password",
+            b"credential", b"authorized_keys", b"key-admission.json",
+            b"authorization", b"signature", b"proof", b"secret",
+        )
+    ):
+        _stop("POST_V2_DIAGNOSTIC_SECRET_PRESENT")
+    return value
+
+
+def _read_post_v2_diagnostic_bundle(
+    path: Path, *, lab: Path = POST_V2_DIAGNOSTIC_LAB
+) -> dict[str, object]:
+    value = _strict_json(_read_regular(path, 2 << 20), 2 << 20)
+    return _validate_post_v2_diagnostic_record(value, lab=lab)
+
+
+def _materialize_post_v2_diagnostic_bundle(
+    lab: Path, record: dict[str, object]
+) -> Path:
+    value = _validate_post_v2_diagnostic_record(record, lab=lab)
+    _mkdir_exact(lab, 0o700)
+    diagnostics = lab / "diagnostics"
+    _mkdir_exact(diagnostics, 0o700)
+    attempt = diagnostics / "attempt-1"
+    if attempt.exists() or attempt.is_symlink():
+        _stop("POST_V2_DIAGNOSTIC_DESTINATION_REUSE_FORBIDDEN")
+    attempt.mkdir(mode=0o700)
+    path = attempt / "diagnostic.json"
+    _write_exact(path, _canonical(value), 0o444)
+    _fsync_directory(attempt)
+    _fsync_directory(diagnostics)
+    _fsync_directory(lab)
+    if _read_post_v2_diagnostic_bundle(path, lab=lab) != value:
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MISMATCH")
+    return path
 
 
 def _sanitize_diagnostic_record(record: object) -> dict[str, object]:
@@ -3369,6 +4393,246 @@ def _key_ready_diagnostic(goal: Path) -> dict[str, object]:
             raise
 
 
+def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
+    goal_record = _post_v2_diagnostic_goal_record()
+    _validate_post_v2_diagnostic_goal_record(goal_record)
+    predecessor_digest = _verify_failed_v2_qualification_ledger()
+    source = _source_state()
+    _, profile_digest = _profile()
+    image, qemu_version = _verify_host_assets()
+    tools = _verify_host_tools()
+    package_runtime_plan = _package_runtime_plan()
+    package_runtime_plan_digest = _digest_bytes(
+        _canonical(package_runtime_plan)
+    )
+    _verify_kvm()
+    _verify_management_port_free()
+    remaining = _verify_disk_budget(IMAGE_LAB.parent)
+    artifact_digests = {
+        "host_launcher": _digest_file(Path(__file__).resolve(), 16 << 20),
+        "runner": _digest_file(
+            ROOT / "scripts/run_m4_vm_conformance.py", 16 << 20
+        ),
+        "service": _digest_file(
+            ROOT / "profiles/harness-m4-controller@.service", 1 << 20
+        ),
+        "profile": _digest_file(ROOT / "profiles/m4-lx-a.json", 1 << 20),
+    }
+    start: PostV2DiagnosticStart | None = None
+    phase_outcomes: dict[str, object] = {"provision": None, "run": None}
+    observation: dict[str, object] = {
+        "terminal_reason": "PROVISION_FAILED",
+        "key_ready": None,
+        "systemd_properties": {
+            name: "UNAVAILABLE" for name in _SERVICE_PROPERTIES
+        },
+        "qemu_return_code": None,
+    }
+    boot_id = "UNAVAILABLE"
+    unit_lines = ["UNAVAILABLE:PROVISION_FAILED"]
+    kernel_lines = ["UNAVAILABLE:PROVISION_FAILED"]
+    markers: list[dict[str, object]] = []
+    cleanup_complete = False
+    removed: list[str] = []
+    bundle: Path | None = None
+    cleanup_error: QualificationStop | None = None
+    with PostV2DiagnosticLedger(
+        POST_V2_DIAGNOSTIC_LAB, goal_record=goal_record
+    ) as ledger:
+        ledger.ensure_available()
+        runs = POST_V2_DIAGNOSTIC_LAB / "runs"
+        _mkdir_exact(runs, 0o700)
+        if (POST_V2_DIAGNOSTIC_LAB / "diagnostics").exists() or (
+            POST_V2_DIAGNOSTIC_LAB / "diagnostics"
+        ).is_symlink():
+            _stop("POST_V2_DIAGNOSTIC_DESTINATION_REUSE_FORBIDDEN")
+        attempt_root = runs / "attempt-1"
+        if attempt_root.exists() or attempt_root.is_symlink():
+            _stop("POST_V2_DIAGNOSTIC_ATTEMPT_ROOT_REUSE_FORBIDDEN")
+        attempt_root.mkdir(mode=0o700)
+        try:
+            seed, client_key, host_key = _create_seed(
+                attempt_root,
+                attempt=1,
+                source=source,
+                package_runtime_plan=package_runtime_plan,
+            )
+            known_hosts = attempt_root / "known_hosts"
+            _known_hosts(host_key.with_suffix(".pub"), known_hosts)
+            seed_digest = _digest_file(seed, _MAX_SEED_BYTES)
+            provenance = _host_provenance(
+                image,
+                qemu_version=qemu_version,
+                seed_digest=seed_digest,
+                attempt=1,
+                lab=POST_V2_DIAGNOSTIC_LAB,
+                phases=("provision", "run"),
+            )
+            contract = _post_v2_diagnostic_contract(
+                goal_record=goal_record,
+                candidate=str(source["commit"]),
+                tree=str(source["tree"]),
+                source_files_digest=str(source["files_digest"]),
+                source_archive_digest=_digest_file(
+                    attempt_root / "source.tgz", 16 << 20
+                ),
+                seed_digest=seed_digest,
+                package_runtime_plan_digest=package_runtime_plan_digest,
+                host_provenance_digest=_digest_bytes(_canonical(provenance)),
+            )
+            request = _post_v2_diagnostic_request(contract)
+            start = ledger.begin(contract)
+            try:
+                _create_overlay(attempt_root)
+                _, phase_outcomes["provision"] = _provision_vm(
+                    attempt_root,
+                    1,
+                    client_key,
+                    known_hosts,
+                    host_provenance=provenance,
+                    request=request,
+                    lab=POST_V2_DIAGNOSTIC_LAB,
+                )
+            except VMCleanupUnproven:
+                raise
+            except QualificationStop:
+                observation["terminal_reason"] = "PROVISION_FAILED"
+            else:
+                try:
+                    (
+                        observation,
+                        boot_id,
+                        unit_lines,
+                        kernel_lines,
+                        markers,
+                        phase_outcomes["run"],
+                    ) = _run_post_v2_diagnostic_vm_phase(
+                        attempt_root, client_key, known_hosts, contract
+                    )
+                except VMCleanupUnproven:
+                    raise
+                except QualificationStop as error:
+                    reason = (
+                        "QEMU_EXITED"
+                        if "QEMU" in str(error)
+                        else "SERVICE_FAILED_PRE_KEY_READY"
+                    )
+                    observation = {
+                        **observation,
+                        "terminal_reason": reason,
+                    }
+                    unit_lines = ["UNAVAILABLE:" + reason]
+                    kernel_lines = ["UNAVAILABLE:" + reason]
+            terminal_reason = str(observation["terminal_reason"])
+            key_ready = observation["key_ready"]
+            key_ready_digest = (
+                _digest_bytes(_canonical(key_ready))
+                if key_ready is not None
+                else None
+            )
+            qemu_log_captures = _capture_post_v2_qemu_logs(attempt_root)
+            record = _sanitize_post_v2_diagnostic_record(
+                {
+                    "diagnostic_version": "2.0.0",
+                    "claim": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY",
+                    "status": "NOT_ATTESTED",
+                    "goal_record": goal_record,
+                    "goal_record_digest": POST_V2_DIAGNOSTIC_GOAL_DIGEST,
+                    "diagnostic_contract": contract,
+                    "diagnostic_contract_digest": (
+                        _post_v2_diagnostic_contract_digest(contract)
+                    ),
+                    "contract_core_digest": contract["contract_core_digest"],
+                    "diagnostic_start_digest": start.digest,
+                    "boot_id": boot_id,
+                    "observed_terminal_reason": terminal_reason,
+                    "systemd_properties": observation["systemd_properties"],
+                    "unit_journal": unit_lines,
+                    "kernel_events": kernel_lines,
+                    "stage_markers": markers,
+                    "artifact_digests": artifact_digests,
+                    "qemu_phase_outcomes": phase_outcomes,
+                    "qemu_log_captures": qemu_log_captures,
+                    "key_ready_digest": key_ready_digest,
+                },
+                lab=POST_V2_DIAGNOSTIC_LAB,
+            )
+            bundle = _materialize_post_v2_diagnostic_bundle(
+                POST_V2_DIAGNOSTIC_LAB, record
+            )
+            bundle_digest = _digest_file(bundle, 2 << 20)
+            try:
+                removed = _cleanup_diagnostic_attempt(
+                    attempt_root, lab=POST_V2_DIAGNOSTIC_LAB
+                )
+                cleanup_complete = True
+                try:
+                    os.rmdir(runs)
+                except OSError:
+                    pass
+                _fsync_directory(POST_V2_DIAGNOSTIC_LAB)
+            except QualificationStop as error:
+                cleanup_error = error
+                terminal_reason = "CLEANUP_FAILED"
+            cleanup_digest = _digest_bytes(
+                _canonical(
+                    {"complete": cleanup_complete, "removed": sorted(removed)}
+                )
+            )
+            ledger.terminalize(
+                start,
+                terminal_reason,
+                diagnostic_bundle_digest=bundle_digest,
+                key_ready_digest=key_ready_digest,
+                systemd_properties_digest=_digest_bytes(
+                    _canonical(observation["systemd_properties"])
+                ),
+                cleanup_digest=cleanup_digest,
+                qemu_phase_outcomes=phase_outcomes,
+            )
+            if cleanup_error is not None:
+                raise cleanup_error
+            ledger_path = (
+                POST_V2_DIAGNOSTIC_LAB / POST_V2_DIAGNOSTIC_LEDGER_NAME
+            )
+            return {
+                "outcome": "DIAGNOSTIC_COMPLETE",
+                "claim": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY",
+                "status": "NOT_ATTESTED",
+                "terminal_reason": terminal_reason,
+                "last_stage": markers[-1]["stage"] if markers else "NONE",
+                "systemd_properties": observation["systemd_properties"],
+                "qemu_return_code": observation["qemu_return_code"],
+                "candidate": source["commit"],
+                "tree": source["tree"],
+                "environment": start.environment,
+                "diagnostic_contract_digest": start.diagnostic_contract_digest,
+                "diagnostic_ledger": str(ledger_path),
+                "diagnostic_ledger_digest": _digest_file(ledger_path, 4 << 20),
+                "diagnostic_bundle": str(bundle),
+                "diagnostic_bundle_digest": bundle_digest,
+                "preserved_base_image": str(IMAGE_LAB / _IMAGE_NAME),
+                "preserved_base_image_digest": _IMAGE_DIGEST,
+                "removed_disposable_files": sorted(removed),
+                "host_tool_digests": tools,
+                "disk_bytes_remaining_after_worst_case": remaining,
+                "predecessor_qualification_ledger_digest": predecessor_digest,
+            }
+        except VMCleanupUnproven:
+            raise
+        except BaseException as primary_error:
+            if attempt_root.exists() or attempt_root.is_symlink():
+                try:
+                    _cleanup_diagnostic_attempt(
+                        attempt_root, lab=POST_V2_DIAGNOSTIC_LAB
+                    )
+                except QualificationStop as cleanup_failure:
+                    raise QualificationStop(
+                        "CLEANUP_FAILED:" + str(cleanup_failure)
+                    ) from primary_error
+            raise
+
+
 def _qualification_terminal_reason(error: BaseException, fallback: str) -> str:
     detail = str(error)
     for reason in (
@@ -3538,18 +4802,39 @@ def _absent(reason: str) -> dict[str, object]:
     }
 
 
+def _post_v2_diagnostic_absent(reason: str) -> dict[str, object]:
+    return {
+        "outcome": "ABSENT",
+        "claim": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY",
+        "reason": reason,
+        "status": "NOT_ATTESTED",
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
+    post_v2_diagnostic = arguments == ["--post-v2-pre-admission-diagnostic"]
     try:
         if not arguments:
             result = _qualification()
         elif len(arguments) == 2 and arguments[0] == "--key-ready-diagnostic":
             result = _key_ready_diagnostic(Path(arguments[1]))
+        elif arguments == ["--post-v2-pre-admission-diagnostic"]:
+            result = _post_v2_pre_admission_diagnostic()
         else:
             _stop("M4_HOST_ARGUMENTS_FORBIDDEN")
     except (OSError, ValueError, QualificationStop) as error:
-        reason = str(error) if str(error) else "M4_HOST_QUALIFICATION_FAILED"
-        sys.stdout.buffer.write(_canonical(_absent(reason)) + b"\n")
+        reason = str(error) if str(error) else (
+            "M4_POST_V2_DIAGNOSTIC_FAILED"
+            if post_v2_diagnostic
+            else "M4_HOST_QUALIFICATION_FAILED"
+        )
+        failure = (
+            _post_v2_diagnostic_absent(reason)
+            if post_v2_diagnostic
+            else _absent(reason)
+        )
+        sys.stdout.buffer.write(_canonical(failure) + b"\n")
         return 1
     sys.stdout.buffer.write(_canonical(result) + b"\n")
     return 0

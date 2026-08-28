@@ -103,6 +103,83 @@ class M4VMRunnerContractTests(unittest.TestCase):
         }
 
     @staticmethod
+    def _post_v2_diagnostic_request(
+        module,
+        *,
+        candidate: str = "b" * 40,
+        tree: str = "c" * 40,
+        source_files_digest: str = "sha256:" + "d" * 64,
+        seed_digest: str = "sha256:" + "e" * 64,
+        host_provenance_digest: str = "sha256:" + "f" * 64,
+    ):
+        failed_ledger_digest = (
+            "sha256:c80f4eb33b811b59a4f80aee5fdf781964b441d20e1620ca4b1f2b63f30c479a"
+        )
+        goal_record = {
+            "goal_version": "1.0.0",
+            "goal_kind": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+            "user_scope_reference": (
+                "thread:/goal/m4-post-v2-pre-admission-diagnostic/2026-08-28"
+            ),
+            "predecessor_qualification_ledger_digest": failed_ledger_digest,
+            "max_attempts": 1,
+            "allowed_phases": ["provision", "run"],
+            "allowed_outcome": "SANITIZED_DIAGNOSTIC_ONLY",
+            "forbidden_operations": [
+                "AUTOMATIC_RETRY",
+                "KEY_ADMISSION_ARTIFACT",
+                "QUALIFICATION_EVIDENCE_EXPORT",
+                "QUALIFICATION_V2_LEDGER_WRITE",
+                "REBOOT_OR_RECOVERY",
+                "RUNTIME_VERIFIED_CLAIM",
+                "WORKER_OR_EFFECT_EXECUTION",
+            ],
+        }
+        core = {
+            "contract_version": "1.0.0",
+            "contract_kind": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+            "goal_record": goal_record,
+            "goal_record_digest": module._digest_bytes(module._canonical(goal_record)),
+            "failed_v2_candidate": (
+                "a2336eb987364cc6bff0fdcdc7d7bfb8b21b3db8"
+            ),
+            "failed_v2_tree": "106facb47f1b203ed121917adfa7c885374d9fdc",
+            "failed_qualification_v2_ledger_digest": failed_ledger_digest,
+            "candidate": candidate,
+            "tree": tree,
+            "attempt": 1,
+            "source_files_digest": source_files_digest,
+            "canonical_profile_digest": module.CANONICAL_PROFILE_DIGEST,
+            "raw_profile_artifact_digest": module.CANONICAL_PROFILE_DIGEST,
+            "base_image_digest": module.BASE_IMAGE_DIGEST,
+            "max_attempts": 1,
+            "allowed_phases": ["provision", "run"],
+            "non_authorizing": True,
+        }
+        core_digest = module._digest_bytes(module._canonical(core))
+        environment = {
+            "contract_core_digest": core_digest,
+            "source_archive_digest": "sha256:" + "2" * 64,
+            "seed_digest": seed_digest,
+            "package_runtime_plan_digest": "sha256:" + "3" * 64,
+            "host_provenance_digest": host_provenance_digest,
+        }
+        contract = {
+            "contract_core": core,
+            "contract_core_digest": core_digest,
+            "environment_preimage": environment,
+            "environment_digest": module._digest_bytes(module._canonical(environment)),
+        }
+        return {
+            "request_version": "2.1.0",
+            "mode": "POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+            "diagnostic_contract": contract,
+            "diagnostic_contract_digest": module._digest_bytes(
+                module._canonical(contract)
+            ),
+        }
+
+    @staticmethod
     def _run_state(module):
         digest = "sha256:" + "a" * 64
         candidate = "b" * 40
@@ -710,6 +787,275 @@ class M4VMRunnerContractTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(module.QualificationStop):
                 module._validate_launch_request(mutation)
 
+    def test_post_v2_diagnostic_request_is_closed_failed_ledger_bound_and_single_use(
+        self,
+    ) -> None:
+        module = _module()
+        request = self._post_v2_diagnostic_request(module)
+        self.assertEqual(
+            module._validate_launch_request(request),
+            "POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+        )
+        contract = request["diagnostic_contract"]
+        core = contract["contract_core"]
+        goal = core["goal_record"]
+        self.assertEqual(core["max_attempts"], 1)
+        self.assertIs(core["non_authorizing"], True)
+        self.assertEqual(
+            core["failed_qualification_v2_ledger_digest"],
+            "sha256:c80f4eb33b811b59a4f80aee5fdf781964b441d20e1620ca4b1f2b63f30c479a",
+        )
+        self.assertEqual(goal["allowed_outcome"], "SANITIZED_DIAGNOSTIC_ONLY")
+        self.assertEqual(len(module._canonical(goal)), 582)
+        self.assertEqual(
+            module._digest_bytes(module._canonical(goal)),
+            "sha256:7e171d5a592859fc7a49e91ec1dca61d11ec326bbe1083ee5511f70163b9bc70",
+        )
+        self.assertEqual(
+            goal["forbidden_operations"],
+            [
+                "AUTOMATIC_RETRY",
+                "KEY_ADMISSION_ARTIFACT",
+                "QUALIFICATION_EVIDENCE_EXPORT",
+                "QUALIFICATION_V2_LEDGER_WRITE",
+                "REBOOT_OR_RECOVERY",
+                "RUNTIME_VERIFIED_CLAIM",
+                "WORKER_OR_EFFECT_EXECUTION",
+            ],
+        )
+
+        def reseal(value):
+            diagnostic = value["diagnostic_contract"]
+            diagnostic_core = diagnostic["contract_core"]
+            diagnostic["contract_core_digest"] = module._digest_bytes(
+                module._canonical(diagnostic_core)
+            )
+            diagnostic["environment_preimage"]["contract_core_digest"] = (
+                diagnostic["contract_core_digest"]
+            )
+            diagnostic["environment_digest"] = module._digest_bytes(
+                module._canonical(diagnostic["environment_preimage"])
+            )
+            value["diagnostic_contract_digest"] = module._digest_bytes(
+                module._canonical(diagnostic)
+            )
+            return value
+
+        mutations = [
+            ("missing-request", {key: value for key, value in request.items() if key != "mode"}),
+            ("extra-request", {**request, "unknown": True}),
+            ("request-version", {**request, "request_version": "2.0.0"}),
+            ("request-mode", {**request, "mode": "KEY_READY_DIAGNOSTIC"}),
+            (
+                "request-digest",
+                {**request, "diagnostic_contract_digest": "sha256:" + "0" * 64},
+            ),
+        ]
+        for field in contract:
+            value = deepcopy(request)
+            value["diagnostic_contract"].pop(field)
+            value["diagnostic_contract_digest"] = module._digest_bytes(
+                module._canonical(value["diagnostic_contract"])
+            )
+            mutations.append(("missing-contract-" + field, value))
+        value = deepcopy(request)
+        value["diagnostic_contract"]["unknown"] = True
+        value["diagnostic_contract_digest"] = module._digest_bytes(
+            module._canonical(value["diagnostic_contract"])
+        )
+        mutations.append(("extra-contract", value))
+        for field in core:
+            value = deepcopy(request)
+            value["diagnostic_contract"]["contract_core"].pop(field)
+            mutations.append(("missing-core-" + field, reseal(value)))
+        value = deepcopy(request)
+        value["diagnostic_contract"]["contract_core"]["unknown"] = True
+        mutations.append(("extra-core", reseal(value)))
+        for field in goal:
+            value = deepcopy(request)
+            diagnostic_core = value["diagnostic_contract"]["contract_core"]
+            diagnostic_core["goal_record"].pop(field)
+            diagnostic_core["goal_record_digest"] = module._digest_bytes(
+                module._canonical(diagnostic_core["goal_record"])
+            )
+            mutations.append(("missing-goal-" + field, reseal(value)))
+        value = deepcopy(request)
+        diagnostic_core = value["diagnostic_contract"]["contract_core"]
+        diagnostic_core["goal_record"]["unknown"] = True
+        diagnostic_core["goal_record_digest"] = module._digest_bytes(
+            module._canonical(diagnostic_core["goal_record"])
+        )
+        mutations.append(("extra-goal", reseal(value)))
+        for field in contract["environment_preimage"]:
+            value = deepcopy(request)
+            diagnostic = value["diagnostic_contract"]
+            diagnostic["environment_preimage"].pop(field)
+            diagnostic["environment_digest"] = module._digest_bytes(
+                module._canonical(diagnostic["environment_preimage"])
+            )
+            value["diagnostic_contract_digest"] = module._digest_bytes(
+                module._canonical(diagnostic)
+            )
+            mutations.append(("missing-environment-" + field, value))
+        value = deepcopy(request)
+        diagnostic = value["diagnostic_contract"]
+        diagnostic["environment_preimage"]["unknown"] = "sha256:" + "8" * 64
+        diagnostic["environment_digest"] = module._digest_bytes(
+            module._canonical(diagnostic["environment_preimage"])
+        )
+        value["diagnostic_contract_digest"] = module._digest_bytes(
+            module._canonical(diagnostic)
+        )
+        mutations.append(("extra-environment", value))
+        for field, replacement in (
+            ("candidate", "a2336eb987364cc6bff0fdcdc7d7bfb8b21b3db8"),
+            ("tree", "106facb47f1b203ed121917adfa7c885374d9fdc"),
+            ("failed_v2_candidate", "0" * 40),
+            ("failed_v2_tree", "0" * 40),
+            ("failed_qualification_v2_ledger_digest", "sha256:" + "0" * 64),
+            ("attempt", 2),
+            ("attempt", True),
+            ("max_attempts", 2),
+            ("max_attempts", True),
+            ("allowed_phases", ["provision", "run", "recover"]),
+            ("non_authorizing", False),
+            ("canonical_profile_digest", "sha256:" + "0" * 64),
+            ("raw_profile_artifact_digest", "sha256:" + "0" * 64),
+            ("base_image_digest", "sha256:" + "0" * 64),
+        ):
+            value = deepcopy(request)
+            value["diagnostic_contract"]["contract_core"][field] = replacement
+            mutations.append(("core-" + field, reseal(value)))
+        for field, replacement in (
+            ("user_scope_reference", "thread:/different-goal"),
+            ("predecessor_qualification_ledger_digest", "sha256:" + "0" * 64),
+            ("max_attempts", 2),
+            ("max_attempts", True),
+            ("allowed_phases", ["provision", "run", "recover"]),
+            ("allowed_outcome", "KEY_READY_REACHED"),
+            ("forbidden_operations", []),
+        ):
+            value = deepcopy(request)
+            diagnostic_core = value["diagnostic_contract"]["contract_core"]
+            diagnostic_core["goal_record"][field] = replacement
+            diagnostic_core["goal_record_digest"] = module._digest_bytes(
+                module._canonical(diagnostic_core["goal_record"])
+            )
+            mutations.append(("goal-" + field, reseal(value)))
+        for field in contract["environment_preimage"]:
+            value = deepcopy(request)
+            value["diagnostic_contract"]["environment_preimage"][field] = (
+                "sha256:" + "9" * 64
+            )
+            mutations.append(("environment-" + field, value))
+        for name, mutation in mutations:
+            with self.subTest(name=name), self.assertRaises(module.QualificationStop):
+                module._validate_launch_request(mutation)
+
+    def test_post_v2_diagnostic_writes_bound_ready_then_stops_before_admission(
+        self,
+    ) -> None:
+        module = _module()
+        request = self._post_v2_diagnostic_request(module)
+        digest = "sha256:" + "a" * 64
+        keys = {
+            name: type("Key", (), {"public_key_digest": digest})()
+            for name in ("M4_AUTHORITY", "OBSERVER", "PUBLISHER")
+        }
+        with tempfile.TemporaryDirectory(prefix="m4-post-v2-ready-") as directory:
+            runtime = Path(directory)
+            with (
+                mock.patch.object(module, "RUNTIME", runtime),
+                mock.patch.object(module, "KEY_ADMISSION", runtime / "must-not-read.json"),
+                mock.patch.object(module, "_key_admission", side_effect=AssertionError),
+                mock.patch.object(module.time, "sleep", side_effect=AssertionError),
+                mock.patch.object(module.os, "fchown"),
+                mock.patch.object(module.os, "fchmod"),
+                mock.patch.object(module.os, "fsync"),
+                mock.patch.object(module, "_diagnostic_stage") as stage,
+                self.assertRaisesRegex(
+                    module.QualificationStop,
+                    "^M4_POST_V2_DIAGNOSTIC_COMPLETE$",
+                ),
+            ):
+                module._complete_post_v2_diagnostic(
+                    request,
+                    keys,
+                    {"public_key_digest": digest},
+                    {"trust_version": "1.0.0"},
+                )
+            ready = json.loads((runtime / "key-ready.json").read_bytes())
+            self.assertEqual(
+                frozenset(ready),
+                {
+                    "ready_version",
+                    "mode",
+                    "non_authorizing",
+                    "diagnostic_contract",
+                    "diagnostic_contract_digest",
+                    "contract_core_digest",
+                    "receipt_public_key_digests",
+                    "supply_public_key_digest",
+                    "runtime_trust_digest",
+                },
+            )
+            self.assertEqual(ready["ready_version"], "2.1.0")
+            self.assertEqual(ready["mode"], "POST_V2_PRE_ADMISSION_DIAGNOSTIC")
+            self.assertIs(ready["non_authorizing"], True)
+            self.assertEqual(ready["diagnostic_contract"], request["diagnostic_contract"])
+            self.assertEqual(
+                ready["diagnostic_contract_digest"],
+                request["diagnostic_contract_digest"],
+            )
+            stage.assert_called_once_with("KEY_READY_WRITTEN")
+
+        with tempfile.TemporaryDirectory(prefix="m4-post-v2-admission-") as directory:
+            runtime = Path(directory)
+            admission = runtime / "key-admission.json"
+            admission.write_bytes(b"{}")
+            with (
+                mock.patch.object(module, "RUNTIME", runtime),
+                mock.patch.object(module, "KEY_ADMISSION", admission),
+                mock.patch.object(module, "_key_admission", side_effect=AssertionError),
+                mock.patch.object(module, "_diagnostic_stage") as stage,
+                self.assertRaisesRegex(
+                    module.QualificationStop,
+                    "^M4_POST_V2_DIAGNOSTIC_ADMISSION_FORBIDDEN$",
+                ),
+            ):
+                module._complete_post_v2_diagnostic(
+                    request,
+                    keys,
+                    {"public_key_digest": digest},
+                    {"trust_version": "1.0.0"},
+                )
+            self.assertFalse((runtime / "key-ready.json").exists())
+            stage.assert_not_called()
+
+        run_source = inspect.getsource(module._run_phase)
+        completion_source = inspect.getsource(module._complete_post_v2_diagnostic)
+        for forbidden in (
+            "_await_key_admission",
+            "_key_admission(",
+            "RUN_STATE",
+            "_export_m4_evidence",
+            "VERIFIED",
+        ):
+            self.assertNotIn(forbidden, completion_source)
+        self.assertLess(
+            run_source.index("_verify_post_v2_diagnostic_environment("),
+            run_source.index("_prepare_keys("),
+        )
+        self.assertLess(
+            run_source.index("_complete_post_v2_diagnostic("),
+            run_source.index("_configure_m3_supply_trust("),
+        )
+        recover_source = inspect.getsource(module._recover_phase)
+        self.assertLess(
+            recover_source.index("_validate_launch_request(request)"),
+            recover_source.index("_validate_run_state("),
+        )
+
     def test_launch_request_requires_closed_qualification_v2_contract(self) -> None:
         module = _module()
         request = self._qualification_request(module)
@@ -904,6 +1250,28 @@ class M4VMRunnerContractTests(unittest.TestCase):
                     module._canonical(contract)
                 ),
             }
+            diagnostic_request = self._post_v2_diagnostic_request(
+                module,
+                source_files_digest=source["files_digest"],
+                seed_digest=host_provenance["vm"]["seed_digest"],
+                host_provenance_digest=module._digest_bytes(
+                    module._canonical(host_provenance)
+                ),
+            )
+            diagnostic_contract = diagnostic_request["diagnostic_contract"]
+            diagnostic_environment = diagnostic_contract["environment_preimage"]
+            diagnostic_environment["source_archive_digest"] = module._digest_file(
+                source_archive
+            )
+            diagnostic_environment["package_runtime_plan_digest"] = (
+                module._digest_file(package_plan_path)
+            )
+            diagnostic_contract["environment_digest"] = module._digest_bytes(
+                module._canonical(diagnostic_environment)
+            )
+            diagnostic_request["diagnostic_contract_digest"] = module._digest_bytes(
+                module._canonical(diagnostic_contract)
+            )
 
             def dpkg(argv, **_kwargs):
                 return module.subprocess.CompletedProcess(
@@ -929,10 +1297,48 @@ class M4VMRunnerContractTests(unittest.TestCase):
                     ),
                     plan,
                 )
+                self.assertEqual(
+                    module._verify_post_v2_diagnostic_environment(
+                        diagnostic_request, source, host_provenance, profile
+                    ),
+                    plan,
+                )
+                for field, replacement in (
+                    ("candidate", "0" * 40),
+                    ("tree", "0" * 40),
+                    ("source_files_digest", "sha256:" + "0" * 64),
+                ):
+                    mutated_diagnostic = deepcopy(diagnostic_request)
+                    mutated_contract = mutated_diagnostic["diagnostic_contract"]
+                    mutated_core = mutated_contract["contract_core"]
+                    mutated_core[field] = replacement
+                    mutated_contract["contract_core_digest"] = module._digest_bytes(
+                        module._canonical(mutated_core)
+                    )
+                    mutated_environment = mutated_contract["environment_preimage"]
+                    mutated_environment["contract_core_digest"] = mutated_contract[
+                        "contract_core_digest"
+                    ]
+                    mutated_contract["environment_digest"] = module._digest_bytes(
+                        module._canonical(mutated_environment)
+                    )
+                    mutated_diagnostic["diagnostic_contract_digest"] = (
+                        module._digest_bytes(module._canonical(mutated_contract))
+                    )
+                    with self.subTest(
+                        diagnostic_core_binding=field
+                    ), self.assertRaises(module.QualificationStop):
+                        module._verify_post_v2_diagnostic_environment(
+                            mutated_diagnostic, source, host_provenance, profile
+                        )
                 source_archive.write_bytes(b"substituted")
                 with self.assertRaises(module.QualificationStop):
                     module._verify_qualification_environment(
                         request, source, host_provenance, profile
+                    )
+                with self.assertRaises(module.QualificationStop):
+                    module._verify_post_v2_diagnostic_environment(
+                        diagnostic_request, source, host_provenance, profile
                     )
                 source_archive.write_bytes(b"source-archive")
                 package_plan_path.write_bytes(
@@ -988,6 +1394,28 @@ class M4VMRunnerContractTests(unittest.TestCase):
                     module._verify_qualification_environment(
                         mutated_request, source, host_provenance, profile
                     )
+                for field in (
+                    "source_archive_digest",
+                    "seed_digest",
+                    "package_runtime_plan_digest",
+                    "host_provenance_digest",
+                ):
+                    mutated_diagnostic = deepcopy(diagnostic_request)
+                    mutated_contract = mutated_diagnostic["diagnostic_contract"]
+                    mutated_environment = mutated_contract["environment_preimage"]
+                    mutated_environment[field] = "sha256:" + "0" * 64
+                    mutated_contract["environment_digest"] = module._digest_bytes(
+                        module._canonical(mutated_environment)
+                    )
+                    mutated_diagnostic["diagnostic_contract_digest"] = (
+                        module._digest_bytes(module._canonical(mutated_contract))
+                    )
+                    with self.subTest(
+                        diagnostic_environment_binding=field
+                    ), self.assertRaises(module.QualificationStop):
+                        module._verify_post_v2_diagnostic_environment(
+                            mutated_diagnostic, source, host_provenance, profile
+                        )
 
     def test_run_state_rejects_contract_or_plan_projection_substitution(self) -> None:
         module = _module()

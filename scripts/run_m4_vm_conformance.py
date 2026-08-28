@@ -119,6 +119,24 @@ PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST = (
 PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST = (
     "sha256:91abc47ad6070c8b9c8cad89369780b698a696c3e90aed5e2c84cb45f0b1418d"
 )
+FAILED_QUALIFICATION_V2_LEDGER_DIGEST = (
+    "sha256:c80f4eb33b811b59a4f80aee5fdf781964b441d20e1620ca4b1f2b63f30c479a"
+)
+FAILED_V2_CANDIDATE = "a2336eb987364cc6bff0fdcdc7d7bfb8b21b3db8"
+FAILED_V2_TREE = "106facb47f1b203ed121917adfa7c885374d9fdc"
+POST_V2_DIAGNOSTIC_MODE = "POST_V2_PRE_ADMISSION_DIAGNOSTIC"
+POST_V2_DIAGNOSTIC_GOAL_REFERENCE = (
+    "thread:/goal/m4-post-v2-pre-admission-diagnostic/2026-08-28"
+)
+POST_V2_DIAGNOSTIC_FORBIDDEN_OPERATIONS = [
+    "AUTOMATIC_RETRY",
+    "KEY_ADMISSION_ARTIFACT",
+    "QUALIFICATION_EVIDENCE_EXPORT",
+    "QUALIFICATION_V2_LEDGER_WRITE",
+    "REBOOT_OR_RECOVERY",
+    "RUNTIME_VERIFIED_CLAIM",
+    "WORKER_OR_EFFECT_EXECUTION",
+]
 PACKAGE_VERSIONS = {
     "apparmor": "4.0.1really4.0.1-0ubuntu0.24.04.7",
     "apparmor-utils": "4.0.1really4.0.1-0ubuntu0.24.04.7",
@@ -262,6 +280,32 @@ _QUALIFICATION_ENVIRONMENT_KEYS = frozenset(
     {
         "contract_core_digest", "source_archive_digest", "seed_digest",
         "package_runtime_plan_digest", "host_provenance_digest",
+    }
+)
+_POST_V2_DIAGNOSTIC_REQUEST_KEYS = frozenset(
+    {"request_version", "mode", "diagnostic_contract", "diagnostic_contract_digest"}
+)
+_POST_V2_DIAGNOSTIC_CONTRACT_KEYS = frozenset(
+    {
+        "contract_core", "contract_core_digest", "environment_preimage",
+        "environment_digest",
+    }
+)
+_POST_V2_DIAGNOSTIC_CORE_KEYS = frozenset(
+    {
+        "contract_version", "contract_kind", "goal_record", "goal_record_digest",
+        "failed_v2_candidate", "failed_v2_tree",
+        "failed_qualification_v2_ledger_digest", "candidate", "tree", "attempt",
+        "source_files_digest", "canonical_profile_digest",
+        "raw_profile_artifact_digest", "base_image_digest", "max_attempts",
+        "allowed_phases", "non_authorizing",
+    }
+)
+_POST_V2_DIAGNOSTIC_GOAL_KEYS = frozenset(
+    {
+        "goal_version", "goal_kind", "user_scope_reference",
+        "predecessor_qualification_ledger_digest", "max_attempts",
+        "allowed_phases", "allowed_outcome", "forbidden_operations",
     }
 )
 _PACKAGE_RUNTIME_PLAN_KEYS = frozenset(
@@ -491,6 +535,88 @@ def _qualification_request_contract(
     return contract, digest
 
 
+def _post_v2_diagnostic_request_contract(
+    request: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    if (
+        type(request) is not dict
+        or frozenset(request) != _POST_V2_DIAGNOSTIC_REQUEST_KEYS
+        or request.get("request_version") != "2.1.0"
+        or request.get("mode") != POST_V2_DIAGNOSTIC_MODE
+    ):
+        _stop("M4_POST_V2_DIAGNOSTIC_REQUEST_MISMATCH")
+    contract = request["diagnostic_contract"]
+    if type(contract) is not dict or frozenset(contract) != (
+        _POST_V2_DIAGNOSTIC_CONTRACT_KEYS
+    ):
+        _stop("M4_POST_V2_DIAGNOSTIC_CONTRACT_MISMATCH")
+    core = contract["contract_core"]
+    environment = contract["environment_preimage"]
+    if (
+        type(core) is not dict
+        or frozenset(core) != _POST_V2_DIAGNOSTIC_CORE_KEYS
+        or type(environment) is not dict
+        or frozenset(environment) != _QUALIFICATION_ENVIRONMENT_KEYS
+    ):
+        _stop("M4_POST_V2_DIAGNOSTIC_CONTRACT_MISMATCH")
+    goal = core["goal_record"]
+    expected_goal = {
+        "goal_version": "1.0.0",
+        "goal_kind": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+        "user_scope_reference": POST_V2_DIAGNOSTIC_GOAL_REFERENCE,
+        "predecessor_qualification_ledger_digest": (
+            FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        ),
+        "max_attempts": 1,
+        "allowed_phases": ["provision", "run"],
+        "allowed_outcome": "SANITIZED_DIAGNOSTIC_ONLY",
+        "forbidden_operations": POST_V2_DIAGNOSTIC_FORBIDDEN_OPERATIONS,
+    }
+    if (
+        type(goal) is not dict
+        or frozenset(goal) != _POST_V2_DIAGNOSTIC_GOAL_KEYS
+        or _canonical(goal) != _canonical(expected_goal)
+        or core["contract_version"] != "1.0.0"
+        or core["contract_kind"] != "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC"
+        or core["goal_record_digest"] != _digest_bytes(_canonical(goal))
+        or core["failed_v2_candidate"] != FAILED_V2_CANDIDATE
+        or core["failed_v2_tree"] != FAILED_V2_TREE
+        or core["failed_qualification_v2_ledger_digest"]
+        != FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        or type(core["candidate"]) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", core["candidate"]) is None
+        or core["candidate"] == FAILED_V2_CANDIDATE
+        or type(core["tree"]) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", core["tree"]) is None
+        or core["tree"] == FAILED_V2_TREE
+        or type(core["attempt"]) is not int
+        or isinstance(core["attempt"], bool)
+        or core["attempt"] != 1
+        or not _is_digest(core["source_files_digest"])
+        or core["canonical_profile_digest"] != CANONICAL_PROFILE_DIGEST
+        or core["raw_profile_artifact_digest"] != CANONICAL_PROFILE_DIGEST
+        or core["base_image_digest"] != BASE_IMAGE_DIGEST
+        or type(core["max_attempts"]) is not int
+        or isinstance(core["max_attempts"], bool)
+        or core["max_attempts"] != 1
+        or core["allowed_phases"] != ["provision", "run"]
+        or core["non_authorizing"] is not True
+        or not all(_is_digest(item) for item in environment.values())
+    ):
+        _stop("M4_POST_V2_DIAGNOSTIC_CONTRACT_MISMATCH")
+    core_digest = _digest_bytes(_canonical(core))
+    contract_digest = _digest_bytes(_canonical(contract))
+    if (
+        contract["contract_core_digest"] != core_digest
+        or environment["contract_core_digest"] != core_digest
+        or contract["environment_digest"]
+        != _digest_bytes(_canonical(environment))
+        or request["diagnostic_contract_digest"] != contract_digest
+    ):
+        _stop("M4_POST_V2_DIAGNOSTIC_CONTRACT_DIGEST_MISMATCH")
+    return contract, contract_digest
+
+
 def _validate_launch_request(request: object) -> str:
     diagnostic_keys = frozenset(
         {
@@ -504,6 +630,9 @@ def _validate_launch_request(request: object) -> str:
     if frozenset(request) == _QUALIFICATION_REQUEST_KEYS:
         _qualification_request_contract(request)
         return "QUALIFICATION"
+    if frozenset(request) == _POST_V2_DIAGNOSTIC_REQUEST_KEYS:
+        _post_v2_diagnostic_request_contract(request)
+        return POST_V2_DIAGNOSTIC_MODE
     if frozenset(request) == diagnostic_keys:
         if (
             request["request_version"] != "1.1.0"
@@ -594,13 +723,13 @@ def _package_runtime_plan() -> dict[str, object]:
     return value
 
 
-def _verify_qualification_environment(
-    request: dict[str, object],
+def _verify_bound_environment(
+    contract: dict[str, object],
     source: dict[str, object],
     host_provenance: dict[str, object],
     profile: dict[str, object],
+    mismatch_reason: str,
 ) -> dict[str, object]:
-    contract, _ = _qualification_request_contract(request)
     core = contract["contract_core"]
     environment = contract["environment_preimage"]
     plan = _package_runtime_plan()
@@ -624,8 +753,40 @@ def _verify_qualification_environment(
         or _digest_bytes(_canonical(host_provenance))
         != environment["host_provenance_digest"]
     ):
-        _stop("M4_QUALIFICATION_ENVIRONMENT_MISMATCH")
+        _stop(mismatch_reason)
     return plan
+
+
+def _verify_qualification_environment(
+    request: dict[str, object],
+    source: dict[str, object],
+    host_provenance: dict[str, object],
+    profile: dict[str, object],
+) -> dict[str, object]:
+    contract, _ = _qualification_request_contract(request)
+    return _verify_bound_environment(
+        contract,
+        source,
+        host_provenance,
+        profile,
+        "M4_QUALIFICATION_ENVIRONMENT_MISMATCH",
+    )
+
+
+def _verify_post_v2_diagnostic_environment(
+    request: dict[str, object],
+    source: dict[str, object],
+    host_provenance: dict[str, object],
+    profile: dict[str, object],
+) -> dict[str, object]:
+    contract, _ = _post_v2_diagnostic_request_contract(request)
+    return _verify_bound_environment(
+        contract,
+        source,
+        host_provenance,
+        profile,
+        "M4_POST_V2_DIAGNOSTIC_ENVIRONMENT_MISMATCH",
+    )
 
 
 def _validate_run_state(value: object) -> dict[str, object]:
@@ -3359,6 +3520,33 @@ def _prepare_supply_key(profile: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _complete_post_v2_diagnostic(
+    request: dict[str, object],
+    keys: dict[str, RoleKey],
+    supply: dict[str, object],
+    runtime_trust: dict[str, object],
+) -> NoReturn:
+    contract, contract_digest = _post_v2_diagnostic_request_contract(request)
+    if KEY_ADMISSION.exists() or KEY_ADMISSION.is_symlink():
+        _stop("M4_POST_V2_DIAGNOSTIC_ADMISSION_FORBIDDEN")
+    ready = {
+        "ready_version": "2.1.0",
+        "mode": POST_V2_DIAGNOSTIC_MODE,
+        "non_authorizing": True,
+        "diagnostic_contract": contract,
+        "diagnostic_contract_digest": contract_digest,
+        "contract_core_digest": contract["contract_core_digest"],
+        "receipt_public_key_digests": {
+            name: key.public_key_digest for name, key in keys.items()
+        },
+        "supply_public_key_digest": supply["public_key_digest"],
+        "runtime_trust_digest": _digest_bytes(_canonical(runtime_trust)),
+    }
+    _write_exact(RUNTIME / "key-ready.json", _canonical(ready), 0o444)
+    _diagnostic_stage("KEY_READY_WRITTEN")
+    _stop("M4_POST_V2_DIAGNOSTIC_COMPLETE")
+
+
 def _await_key_admission(
     request: dict[str, object], keys: dict[str, RoleKey], supply: dict[str, object],
     runtime_trust: dict[str, object],
@@ -5023,6 +5211,10 @@ def _run_phase() -> None:
         package_runtime_plan = _verify_qualification_environment(
             request, source, host_provenance, profile
         )
+    elif request_mode == POST_V2_DIAGNOSTIC_MODE:
+        _verify_post_v2_diagnostic_environment(
+            request, source, host_provenance, profile
+        )
     elif request["candidate"] != source["commit"] or request["tree"] != source["tree"]:
         _stop("M4_DIAGNOSTIC_REQUEST_MISMATCH")
     _diagnostic_stage("REQUEST_VALIDATED")
@@ -5061,6 +5253,10 @@ def _run_phase() -> None:
     chain: dict[str, object] | None = None
     denial_events: list[dict[str, object]] = []
     try:
+        if request_mode == POST_V2_DIAGNOSTIC_MODE:
+            _complete_post_v2_diagnostic(
+                request, keys, supply_key, runtime_trust
+            )
         key_admission = _await_key_admission(
             request, keys, supply_key, runtime_trust
         )
@@ -5403,17 +5599,17 @@ def _run_phase() -> None:
 def _recover_phase() -> None:
     if os.geteuid() != 0:
         _stop("ROOT_SUPERVISOR_REQUIRED")
+    request = _strict_bytes(
+        _read_regular(QUALIFICATION_REQUEST, 1 << 20), 1 << 20
+    )
+    if _validate_launch_request(request) != "QUALIFICATION":
+        _stop("M4_RECOVERY_QUALIFICATION_CONTRACT_MISMATCH")
     profile = _profile()
     m3 = _load_m3()
     guest = m3._require_guest()
     source = m3._source_identity()
     host_provenance = m3._host_provenance()
     state = _validate_run_state(_strict_file(RUN_STATE, RUN_STATE_KEYS))
-    request = _strict_bytes(
-        _read_regular(QUALIFICATION_REQUEST, 1 << 20), 1 << 20
-    )
-    if _validate_launch_request(request) != "QUALIFICATION":
-        _stop("M4_RECOVERY_QUALIFICATION_CONTRACT_MISMATCH")
     contract, contract_digest = _qualification_request_contract(request)
     package_runtime_plan = _verify_qualification_environment(
         request, source, host_provenance, profile

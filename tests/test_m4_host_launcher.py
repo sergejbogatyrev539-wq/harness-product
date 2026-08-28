@@ -1362,6 +1362,571 @@ class M4HostLauncherTests(unittest.TestCase):
         self.assertNotIn("key-admission.json", source)
         self.assertNotIn('"recover"', source)
 
+    def test_post_v2_diagnostic_is_exact_single_use_and_captures_before_cleanup(self) -> None:
+        failed_candidate = "a2336eb987364cc6bff0fdcdc7d7bfb8b21b3db8"
+        failed_tree = "106facb47f1b203ed121917adfa7c885374d9fdc"
+        failed_lab = self.root / "failed-v2"
+        failed_goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
+        failed_contract = self.launcher._qualification_contract(
+            goal_reference=str(self.goal),
+            goal_digest=failed_goal_digest,
+            candidate=failed_candidate,
+            tree=failed_tree,
+            attempt=1,
+            source_files_digest="sha256:" + "a" * 64,
+            source_archive_digest="sha256:" + "b" * 64,
+            seed_digest="sha256:" + "c" * 64,
+            package_runtime_plan_digest="sha256:" + "d" * 64,
+            host_provenance_digest="sha256:" + "e" * 64,
+        )
+        with self.launcher.AttemptLedger(
+            failed_lab,
+            goal_reference=str(self.goal),
+            goal_digest=failed_goal_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            failed_start = ledger.begin(failed_contract)
+            ledger.terminalize(
+                failed_start, None, "FAILED", terminal_reason="KEY_READY_TIMEOUT"
+            )
+        failed_ledger = failed_lab / self.launcher.LEDGER_NAME
+        failed_raw = failed_ledger.read_bytes()
+        failed_digest = self.launcher._digest_bytes(failed_raw)
+        self.assertEqual(
+            self.launcher._verify_failed_v2_qualification_ledger(
+                failed_ledger, failed_digest
+            ),
+            failed_digest,
+        )
+        failed_rows = [json.loads(line) for line in failed_raw.splitlines()]
+        self.assertEqual(
+            [row["entry_type"] for row in failed_rows],
+            ["ATTEMPT_STARTED", "ATTEMPT_TERMINAL"],
+        )
+        self.assertEqual(failed_rows[-1]["terminal_reason"], "KEY_READY_TIMEOUT")
+        self.assertIsNone(failed_rows[-1]["key_admission_digest"])
+        mutated_predecessor = self.root / "mutated-v2-ledger.jsonl"
+        failed_rows[-1]["terminal_reason"] = "RUN_FAILED"
+        mutated_raw = b"\n".join(
+            self.launcher._canonical(row) for row in failed_rows
+        ) + b"\n"
+        mutated_predecessor.write_bytes(mutated_raw)
+        os.chmod(mutated_predecessor, 0o600)
+        with self.assertRaisesRegex(
+            self.launcher.QualificationStop,
+            "POST_V2_PREDECESSOR_NOT_EXACT_FAILED_ATTEMPT",
+        ):
+            self.launcher._verify_failed_v2_qualification_ledger(
+                mutated_predecessor,
+                self.launcher._digest_bytes(mutated_raw),
+            )
+
+        goal = self.launcher._post_v2_diagnostic_goal_record()
+        self.assertEqual(
+            goal,
+            {
+                "goal_version": "1.0.0",
+                "goal_kind": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+                "user_scope_reference": (
+                    "thread:/goal/m4-post-v2-pre-admission-diagnostic/2026-08-28"
+                ),
+                "predecessor_qualification_ledger_digest": (
+                    "sha256:c80f4eb33b811b59a4f80aee5fdf781964b441d20e1620ca4b1f2b63f30c479a"
+                ),
+                "max_attempts": 1,
+                "allowed_phases": ["provision", "run"],
+                "allowed_outcome": "SANITIZED_DIAGNOSTIC_ONLY",
+                "forbidden_operations": [
+                    "AUTOMATIC_RETRY",
+                    "KEY_ADMISSION_ARTIFACT",
+                    "QUALIFICATION_EVIDENCE_EXPORT",
+                    "QUALIFICATION_V2_LEDGER_WRITE",
+                    "REBOOT_OR_RECOVERY",
+                    "RUNTIME_VERIFIED_CLAIM",
+                    "WORKER_OR_EFFECT_EXECUTION",
+                ],
+            },
+        )
+        goal_digest = self.launcher._digest_bytes(self.launcher._canonical(goal))
+        self.assertEqual(len(self.launcher._canonical(goal)), 582)
+        self.assertEqual(
+            goal_digest,
+            "sha256:7e171d5a592859fc7a49e91ec1dca61d11ec326bbe1083ee5511f70163b9bc70",
+        )
+        contract = self.launcher._post_v2_diagnostic_contract(
+            goal_record=goal,
+            candidate="c" * 40,
+            tree="d" * 40,
+            source_files_digest="sha256:" + "1" * 64,
+            source_archive_digest="sha256:" + "2" * 64,
+            seed_digest="sha256:" + "3" * 64,
+            package_runtime_plan_digest="sha256:" + "4" * 64,
+            host_provenance_digest="sha256:" + "5" * 64,
+        )
+        self.assertEqual(
+            frozenset(contract),
+            {
+                "contract_core", "contract_core_digest",
+                "environment_preimage", "environment_digest",
+            },
+        )
+        core = contract["contract_core"]
+        self.assertEqual(core["goal_record_digest"], goal_digest)
+        self.assertEqual(core["failed_v2_candidate"], failed_candidate)
+        self.assertEqual(core["failed_v2_tree"], failed_tree)
+        self.assertEqual(core["max_attempts"], 1)
+        self.assertIs(core["non_authorizing"], True)
+        request = self.launcher._post_v2_diagnostic_request(contract)
+        self.assertEqual(
+            frozenset(request),
+            {
+                "request_version", "mode", "diagnostic_contract",
+                "diagnostic_contract_digest",
+            },
+        )
+        self.assertEqual(request["request_version"], "2.1.0")
+        self.assertEqual(request["mode"], "POST_V2_PRE_ADMISSION_DIAGNOSTIC")
+        ready = {
+            "ready_version": "2.1.0",
+            "mode": "POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+            "non_authorizing": True,
+            "diagnostic_contract": contract,
+            "diagnostic_contract_digest": (
+                self.launcher._post_v2_diagnostic_contract_digest(contract)
+            ),
+            "contract_core_digest": contract["contract_core_digest"],
+            "receipt_public_key_digests": {
+                role: "sha256:" + character * 64
+                for role, character in (
+                    ("M4_AUTHORITY", "6"),
+                    ("OBSERVER", "7"),
+                    ("PUBLISHER", "8"),
+                )
+            },
+            "supply_public_key_digest": "sha256:" + "9" * 64,
+            "runtime_trust_digest": "sha256:" + "a" * 64,
+        }
+        self.assertEqual(
+            self.launcher._validate_post_v2_key_ready(ready, contract), ready
+        )
+        with self.assertRaisesRegex(
+            self.launcher.QualificationStop, "POST_V2_KEY_READY_MALFORMED"
+        ):
+            self.launcher._validate_post_v2_key_ready(
+                {**ready, "non_authorizing": False}, contract
+            )
+
+        def rebound_core(**changes: object) -> dict[str, object]:
+            changed = json.loads(self.launcher._canonical(contract))
+            changed["contract_core"].update(changes)
+            changed["contract_core_digest"] = self.launcher._digest_bytes(
+                self.launcher._canonical(changed["contract_core"])
+            )
+            changed["environment_preimage"]["contract_core_digest"] = changed[
+                "contract_core_digest"
+            ]
+            changed["environment_digest"] = self.launcher._digest_bytes(
+                self.launcher._canonical(changed["environment_preimage"])
+            )
+            return changed
+
+        for mutation in (
+            {"attempt": True},
+            {"max_attempts": True},
+            {"candidate": failed_candidate},
+            {"tree": failed_tree},
+        ):
+            with self.subTest(contract_mutation=mutation), self.assertRaises(
+                self.launcher.QualificationStop
+            ):
+                self.launcher._validate_post_v2_diagnostic_contract(
+                    rebound_core(**mutation)
+                )
+
+        lab = self.root / "post-v2-diagnostic"
+        with self.launcher.PostV2DiagnosticLedger(
+            lab,
+            goal_record=goal,
+            clock=lambda: self.now,
+        ) as ledger:
+            started = ledger.begin(contract)
+            outcomes = {
+                phase: {
+                    "argv_digest": self.launcher._digest_bytes(
+                        self.launcher._canonical(
+                            self.launcher._qemu_argv(1, phase, lab=lab)
+                        )
+                    ),
+                    "return_code": 0 if phase == "provision" else 1,
+                }
+                for phase in ("provision", "run")
+            }
+            attempt_root = lab / "runs" / "attempt-1"
+            attempt_root.mkdir(parents=True, mode=0o700)
+            for phase in ("provision", "run"):
+                for suffix in ("qemu.log", "serial.log"):
+                    path = attempt_root / f"{phase}.{suffix}"
+                    path.write_text(
+                        "ordinary line\n-----BEGIN PRIVATE KEY----- forbidden\n",
+                        encoding="utf-8",
+                    )
+                    os.chmod(path, 0o600)
+            self.assertFalse((attempt_root / "key-admission.json").exists())
+            captured = self.launcher._capture_post_v2_qemu_logs(attempt_root)
+            captured_raw = self.launcher._canonical(captured)
+            self.assertNotIn(b"PRIVATE KEY", captured_raw)
+            self.assertNotIn(b"forbidden", captured_raw)
+            self.assertEqual(
+                frozenset(captured),
+                {
+                    "provision.qemu.log", "provision.serial.log",
+                    "run.qemu.log", "run.serial.log",
+                },
+            )
+            unavailable = {
+                name: "UNAVAILABLE" for name in self.launcher._SERVICE_PROPERTIES
+            }
+            artifact_digests = {
+                name: "sha256:" + character * 64
+                for name, character in (
+                    ("host_launcher", "6"), ("runner", "7"),
+                    ("service", "8"), ("profile", "9"),
+                )
+            }
+            record = self.launcher._sanitize_post_v2_diagnostic_record(
+                {
+                    "diagnostic_version": "2.0.0",
+                    "claim": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY",
+                    "status": "NOT_ATTESTED",
+                    "goal_record": goal,
+                    "goal_record_digest": goal_digest,
+                    "diagnostic_contract": contract,
+                    "diagnostic_contract_digest": (
+                        self.launcher._post_v2_diagnostic_contract_digest(contract)
+                    ),
+                    "contract_core_digest": contract["contract_core_digest"],
+                    "diagnostic_start_digest": started.digest,
+                    "boot_id": "UNAVAILABLE",
+                    "observed_terminal_reason": "SERVICE_FAILED_PRE_KEY_READY",
+                    "systemd_properties": unavailable,
+                    "unit_journal": ["unit failed"],
+                    "kernel_events": ["apparmor=DENIED"],
+                    "stage_markers": [],
+                    "artifact_digests": artifact_digests,
+                    "qemu_phase_outcomes": outcomes,
+                    "qemu_log_captures": captured,
+                    "key_ready_digest": None,
+                },
+                lab=lab,
+            )
+            bundle = self.launcher._materialize_post_v2_diagnostic_bundle(
+                lab, record
+            )
+            removed = self.launcher._cleanup_diagnostic_attempt(
+                attempt_root, lab=lab
+            )
+            self.assertFalse(attempt_root.exists())
+            retained = self.launcher._read_post_v2_diagnostic_bundle(
+                bundle, lab=lab
+            )
+            self.assertEqual(retained["qemu_log_captures"], captured)
+            self.assertEqual(
+                retained["observed_terminal_reason"],
+                "SERVICE_FAILED_PRE_KEY_READY",
+            )
+            self.assertNotIn("terminal_reason", retained)
+            self.assertNotIn(b"key-admission.json", bundle.read_bytes())
+            ledger.terminalize(
+                started,
+                "SERVICE_FAILED_PRE_KEY_READY",
+                diagnostic_bundle_digest=self.launcher._digest_file(
+                    bundle, 2 << 20
+                ),
+                key_ready_digest=None,
+                systemd_properties_digest=self.launcher._digest_bytes(
+                    self.launcher._canonical(unavailable)
+                ),
+                cleanup_digest=self.launcher._digest_bytes(
+                    self.launcher._canonical(
+                        {"complete": True, "removed": sorted(removed)}
+                    )
+                ),
+                qemu_phase_outcomes=outcomes,
+            )
+        ledger_path = lab / "m4-post-v2-diagnostic-ledger.jsonl"
+        rows = [json.loads(line) for line in ledger_path.read_bytes().splitlines()]
+        self.assertEqual(
+            [row["entry_type"] for row in rows],
+            ["DIAGNOSTIC_STARTED", "DIAGNOSTIC_TERMINAL"],
+        )
+        self.assertNotIn("KEY_ADMITTED", {row["entry_type"] for row in rows})
+        self.assertEqual(rows[0]["diagnostic_contract"], contract)
+        self.assertEqual(rows[1]["diagnostic_start_digest"], started.digest)
+        self.assertEqual(rows[1]["previous_entry_digest"], started.digest)
+        self.assertEqual(
+            rows[1]["terminal_reason"], "SERVICE_FAILED_PRE_KEY_READY"
+        )
+        self.assertNotIn("observed_terminal_reason", rows[1])
+        self.assertTrue(all(row["max_attempts"] == 1 for row in rows))
+        self.assertTrue(
+            all(
+                row["failed_qualification_v2_ledger_digest"]
+                == goal["predecessor_qualification_ledger_digest"]
+                for row in rows
+            )
+        )
+        for field in ("sequence", "max_attempts", "attempt"):
+            mutation_lab = self.root / f"ledger-{field}-float"
+            mutation_lab.mkdir(mode=0o700)
+            changed_rows = json.loads(json.dumps(rows))
+            targets = changed_rows[:1] if field == "sequence" else changed_rows
+            for row in targets:
+                row[field] = 1.0
+            first_raw = self.launcher._canonical(changed_rows[0])
+            changed_rows[1]["previous_entry_digest"] = (
+                self.launcher._digest_bytes(first_raw)
+            )
+            changed_rows[1]["diagnostic_start_digest"] = (
+                self.launcher._digest_bytes(first_raw)
+            )
+            mutation_raw = first_raw + b"\n" + self.launcher._canonical(
+                changed_rows[1]
+            ) + b"\n"
+            mutation_path = (
+                mutation_lab / self.launcher.POST_V2_DIAGNOSTIC_LEDGER_NAME
+            )
+            mutation_path.write_bytes(mutation_raw)
+            os.chmod(mutation_path, 0o600)
+            with self.subTest(ledger_float_field=field), self.assertRaises(
+                self.launcher.QualificationStop
+            ):
+                with self.launcher.PostV2DiagnosticLedger(
+                    mutation_lab,
+                    goal_record=goal,
+                    clock=lambda: self.now,
+                ):
+                    pass
+        with self.launcher.PostV2DiagnosticLedger(
+            lab,
+            goal_record=goal,
+            clock=lambda: self.now,
+        ) as ledger:
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop,
+                "POST_V2_DIAGNOSTIC_ATTEMPT_LIMIT_REACHED",
+            ):
+                ledger.begin(contract)
+        self.assertEqual(
+            set(removed),
+            {
+                "provision.qemu.log", "provision.serial.log",
+                "run.qemu.log", "run.serial.log",
+            },
+        )
+
+        source = inspect.getsource(self.launcher._post_v2_pre_admission_diagnostic)
+        self.assertLess(
+            source.index("_capture_post_v2_qemu_logs"),
+            source.index("_cleanup_diagnostic_attempt"),
+        )
+        for forbidden in (
+            ".admit(", "_key_admission(", "key-admission.json",
+            '"recover"', "_export_bundle(", "_verify_bundle(",
+        ):
+            self.assertNotIn(forbidden, source)
+
+        immutable_paths = [
+            self.root / "old-qualification-ledger.jsonl",
+            self.root / "old-diagnostic-ledger.jsonl",
+            self.root / "old-diagnostic-bundle.json",
+        ]
+        for index, path in enumerate(immutable_paths):
+            path.write_bytes(f"immutable-{index}\n".encode("ascii"))
+            os.chmod(path, 0o444)
+        immutable_snapshot = [
+            (path.read_bytes(), path.stat().st_mode) for path in immutable_paths
+        ]
+        crash_lab = self.root / "post-v2-after-start-failure"
+        created_names = {
+            "seed.iso", "ssh-client", "ssh-client.pub", "ssh-host",
+            "ssh-host.pub", "user-data", "meta-data", "source.tgz",
+        }
+
+        def fake_seed(
+            attempt_root: Path, **_kwargs: object
+        ) -> tuple[Path, Path, Path]:
+            for name in created_names:
+                (attempt_root / name).write_bytes(b"disposable")
+                os.chmod(attempt_root / name, 0o600)
+            return (
+                attempt_root / "seed.iso",
+                attempt_root / "ssh-client",
+                attempt_root / "ssh-host",
+            )
+
+        def fake_known_hosts(_public: Path, output: Path) -> None:
+            output.write_bytes(b"known host\n")
+            os.chmod(output, 0o600)
+
+        def fake_overlay(attempt_root: Path) -> Path:
+            overlay = attempt_root / "overlay.qcow2"
+            overlay.write_bytes(b"overlay")
+            os.chmod(overlay, 0o600)
+            return overlay
+
+        def phase_outcome(phase: str) -> dict[str, object]:
+            return {
+                "argv_digest": self.launcher._digest_bytes(
+                    self.launcher._canonical(
+                        self.launcher._qemu_argv(
+                            1,
+                            phase,
+                            lab=self.launcher.POST_V2_DIAGNOSTIC_LAB,
+                        )
+                    )
+                ),
+                "return_code": 0,
+            }
+
+        def fake_provision(
+            attempt_root: Path, *_args: object, **_kwargs: object
+        ) -> tuple[list[Path], dict[str, object]]:
+            for name in ("host-provenance.json", "qualification.json"):
+                (attempt_root / name).write_bytes(b"disposable")
+                os.chmod(attempt_root / name, 0o600)
+            return [], phase_outcome("provision")
+
+        def fake_run(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+            properties = {
+                "ActiveState": "failed",
+                "SubState": "failed",
+                "Result": "exit-code",
+                "ExecMainCode": "1",
+                "ExecMainStatus": "1",
+            }
+            return (
+                {
+                    "terminal_reason": "SERVICE_FAILED_PRE_KEY_READY",
+                    "key_ready": None,
+                    "systemd_properties": properties,
+                    "qemu_return_code": None,
+                },
+                "12345678-1234-1234-1234-123456789abc",
+                ["unit failed"],
+                ["apparmor=DENIED"],
+                [],
+                phase_outcome("run"),
+            )
+
+        with (
+            mock.patch.object(
+                self.launcher, "POST_V2_DIAGNOSTIC_LAB", crash_lab
+            ),
+            mock.patch.object(
+                self.launcher,
+                "_verify_failed_v2_qualification_ledger",
+                return_value=goal["predecessor_qualification_ledger_digest"],
+            ),
+            mock.patch.object(
+                self.launcher,
+                "_source_state",
+                return_value={
+                    "commit": "e" * 40,
+                    "tree": "f" * 40,
+                    "files": {},
+                    "files_digest": "sha256:" + "b" * 64,
+                },
+            ),
+            mock.patch.object(
+                self.launcher,
+                "_profile",
+                return_value=({}, self.launcher._M4_PROFILE_DIGEST),
+            ),
+            mock.patch.object(
+                self.launcher,
+                "_verify_host_assets",
+                return_value=({"sha256": self.launcher._IMAGE_DIGEST}, "QEMU test"),
+            ),
+            mock.patch.object(self.launcher, "_verify_host_tools", return_value={}),
+            mock.patch.object(self.launcher, "_verify_kvm"),
+            mock.patch.object(self.launcher, "_verify_management_port_free"),
+            mock.patch.object(self.launcher, "_verify_disk_budget", return_value=1),
+            mock.patch.object(self.launcher, "_create_seed", side_effect=fake_seed),
+            mock.patch.object(
+                self.launcher, "_known_hosts", side_effect=fake_known_hosts
+            ),
+            mock.patch.object(
+                self.launcher,
+                "_host_provenance",
+                return_value={"image": {}, "vm": {}},
+            ),
+            mock.patch.object(
+                self.launcher, "_create_overlay", side_effect=fake_overlay
+            ),
+            mock.patch.object(
+                self.launcher, "_provision_vm", side_effect=fake_provision
+            ),
+            mock.patch.object(
+                self.launcher,
+                "_run_post_v2_diagnostic_vm_phase",
+                side_effect=fake_run,
+            ),
+            mock.patch.object(
+                self.launcher,
+                "_materialize_post_v2_diagnostic_bundle",
+                side_effect=self.launcher.QualificationStop("CAPTURE_STORE_FAILED"),
+            ) as materialize,
+            mock.patch.object(self.launcher, "OLD_LEDGER", immutable_paths[0]),
+            mock.patch.object(
+                self.launcher, "PREDECESSOR_DIAGNOSTIC_LEDGER", immutable_paths[1]
+            ),
+            mock.patch.object(
+                self.launcher, "PREDECESSOR_DIAGNOSTIC_BUNDLE", immutable_paths[2]
+            ),
+        ):
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop, "CAPTURE_STORE_FAILED"
+            ):
+                self.launcher._post_v2_pre_admission_diagnostic()
+            self.assertFalse((crash_lab / "runs" / "attempt-1").exists())
+            unproven_lab = self.root / "post-v2-vm-cleanup-unproven"
+            self.launcher.POST_V2_DIAGNOSTIC_LAB = unproven_lab
+            materialize.side_effect = self.launcher.VMCleanupUnproven(
+                "VM_CLEANUP_UNPROVEN"
+            )
+            with self.assertRaisesRegex(
+                self.launcher.VMCleanupUnproven, "VM_CLEANUP_UNPROVEN"
+            ):
+                self.launcher._post_v2_pre_admission_diagnostic()
+        self.assertFalse((crash_lab / "runs" / "attempt-1").exists())
+        self.assertTrue((unproven_lab / "runs" / "attempt-1").is_dir())
+        self.assertEqual(
+            immutable_snapshot,
+            [(path.read_bytes(), path.stat().st_mode) for path in immutable_paths],
+        )
+        self.assertEqual(failed_ledger.read_bytes(), failed_raw)
+
+        output = tempfile.TemporaryFile(mode="w+b")
+        stdout = mock.Mock(buffer=output)
+        with (
+            mock.patch.object(self.launcher.sys, "stdout", stdout),
+            mock.patch.object(
+                self.launcher,
+                "_post_v2_pre_admission_diagnostic",
+                side_effect=self.launcher.QualificationStop("EXPECTED_FAILURE"),
+            ),
+        ):
+            self.assertEqual(
+                self.launcher.main(["--post-v2-pre-admission-diagnostic"]), 1
+            )
+        output.seek(0)
+        failure = json.loads(output.read())
+        output.close()
+        self.assertEqual(
+            failure["claim"], "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY"
+        )
+        self.assertNotIn("M4_EXACT_DISPOSABLE", failure["claim"])
+
 
 if __name__ == "__main__":
     unittest.main()
