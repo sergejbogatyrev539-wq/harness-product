@@ -243,11 +243,22 @@ acting; process-blind reviewers do not. The live record is not part of a runtime
 candidate. No report, passing test, or roadmap transition starts another attempt
 or milestone without fresh user authority.
 
-No reviewed host VM entrypoint or append-only *qualification-attempt* ledger
-exists yet, so a new full VM cycle is forbidden. This is distinct from the M4
-contract-attempt ledger above. A future launcher must consume the exact
-candidate/environment/ceiling/user-scope tuple once before launch and reject
-replay across restart or handoff.
+The repository-owned, test-covered entrypoint for a new physical M4 qualification
+is `scripts/run_m4_host_qualification.py --one-use-scope <scope-projection>`.
+This request-bound one-use path consumes a fresh append-only
+*qualification-attempt* ledger for the exact candidate, environment, ceiling,
+and user-scope binding before VM start, rejects replay across restart or
+handoff, and is distinct from the M4 contract-attempt ledger above. It is not a
+production or general launcher, runtime attestation, or source of authority.
+The no-argument and diagnostic/discriminator modes are historical regression
+paths only and are not paths for new work.
+
+An open or failed M4 runtime attestation blocks only that exact runtime claim.
+It does not block separately authorized code implementation for M5, M6, or M7.
+Those milestones inherit no M4 evidence, bypass none of their own gates, and do
+not advance `STATUS.json` without their own implementation, checks, and
+evidence. No report, passing test, roadmap transition, or launcher presence
+starts a qualification or milestone without exact user authority.
 
 ## Evidence and profiles
 

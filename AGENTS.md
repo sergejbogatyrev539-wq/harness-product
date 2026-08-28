@@ -130,24 +130,33 @@ is guest-only and never a developer-host fallback.
   preflight -> VM -> same-candidate live-lab bundle verification.
 - Debug host verifiers and evidence parsers against synthetic fixtures. Do not
   regenerate VM evidence merely to diagnose host parsing.
-- There is no reviewed host VM launcher or append-only attempt ledger in the
-  repository. Therefore full VM launch is currently `FORBIDDEN`, even if a
-  report recommends it. Do not reconstruct the old ad hoc QEMU/SSH/systemd
-  sequence.
-- A future reviewed host entrypoint must atomically consume one append-only
-  attempt record for the exact `(candidate digest, environment digest, ceiling,
-  user-scope reference)` before `fresh boot -> run -> reboot -> recover ->
-  bundle -> verify`. A second start for that pair must fail closed across
-  restart, handoff, and compaction.
-- If that cycle exposes a product defect, first add a focused regression and
-  change the candidate. Do not rerun the full cycle on unchanged bytes.
-- An environment repair creates a new environment digest; a product repair
-  creates a new candidate digest. Either continuation still requires authority
-  from the current user task or a fresh user instruction.
+- The sole repository-owned path for a new physical M4 qualification is
+  `.venv/bin/python scripts/run_m4_host_qualification.py --one-use-scope
+  <scope-projection>`. It is limited to the exact disposable M4 test profile;
+  it is not a production or general launcher, attestation, or source of
+  authority.
+- The launcher modes `no-argument`, `--key-ready-diagnostic`,
+  `--post-v2-pre-admission-diagnostic`, and
+  `--package-runtime-plan-discriminator` are historical regression paths only.
+  Never use them for new work or add a diagnostic mode, lab, ledger, CLI flag,
+  output schema, or retry framework.
+- A failed or absent qualification grants no VM launch or remediation authority.
+  Diagnose with an existing focused unit or host-fixture reproduction, add one
+  regression, and make only the minimum product fix authorized by the task.
+- A further physical qualification requires a separate exact user task, a
+  changed exact candidate or environment, a fresh canonical one-use scope
+  projection, and a fresh append-only one-use ledger. The repository-owned one-use entrypoint
+  must consume the sole attempt before VM start and reject a second start across
+  failure, restart, handoff, or compaction. Never retry unchanged exact bytes or
+  enlarge the attempt ceiling.
 - A success target never enlarges an attempt ceiling. Every failed, blocked,
-  retried, restarted, or nested attempt counts. Changing the candidate, frozen
-  packet, environment, or ceiling ends the old exact-bound qualification
-  contract and requires fresh explicit user authority to continue.
+  restarted, or nested attempt counts against its exact contract.
+- M4 repository/code-model conformance and M4 runtime attestation are separate.
+  An open or failed M4 attestation blocks only the corresponding runtime claim;
+  it does not block separately authorized M5/M6/M7 implementation. Such work may
+  not inherit M4 evidence, bypass its own gates, or advance `STATUS.json`.
+- A roadmap, report, test, or launcher presence never grants task authority.
+  `automatic_continuation` remains `FORBIDDEN`.
 
 ## 6. Checkpoints and completion
 

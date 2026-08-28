@@ -1,10 +1,10 @@
 {
   "meta": {"format_version": "1.0.0", "record_kind": "NON_AUTHORIZING_WORK_CONTEXT", "authority": "NONE", "owner": "ROOT_CONTROLLER"},
-  "task": {"task_id": null, "status": "IDLE", "user_scope_reference": null, "active_milestone": null, "last_product_commit": "437ee01ca331cd7e4632fb8ad55eaa894254daa9"},
+  "task": {"task_id": null, "status": "IDLE", "user_scope_reference": null, "active_milestone": null, "last_product_commit": "01f2211291915cbac12fcb2da9c9db5ec1f4f6f3"},
   "invariant": null,
   "oracle": {"command": null, "expected": null},
   "progress": {"working_set": [], "last_check": null, "cause": null, "diagnostic_attempts": 0},
-  "qualification": {"candidate_environment_pair": null, "attempt_ledger": "ABSENT", "vm_start": "FORBIDDEN_WITHOUT_REVIEWED_HOST_ENTRYPOINT"},
+  "qualification": {"candidate_environment_pair": null, "attempt_ledger": "ABSENT", "vm_start": "FORBIDDEN_WITHOUT_EXACT_ONE_USE_SCOPE"},
   "continuation": {"next_step_hint": "STOP_AWAIT_EXPLICIT_USER_GOAL", "automatic_continuation": "FORBIDDEN"},
-  "notes": ["Historical M3 evidence binds product commit 437ee01ca331cd7e4632fb8ad55eaa894254daa9 only.", "M4 is not authorized." ]
+  "notes": ["This record is milestone-neutral, non-authorizing coordination data; it grants no task, runtime, qualification, remediation, retry, or status authority.", "The repository-owned one-use launcher still requires an exact external user scope and a fresh unconsumed contract.", "Legacy launcher modes are historical regression paths only; open attestation does not block separately authorized milestone implementation."]
 }

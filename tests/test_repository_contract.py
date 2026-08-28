@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import unittest
@@ -81,7 +82,10 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn(qualification["attempt_ledger"], {"ABSENT", "PRESENT"})
         if qualification["attempt_ledger"] == "ABSENT":
             self.assertIsNone(pair)
-            self.assertEqual(qualification["vm_start"], "FORBIDDEN_WITHOUT_REVIEWED_HOST_ENTRYPOINT")
+            self.assertEqual(
+                qualification["vm_start"],
+                "FORBIDDEN_WITHOUT_EXACT_ONE_USE_SCOPE",
+            )
         else:
             self.assertEqual(set(pair), {"candidate_digest", "environment_digest"})
             self.assertRegex(pair["candidate_digest"], r"^sha256:[0-9a-f]{64}$")
@@ -114,6 +118,10 @@ class RepositoryContractTests(unittest.TestCase):
     def test_agent_workflow_is_closed_non_authorizing_and_compaction_safe(self) -> None:
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         normalized_agents = " ".join(agents.split())
+        architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(
+            encoding="utf-8"
+        )
+        normalized_architecture = " ".join(architecture.split())
         template_path = ROOT / "WORKING_CONTEXT.template.json"
         template = json.loads(template_path.read_text(encoding="utf-8"))
 
@@ -123,9 +131,19 @@ class RepositoryContractTests(unittest.TestCase):
             "automatic_continuation` is always `FORBIDDEN`",
             "Do not run it after every small edit.",
             "Do not rerun an unchanged failed command without a new hypothesis.",
-            "There is no reviewed host VM launcher or append-only attempt ledger",
-            "A future reviewed host entrypoint must atomically consume one append-only attempt record",
+            "The sole repository-owned path for a new physical M4 qualification is",
+            "historical regression paths only.",
+            "Never use them for new work or add a diagnostic mode, lab, ledger, CLI flag, output schema, or retry framework.",
+            "A failed or absent qualification grants no VM launch or remediation authority.",
+            "Diagnose with an existing focused unit or host-fixture reproduction, add one regression, and make only the minimum product fix authorized by the task.",
+            "A further physical qualification requires a separate exact user task",
+            "changed exact candidate or environment, a fresh canonical one-use scope projection, and a fresh append-only one-use ledger.",
+            "Never retry unchanged exact bytes or enlarge the attempt ceiling.",
             "A success target never enlarges an attempt ceiling.",
+            "M4 repository/code-model conformance and M4 runtime attestation are separate.",
+            "it does not block separately authorized M5/M6/M7 implementation.",
+            "not inherit M4 evidence, bypass its own gates, or advance `STATUS.json`.",
+            "A roadmap, report, test, or launcher presence never grants task authority.",
             "Do not start the next milestone or a new review cycle.",
             "a formally process-blind reviewer reads only its frozen review packet",
             "`scripts/check.py` is the sole repository-level development conformance harness.",
@@ -135,8 +153,69 @@ class RepositoryContractTests(unittest.TestCase):
         for rule in required_rules:
             self.assertIn(rule, normalized_agents)
 
+        expensive_gate = agents.split("## 5. Expensive-gate protocol", 1)[1].split(
+            "## 6. Checkpoints and completion", 1
+        )[0]
+        self.assertEqual(
+            set(re.findall(r"--[a-z0-9-]+", expensive_gate)),
+            {
+                "--one-use-scope",
+                "--key-ready-diagnostic",
+                "--post-v2-pre-admission-diagnostic",
+                "--package-runtime-plan-discriminator",
+            },
+        )
+        self.assertIn("`no-argument`", expensive_gate)
+        self.assertNotIn("There is no reviewed host VM launcher", normalized_agents)
+        self.assertNotIn("A future reviewed host entrypoint", normalized_agents)
+
+        launcher = (ROOT / "scripts" / "run_m4_host_qualification.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'elif len(arguments) == 2 and arguments[0] == "--one-use-scope":',
+            launcher,
+        )
+        self.assertIn(
+            "result = _one_use_qualification(Path(arguments[1]))",
+            launcher,
+        )
+
+        for rule in (
+            "repository-owned, test-covered entrypoint for a new physical M4 qualification",
+            "request-bound one-use path",
+            "not a production or general launcher, runtime attestation, or source of authority",
+            "An open or failed M4 runtime attestation blocks only that exact runtime claim.",
+            "It does not block separately authorized code implementation for M5, M6, or M7.",
+            "inherit no M4 evidence, bypass none of their own gates, and do not advance `STATUS.json`",
+        ):
+            self.assertIn(rule, normalized_architecture)
+        self.assertNotIn("No reviewed host VM entrypoint", normalized_architecture)
+        self.assertNotIn("A future launcher must consume", normalized_architecture)
+
         self.assertEqual(len(template_path.read_text(encoding="utf-8").splitlines()), 10)
         self._assert_work_context(template)
+        self.assertEqual(
+            template["task"]["last_product_commit"],
+            "01f2211291915cbac12fcb2da9c9db5ec1f4f6f3",
+        )
+        self.assertEqual(
+            template["qualification"],
+            {
+                "candidate_environment_pair": None,
+                "attempt_ledger": "ABSENT",
+                "vm_start": "FORBIDDEN_WITHOUT_EXACT_ONE_USE_SCOPE",
+            },
+        )
+        self.assertEqual(
+            template["notes"],
+            [
+                "This record is milestone-neutral, non-authorizing coordination data; it grants no task, runtime, qualification, remediation, retry, or status authority.",
+                "The repository-owned one-use launcher still requires an exact external user scope and a fresh unconsumed contract.",
+                "Legacy launcher modes are historical regression paths only; open attestation does not block separately authorized milestone implementation.",
+            ],
+        )
+        self.assertNotIn("M4 is not authorized", " ".join(template["notes"]))
         self.assertIn(".agent/", (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
         live_path = ROOT / ".agent" / "WORKING_CONTEXT.json"
         if live_path.exists():
@@ -147,6 +226,30 @@ class RepositoryContractTests(unittest.TestCase):
             mutated["continuation"]["next_step_hint"] = hint
             with self.subTest(hint=hint), self.assertRaises(AssertionError):
                 self._assert_work_context(mutated)
+
+        for vm_start in (
+            "FORBIDDEN_WITHOUT_REVIEWED_HOST_ENTRYPOINT",
+            "NOT_CONSUMED",
+            "CONSUMED",
+            "RUN_FULL_VM",
+            "UNKNOWN",
+        ):
+            mutated = json.loads(json.dumps(template))
+            mutated["qualification"]["vm_start"] = vm_start
+            with self.subTest(vm_start=vm_start), self.assertRaises(AssertionError):
+                self._assert_work_context(mutated)
+
+        for vm_start in ("NOT_CONSUMED", "CONSUMED"):
+            present = json.loads(json.dumps(template))
+            present["qualification"] = {
+                "candidate_environment_pair": {
+                    "candidate_digest": "sha256:" + "a" * 64,
+                    "environment_digest": "sha256:" + "b" * 64,
+                },
+                "attempt_ledger": "PRESENT",
+                "vm_start": vm_start,
+            }
+            self._assert_work_context(present)
 
         self.assertLessEqual(len(agents.splitlines()), 180)
 
