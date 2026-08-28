@@ -270,6 +270,195 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 one_use_scope=second_scope,
             )
 
+    def test_post_key_run_failure_record_is_closed_ordered_and_bound(self) -> None:
+        _bundle, ledger, _source, goal_reference, goal_digest = self._fixture()
+        started, admitted, terminal = [
+            json.loads(line) for line in ledger.read_bytes().splitlines()
+        ]
+        start_digest = _digest_bytes(_canonical(started))
+        admission_digest = _digest_bytes(_canonical(admitted))
+        common = {
+            name: admitted[name]
+            for name in self.module._LEDGER_COMMON
+        }
+
+        def rows(
+            *,
+            reason: str = "M4_RUNTIME_JOIN_FAILED",
+            stage: str = "POST_KEY_RUN_SERVICE_FAILED",
+            attempt_start_digest: str = start_digest,
+            key_admission_digest: str = admission_digest,
+            terminal_reason: str = "RUN_FAILED",
+            extra: dict[str, object] | None = None,
+        ) -> list[dict[str, object]]:
+            failure = {
+                **common,
+                "sequence": 3,
+                "previous_entry_digest": admission_digest,
+                "entry_type": "POST_KEY_RUN_FAILURE",
+                "attempt_start_digest": attempt_start_digest,
+                "key_admission_digest": key_admission_digest,
+                "failure_stage": stage,
+                "reason": reason,
+                **({} if extra is None else extra),
+            }
+            failed_terminal = {
+                **terminal,
+                "sequence": 4,
+                "previous_entry_digest": _digest_bytes(_canonical(failure)),
+                "result": "QUARANTINED",
+                "terminal_reason": terminal_reason,
+                "manifest_digest": None,
+                "signed_payload_bundle_digest": None,
+                "qemu_phase_outcomes": None,
+            }
+            return [deepcopy(started), deepcopy(admitted), failure, failed_terminal]
+
+        def parse(value: list[dict[str, object]]) -> list[tuple[dict[str, object], str]]:
+            return self.module._ledger_entries(
+                b"".join(_canonical(row) + b"\n" for row in value),
+                now=self.now,
+                goal_reference=goal_reference,
+                goal_digest=goal_digest,
+            )
+
+        accepted = parse(rows())
+        self.assertEqual(
+            [row["entry_type"] for row, _digest in accepted],
+            [
+                "ATTEMPT_STARTED",
+                "KEY_ADMITTED",
+                "POST_KEY_RUN_FAILURE",
+                "ATTEMPT_TERMINAL",
+            ],
+        )
+        self.assertEqual(accepted[2][0]["reason"], "M4_RUNTIME_JOIN_FAILED")
+        self.assertEqual(parse(rows(reason="UNAVAILABLE"))[2][0]["reason"], "UNAVAILABLE")
+        self.assertEqual(
+            parse(rows(terminal_reason="CLEANUP_FAILED"))[-1][0]["terminal_reason"],
+            "CLEANUP_FAILED",
+        )
+
+        projection = {
+            "record_version": "1.0.0",
+            "record_kind": "M4_ONE_USE_QUALIFICATION_SCOPE_PROJECTION",
+            "authority": "NONE",
+            "user_scope_reference": "thread:/goal/post-key-run-failure",
+            "candidate": started["candidate"],
+            "tree": started["tree"],
+            "max_attempts": 1,
+            "success_target": 1,
+            "success_target_authorizing": False,
+            "predecessor_qualification_ledger_digest": (
+                self.module._ONE_USE_PREDECESSOR_QUALIFICATION_LEDGER_DIGEST
+            ),
+            "predecessor_diagnostic_ledger_digest": (
+                self.module._ONE_USE_PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+            ),
+            "predecessor_diagnostic_bundle_digest": (
+                self.module._ONE_USE_PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST
+            ),
+        }
+        one_use = rows()
+        contract = deepcopy(started["qualification_contract"])
+        core = contract["contract_core"]
+        core.update(
+            contract_version="3.0.0",
+            contract_kind=self.module._ONE_USE_QUALIFICATION_CONTRACT_KIND,
+            scope_projection=projection,
+            user_scope_reference=projection["user_scope_reference"],
+            user_goal_digest=_digest_bytes(_canonical(projection)),
+            max_attempts=1,
+            predecessor_qualification_ledger_digest=(
+                projection["predecessor_qualification_ledger_digest"]
+            ),
+            predecessor_diagnostic_ledger_digest=(
+                projection["predecessor_diagnostic_ledger_digest"]
+            ),
+            predecessor_diagnostic_bundle_digest=(
+                projection["predecessor_diagnostic_bundle_digest"]
+            ),
+        )
+        core_digest = _digest_bytes(_canonical(core))
+        contract["contract_core_digest"] = core_digest
+        contract["environment_preimage"]["contract_core_digest"] = core_digest
+        environment = _digest_bytes(_canonical(contract["environment_preimage"]))
+        contract["environment_digest"] = environment
+        contract_digest = _digest_bytes(_canonical(contract))
+        for row in one_use:
+            row.update(
+                ledger_version="3.0.0",
+                environment=environment,
+                user_scope_reference=projection["user_scope_reference"],
+                user_goal_digest=core["user_goal_digest"],
+                max_attempts=1,
+                contract_core_digest=core_digest,
+                qualification_contract_digest=contract_digest,
+            )
+        one_use[0]["qualification_contract"] = contract
+        one_use_start_digest = _digest_bytes(_canonical(one_use[0]))
+        one_use[1].update(
+            previous_entry_digest=one_use_start_digest,
+            attempt_start_digest=one_use_start_digest,
+            admitted_qualification_contract_digest=contract_digest,
+        )
+        one_use_key_digest = _digest_bytes(_canonical(one_use[1]))
+        one_use[2].update(
+            previous_entry_digest=one_use_key_digest,
+            attempt_start_digest=one_use_start_digest,
+            key_admission_digest=one_use_key_digest,
+        )
+        one_use[3].update(
+            previous_entry_digest=_digest_bytes(_canonical(one_use[2])),
+            attempt_start_digest=one_use_start_digest,
+            key_admission_digest=one_use_key_digest,
+        )
+        checked_one_use = self.module._ledger_entries(
+            b"".join(_canonical(row) + b"\n" for row in one_use),
+            now=self.now,
+            goal_reference=str(projection["user_scope_reference"]),
+            goal_digest=str(core["user_goal_digest"]),
+            mode=self.module._ONE_USE_MODE,
+            one_use_scope=projection,
+            lab=self.root / "one-use-lab",
+        )
+        self.assertEqual(len(checked_one_use), 4)
+
+        mutations = {
+            "extra-field": rows(extra={"journal": "forbidden"}),
+            "attempt-start-digest": rows(
+                attempt_start_digest="sha256:" + "0" * 64
+            ),
+            "key-admission-digest": rows(
+                key_admission_digest="sha256:" + "0" * 64
+            ),
+            "environment-binding": rows(
+                extra={"environment": "sha256:" + "0" * 64}
+            ),
+            "wrong-stage": rows(stage="PRE_KEY_RUN_SERVICE_FAILED"),
+            "malformed-stage": rows(stage=["POST_KEY_RUN_SERVICE_FAILED"]),
+            "forged-reason": rows(reason="FORGED_REASON"),
+            "malformed-reason": rows(reason={"reason": "M4_RUNTIME_JOIN_FAILED"}),
+            "wrong-terminal-reason": rows(
+                terminal_reason="EVIDENCE_EXPORT_FAILED"
+            ),
+        }
+        wrong_order = rows()
+        wrong_order[2], wrong_order[3] = wrong_order[3], wrong_order[2]
+        for sequence, row in enumerate(wrong_order, 1):
+            row["sequence"] = sequence
+            row["previous_entry_digest"] = (
+                None
+                if sequence == 1
+                else _digest_bytes(_canonical(wrong_order[sequence - 2]))
+            )
+        mutations["wrong-order"] = wrong_order
+        for name, value in mutations.items():
+            with self.subTest(name=name), self.assertRaises(
+                self.module._InvalidEvidence
+            ):
+                parse(value)
+
     def _key(self, name: str) -> dict[str, object]:
         directory = self.root / name
         directory.mkdir(mode=0o700)

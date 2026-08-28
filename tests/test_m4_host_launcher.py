@@ -934,6 +934,241 @@ class M4HostLauncherTests(unittest.TestCase):
         self.assertEqual(rows[-1]["terminal_reason"], "RUN_FAILED")
         self.assertIsNone(rows[-1]["qemu_phase_outcomes"])
 
+    def test_post_key_run_failure_is_sanitized_bound_and_terminalized(self) -> None:
+        exact_stop = self.launcher._canonical(
+            {
+                "outcome": "STOP",
+                "reason": "M4_ROLE_FAILED",
+                "status": "NOT_ATTESTED",
+            }
+        )
+        self.assertEqual(
+            self.launcher._post_key_run_failure_reason(exact_stop + b"\n"),
+            "M4_ROLE_FAILED",
+        )
+        unrelated = self.launcher._canonical(
+            {"reason": "ordinary diagnostic", "status": "NON_AUTHORIZING"}
+        )
+        self.assertEqual(
+            self.launcher._post_key_run_failure_reason(
+                unrelated + b"\n" + exact_stop + b"\n"
+            ),
+            "M4_ROLE_FAILED",
+        )
+        unavailable = (
+            b"",
+            b'{"outcome":',
+            exact_stop + b"\n" + exact_stop + b"\n",
+            exact_stop
+            + b'\n{"outcome":"\\u0053TOP","reason":"M4_ROLE_FAILED",'
+            b'"status":"NOT_ATTESTED"}\n',
+            exact_stop
+            + b'\n{"\\u006futcome":"STOP","reason":"M4_ROLE_FAILED",'
+            b'"status":"NOT_ATTESTED"}\n',
+            b'{"outcome":"STOP","outcome":"STOP",'
+            b'"reason":"M4_ROLE_FAILED","status":"NOT_ATTESTED"}\n',
+            b'{"outcome": "STOP", "reason": "M4_ROLE_FAILED", '
+            b'"status": "NOT_ATTESTED"}\n',
+            self.launcher._canonical(
+                {
+                    "extra": False,
+                    "outcome": "STOP",
+                    "reason": "M4_ROLE_FAILED",
+                    "status": "NOT_ATTESTED",
+                }
+            ),
+            self.launcher._canonical(
+                {
+                    "outcome": "PASS",
+                    "reason": "M4_ROLE_FAILED",
+                    "status": "NOT_ATTESTED",
+                }
+            ),
+            self.launcher._canonical(
+                {
+                    "outcome": "STOP",
+                    "reason": [],
+                    "status": "NOT_ATTESTED",
+                }
+            ),
+            self.launcher._canonical(
+                {
+                    "outcome": "STOP",
+                    "reason": "NOT_ALLOWLISTED",
+                    "status": "NOT_ATTESTED",
+                }
+            ),
+            self.launcher._canonical(
+                {
+                    "outcome": "STOP",
+                    "reason": "M4_ROLE_FAILED",
+                    "status": "ATTESTED",
+                }
+            ),
+            b"ordinary journal line\n" * 513,
+        )
+        for raw in unavailable:
+            with self.subTest(raw=raw[:80]):
+                self.assertEqual(
+                    self.launcher._post_key_run_failure_reason(raw),
+                    "UNAVAILABLE",
+                )
+
+        lab = self.root / "post-key-failure-lab"
+        goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
+        events: list[str] = []
+
+        class FakeQemu:
+            process = type("Process", (), {"returncode": None})()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                events.append("qemu-exit")
+                return None
+
+            @staticmethod
+            def require_alive() -> None:
+                return None
+
+        with self.launcher.AttemptLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            contract = self._contract()
+            start = ledger.begin(contract)
+            ready = self._ready(contract)
+            original = ledger.post_key_run_failure
+
+            def record(*args: object, **kwargs: object) -> str:
+                events.append("ledger")
+                return original(*args, **kwargs)
+
+            def ssh(
+                _client_key: Path,
+                _known_hosts: Path,
+                command: list[str],
+                **_kwargs: object,
+            ) -> bytes:
+                if "/usr/bin/journalctl" in command:
+                    events.append("journal")
+                    return exact_stop + b"\n"
+                return b""
+
+            with (
+                mock.patch.object(
+                    self.launcher, "QemuProcess", return_value=FakeQemu()
+                ),
+                mock.patch.object(self.launcher, "_wait_for_ssh"),
+                mock.patch.object(self.launcher, "_ssh", side_effect=ssh),
+                mock.patch.object(
+                    self.launcher, "_wait_key_ready", return_value=ready
+                ),
+                mock.patch.object(
+                    self.launcher,
+                    "_install_guest_file",
+                    return_value=self.root / "key-admission.json",
+                ),
+                mock.patch.object(
+                    self.launcher,
+                    "_wait_for_service",
+                    side_effect=self.launcher.QualificationStop(
+                        "GUEST_SERVICE_FAILED:harness-m4-controller@run.service:exit-code:2"
+                    ),
+                ),
+                mock.patch.object(
+                    ledger, "post_key_run_failure", side_effect=record
+                ),
+                mock.patch.object(self.launcher, "_service_result") as service_result,
+                mock.patch.object(self.launcher, "_export_bundle") as export_bundle,
+                mock.patch.object(self.launcher, "_poweroff") as poweroff,
+                self.assertRaisesRegex(
+                    self.launcher.QualificationStop, "GUEST_SERVICE_FAILED"
+                ),
+            ):
+                self.launcher._run_vm_phase(
+                    self.root / "attempt-1",
+                    1,
+                    "run",
+                    self.root / "client-key",
+                    self.root / "known-hosts",
+                    ledger=ledger,
+                    start=start,
+                    lab=lab,
+                )
+            service_result.assert_not_called()
+            export_bundle.assert_not_called()
+            poweroff.assert_not_called()
+            events.append("cleanup")
+            self.assertEqual(events, ["journal", "ledger", "qemu-exit", "cleanup"])
+            ledger.terminalize(
+                start,
+                ledger.active_admission,
+                "QUARANTINED",
+                terminal_reason="RUN_FAILED",
+            )
+
+        path = lab / "m4-attempt-ledger.jsonl"
+        rows = [json.loads(line) for line in path.read_bytes().splitlines()]
+        self.assertEqual(
+            [row["entry_type"] for row in rows],
+            [
+                "ATTEMPT_STARTED",
+                "KEY_ADMITTED",
+                "POST_KEY_RUN_FAILURE",
+                "ATTEMPT_TERMINAL",
+            ],
+        )
+        self.assertEqual(rows[2]["attempt_start_digest"], start.digest)
+        self.assertEqual(rows[2]["key_admission_digest"], rows[3]["key_admission_digest"])
+        self.assertEqual(rows[2]["failure_stage"], "POST_KEY_RUN_SERVICE_FAILED")
+        self.assertEqual(rows[2]["reason"], "M4_ROLE_FAILED")
+        self.assertEqual(
+            frozenset(rows[2]),
+            self.launcher._LEDGER_COMMON
+            | self.launcher._LEDGER_EXTRA["POST_KEY_RUN_FAILURE"],
+        )
+        for previous, row in zip(rows, rows[1:]):
+            self.assertEqual(
+                row["previous_entry_digest"],
+                self.launcher._digest_bytes(self.launcher._canonical(previous)),
+            )
+        with self.launcher.AttemptLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            clock=lambda: self.now,
+        ):
+            pass
+        for field, malformed in (("reason", []), ("failure_stage", {})):
+            bad_lab = self.root / ("bad-post-key-" + field)
+            bad_lab.mkdir(mode=0o700)
+            changed = json.loads(json.dumps(rows))
+            changed[2][field] = malformed
+            encoded: list[bytes] = []
+            previous = None
+            for row in changed:
+                row["previous_entry_digest"] = previous
+                raw = self.launcher._canonical(row)
+                encoded.append(raw)
+                previous = self.launcher._digest_bytes(raw)
+            ledger_path = bad_lab / "m4-attempt-ledger.jsonl"
+            ledger_path.write_bytes(b"\n".join(encoded) + b"\n")
+            os.chmod(ledger_path, 0o600)
+            with self.subTest(field=field), self.assertRaisesRegex(
+                self.launcher.QualificationStop, "LEDGER_BINDING_MISMATCH"
+            ):
+                with self.launcher.AttemptLedger(
+                    bad_lab,
+                    goal_reference=str(self.goal),
+                    goal_digest=goal_digest,
+                    clock=lambda: self.now,
+                ):
+                    pass
+
     def test_ledger_rejects_unresolved_or_repeated_pair_and_wrong_metadata(self) -> None:
         lab = self.root / "lab"
         goal_digest = self.launcher._digest_file(self.goal, 1 << 20)

@@ -891,6 +891,12 @@ _LEDGER_EXTRA = {
             "runtime_trust_digest",
         }
     ),
+    "POST_KEY_RUN_FAILURE": frozenset(
+        {
+            "attempt_start_digest", "key_admission_digest",
+            "failure_stage", "reason",
+        }
+    ),
     "ATTEMPT_TERMINAL": frozenset(
         {
             "attempt_start_digest", "key_admission_digest", "result",
@@ -899,6 +905,34 @@ _LEDGER_EXTRA = {
         }
     ),
 }
+POST_KEY_RUN_FAILURE_REASONS = frozenset(
+    {
+        "L0_PROFILE_MALFORMED",
+        "L0_PROFILE_TEMPLATE_MUTATION",
+        "L0_DYNAMIC_PROFILE_COMPILE_FAILED",
+        "L0_SECCOMP_PROFILE_MALFORMED",
+        "L0_SECCOMP_BINDING_MISMATCH",
+        "KEY_ADMISSION_REQUIRED",
+        "M4_ROLE_ROOTFS_INPUT_MALFORMED",
+        "M4_SECCOMP_PROFILE_MALFORMED",
+        "M4_ROLE_LAUNCH_MALFORMED",
+        "M4_ROLE_CGROUP_ATTACH_FAILED",
+        "M4_ROLE_OUTER_GATE_RELEASE_FAILED",
+        "M4_ROLE_IDENTITY_MISMATCH",
+        "M4_ROLE_RESULT_MALFORMED",
+        "M4_ROLE_FAILED",
+        "M4_ROLE_CLEANUP_FAILED",
+        "M4_AUTHORITY_CONTEXT_ABSENT",
+        "M4_TOPOLOGY_ABSENT",
+        "M4_FRONTIER_BIND_FAILED",
+        "M4_RUNTIME_JOIN_FAILED",
+        "M4_PRE_RESTART_DURABLE_MISMATCH",
+        "M4_RUNTIME_STORAGE_CLEANUP_MISMATCH",
+        "M4_RUNTIME_STORAGE_CLEANUP_FAILED",
+        "M4_PUBLICATION_EVIDENCE_ABSENT",
+        "UNAVAILABLE",
+    }
+)
 _TERMINAL_REASON_BY_RESULT = {
     "BUNDLE_EXPORTED": frozenset({"SIGNED_PAYLOAD_EXPORTED"}),
     "FAILED": frozenset({
@@ -1069,6 +1103,16 @@ def _ledger_entries(
             _digest(row["runtime_trust_digest"])
             for value in keys.values():
                 _digest(value)
+        elif row["entry_type"] == "POST_KEY_RUN_FAILURE":
+            _digest(row["attempt_start_digest"])
+            _digest(row["key_admission_digest"])
+            if (
+                type(row["failure_stage"]) is not str
+                or row["failure_stage"] != "POST_KEY_RUN_SERVICE_FAILED"
+                or type(row["reason"]) is not str
+                or row["reason"] not in POST_KEY_RUN_FAILURE_REASONS
+            ):
+                _invalid("LEDGER_POST_KEY_RUN_FAILURE_MISMATCH")
         elif row["entry_type"] == "ATTEMPT_TERMINAL":
             if row["result"] not in _TERMINAL_REASON_BY_RESULT:
                 _invalid("LEDGER_TERMINAL_MISMATCH")
@@ -1133,11 +1177,22 @@ def _ledger_entries(
         if cursor < len(result) and result[cursor][0]["entry_type"] == "KEY_ADMITTED":
             key_row, key_digest = result[cursor]
             cursor += 1
+        failure_row: dict[str, object] | None = None
+        if (
+            key_row is not None
+            and cursor < len(result)
+            and result[cursor][0]["entry_type"] == "POST_KEY_RUN_FAILURE"
+        ):
+            failure_row = result[cursor][0]
+            cursor += 1
         if cursor >= len(result) or result[cursor][0]["entry_type"] != "ATTEMPT_TERMINAL":
             _invalid("LEDGER_LIFECYCLE_MISMATCH")
         terminal, _ = result[cursor]
         cursor += 1
-        for row in (() if key_row is None else (key_row,)) + (terminal,):
+        middle = (() if key_row is None else (key_row,)) + (
+            () if failure_row is None else (failure_row,)
+        )
+        for row in middle + (terminal,):
             for name in (
                 "candidate", "tree", "environment", "attempt",
                 "contract_core_digest", "qualification_contract_digest",
@@ -1157,17 +1212,34 @@ def _ledger_entries(
                     or terminal["key_admission_digest"] != key_digest
                 )
             )
+            or (
+                failure_row is not None
+                and (
+                    failure_row["attempt_start_digest"] != start_digest
+                    or failure_row["key_admission_digest"] != key_digest
+                    or terminal["result"] != "QUARANTINED"
+                    or terminal["terminal_reason"]
+                    not in {"RUN_FAILED", "CLEANUP_FAILED"}
+                )
+            )
             or (terminal["result"] == "BUNDLE_EXPORTED" and key_row is None)
         ):
             _invalid("LEDGER_LIFECYCLE_MISMATCH")
         expected_attempt += 1
-    if one_use and (
-        len(result) != 3
-        or [row["entry_type"] for row, _ in result]
-        != ["ATTEMPT_STARTED", "KEY_ADMITTED", "ATTEMPT_TERMINAL"]
-        or any(row["attempt"] != 1 for row, _ in result)
-    ):
-        _invalid("ATTEMPT_CEILING_MISMATCH")
+    if one_use:
+        entry_types = [row["entry_type"] for row, _ in result]
+        if (
+            entry_types
+            not in (
+                ["ATTEMPT_STARTED", "KEY_ADMITTED", "ATTEMPT_TERMINAL"],
+                [
+                    "ATTEMPT_STARTED", "KEY_ADMITTED",
+                    "POST_KEY_RUN_FAILURE", "ATTEMPT_TERMINAL",
+                ],
+            )
+            or any(row["attempt"] != 1 for row, _ in result)
+        ):
+            _invalid("ATTEMPT_CEILING_MISMATCH")
     return result
 
 

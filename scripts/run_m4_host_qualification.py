@@ -172,6 +172,12 @@ _LEDGER_EXTRA = {
             "admitted_qualification_contract_digest",
         }
     ),
+    "POST_KEY_RUN_FAILURE": frozenset(
+        {
+            "attempt_start_digest", "key_admission_digest",
+            "failure_stage", "reason",
+        }
+    ),
     "ATTEMPT_TERMINAL": frozenset(
         {
             "attempt_start_digest", "key_admission_digest", "result",
@@ -180,6 +186,35 @@ _LEDGER_EXTRA = {
         }
     ),
 }
+POST_KEY_RUN_FAILURE_REASONS = frozenset(
+    {
+        "UNAVAILABLE",
+        "KEY_ADMISSION_REQUIRED",
+        "L0_PROFILE_MALFORMED",
+        "L0_PROFILE_TEMPLATE_MUTATION",
+        "L0_DYNAMIC_PROFILE_COMPILE_FAILED",
+        "L0_SECCOMP_PROFILE_MALFORMED",
+        "L0_SECCOMP_BINDING_MISMATCH",
+        "M4_ROLE_ROOTFS_INPUT_MALFORMED",
+        "M4_SECCOMP_PROFILE_MALFORMED",
+        "M4_ROLE_LAUNCH_MALFORMED",
+        "M4_ROLE_CGROUP_ATTACH_FAILED",
+        "M4_ROLE_OUTER_GATE_RELEASE_FAILED",
+        "M4_ROLE_IDENTITY_MISMATCH",
+        "M4_ROLE_RESULT_MALFORMED",
+        "M4_ROLE_FAILED",
+        "M4_ROLE_CLEANUP_FAILED",
+        "M4_AUTHORITY_CONTEXT_ABSENT",
+        "M4_TOPOLOGY_ABSENT",
+        "M4_FRONTIER_BIND_FAILED",
+        "M4_RUNTIME_JOIN_FAILED",
+        "M4_PRE_RESTART_DURABLE_MISMATCH",
+        "M4_RUNTIME_STORAGE_CLEANUP_MISMATCH",
+        "M4_RUNTIME_STORAGE_CLEANUP_FAILED",
+        "M4_PUBLICATION_EVIDENCE_ABSENT",
+    }
+)
+_POST_KEY_RUN_FAILURE_STAGE = "POST_KEY_RUN_SERVICE_FAILED"
 _TERMINAL_RESULTS = frozenset({"BUNDLE_EXPORTED", "FAILED", "BLOCKED", "QUARANTINED"})
 _TERMINAL_REASON_BY_RESULT = {
     "BUNDLE_EXPORTED": frozenset({"SIGNED_PAYLOAD_EXPORTED"}),
@@ -1199,6 +1234,7 @@ class AttemptLedger:
         self._rows: list[tuple[dict[str, object], str]] = []
         self._active_start: AttemptStart | None = None
         self._active_admission: str | None = None
+        self._active_post_key_failure: str | None = None
 
     def __enter__(self) -> AttemptLedger:
         lab_created = False
@@ -1402,6 +1438,18 @@ class AttemptLedger:
                 != row["qualification_contract_digest"]
             ):
                 _stop("LEDGER_BINDING_MISMATCH")
+        elif row["entry_type"] == "POST_KEY_RUN_FAILURE":
+            if (
+                type(row["attempt_start_digest"]) is not str
+                or _DIGEST.fullmatch(row["attempt_start_digest"]) is None
+                or type(row["key_admission_digest"]) is not str
+                or _DIGEST.fullmatch(row["key_admission_digest"]) is None
+                or type(row["failure_stage"]) is not str
+                or row["failure_stage"] != _POST_KEY_RUN_FAILURE_STAGE
+                or type(row["reason"]) is not str
+                or row["reason"] not in POST_KEY_RUN_FAILURE_REASONS
+            ):
+                _stop("LEDGER_BINDING_MISMATCH")
         elif row["entry_type"] == "ATTEMPT_TERMINAL":
             if (
                 row["result"] not in _TERMINAL_RESULTS
@@ -1457,11 +1505,22 @@ class AttemptLedger:
             if cursor < len(rows) and rows[cursor][0]["entry_type"] == "KEY_ADMITTED":
                 admission = rows[cursor]
                 cursor += 1
+            post_key_failure: tuple[dict[str, object], str] | None = None
+            if (
+                cursor < len(rows)
+                and rows[cursor][0]["entry_type"] == "POST_KEY_RUN_FAILURE"
+            ):
+                post_key_failure = rows[cursor]
+                cursor += 1
             if cursor >= len(rows) or rows[cursor][0]["entry_type"] != "ATTEMPT_TERMINAL":
                 _stop("PRIOR_ATTEMPT_UNRESOLVED")
             terminal, _ = rows[cursor]
             cursor += 1
-            group = ([] if admission is None else [admission[0]]) + [terminal]
+            group = (
+                ([] if admission is None else [admission[0]])
+                + ([] if post_key_failure is None else [post_key_failure[0]])
+                + [terminal]
+            )
             if any(
                 any(
                     row[key] != start[key]
@@ -1481,6 +1540,14 @@ class AttemptLedger:
             elif (
                 admission[0]["attempt_start_digest"] != start_digest
                 or terminal["key_admission_digest"] != admission[1]
+            ):
+                _stop("LEDGER_LIFECYCLE_MISMATCH")
+            if post_key_failure is not None and (
+                admission is None
+                or post_key_failure[0]["attempt_start_digest"] != start_digest
+                or post_key_failure[0]["key_admission_digest"] != admission[1]
+                or terminal["result"] != "QUARANTINED"
+                or terminal["terminal_reason"] not in {"RUN_FAILED", "CLEANUP_FAILED"}
             ):
                 _stop("LEDGER_LIFECYCLE_MISMATCH")
             if terminal["result"] == "BUNDLE_EXPORTED" and admission is None:
@@ -1643,6 +1710,33 @@ class AttemptLedger:
     def active_admission(self) -> str | None:
         return self._active_admission
 
+    def post_key_run_failure(
+        self,
+        start: AttemptStart,
+        admission_digest: str,
+        reason: str,
+    ) -> str:
+        if (
+            start != self._active_start
+            or admission_digest != self._active_admission
+            or self._active_admission is None
+            or self._active_post_key_failure is not None
+            or type(reason) is not str
+            or reason not in POST_KEY_RUN_FAILURE_REASONS
+        ):
+            _stop("POST_KEY_RUN_FAILURE_ORDER_MISMATCH")
+        self._active_post_key_failure = self._append(
+            "POST_KEY_RUN_FAILURE",
+            start,
+            {
+                "attempt_start_digest": start.digest,
+                "key_admission_digest": admission_digest,
+                "failure_stage": _POST_KEY_RUN_FAILURE_STAGE,
+                "reason": reason,
+            },
+        )
+        return self._active_post_key_failure
+
     def terminalize(
         self,
         start: AttemptStart,
@@ -1659,6 +1753,11 @@ class AttemptLedger:
             or admission_digest != self._active_admission
             or result not in _TERMINAL_RESULTS
             or terminal_reason not in _TERMINAL_REASON_BY_RESULT[result]
+        ):
+            _stop("ATTEMPT_TERMINAL_ORDER_MISMATCH")
+        if self._active_post_key_failure is not None and (
+            result != "QUARANTINED"
+            or terminal_reason not in {"RUN_FAILED", "CLEANUP_FAILED"}
         ):
             _stop("ATTEMPT_TERMINAL_ORDER_MISMATCH")
         if result == "BUNDLE_EXPORTED":
@@ -1696,6 +1795,7 @@ class AttemptLedger:
         )
         self._active_start = None
         self._active_admission = None
+        self._active_post_key_failure = None
         return digest
 
 
@@ -3684,6 +3784,87 @@ def _journal_lines(raw: bytes) -> list[str]:
     return lines
 
 
+def _post_key_run_failure_reason(raw: bytes) -> str:
+    if type(raw) is not bytes or len(raw) > 1 << 20:
+        return "UNAVAILABLE"
+    lines = raw.split(b"\n")
+    if lines and not lines[-1]:
+        lines.pop()
+    if len(lines) > 512:
+        return "UNAVAILABLE"
+    records: list[dict[str, object]] = []
+    for line in lines:
+        if not line:
+            continue
+        structured = line.lstrip().startswith(b"{")
+        if len(line) > 1024:
+            if structured:
+                return "UNAVAILABLE"
+            continue
+        try:
+            decoded = line.decode("utf-8")
+        except UnicodeDecodeError:
+            if structured:
+                return "UNAVAILABLE"
+            continue
+        try:
+            pairs = json.loads(decoded, object_pairs_hook=lambda rows: rows)
+        except (json.JSONDecodeError, RecursionError):
+            if structured:
+                return "UNAVAILABLE"
+            continue
+        if type(pairs) is not list:
+            continue
+        if not any(
+            type(pair) is tuple
+            and len(pair) == 2
+            and pair[0] == "outcome"
+            and pair[1] == "STOP"
+            for pair in pairs
+        ):
+            continue
+        if not structured:
+            return "UNAVAILABLE"
+        try:
+            value = _strict_json(line, 1024)
+        except QualificationStop:
+            return "UNAVAILABLE"
+        if (
+            type(value) is not dict
+            or frozenset(value) != {"outcome", "reason", "status"}
+            or type(value.get("outcome")) is not str
+            or value.get("outcome") != "STOP"
+            or type(value.get("status")) is not str
+            or value.get("status") != "NOT_ATTESTED"
+            or type(value.get("reason")) is not str
+            or value.get("reason") not in POST_KEY_RUN_FAILURE_REASONS - {"UNAVAILABLE"}
+        ):
+            return "UNAVAILABLE"
+        records.append(value)
+    if len(records) != 1:
+        return "UNAVAILABLE"
+    return str(records[0]["reason"])
+
+
+def _capture_post_key_run_failure_reason(
+    client_key: Path, known_hosts: Path, unit: str
+) -> str:
+    try:
+        raw = _ssh(
+            client_key,
+            known_hosts,
+            [
+                "sudo", "/usr/bin/journalctl", "--boot=0", "--unit", unit,
+                "--no-pager", "--output=cat", "--lines=512",
+            ],
+            timeout=20,
+            maximum=1 << 20,
+        )
+    except QualificationStop:
+        return "UNAVAILABLE"
+    return _post_key_run_failure_reason(raw)
+
+
 def _stage_markers(lines: list[str]) -> list[dict[str, object]]:
     order = (
         "SERVICE_ENTERED", "REQUEST_VALIDATED", "PRE_KEY_CHECKS_COMPLETE",
@@ -4396,7 +4577,22 @@ def _run_vm_phase(
                     mode=0o444,
                 )
             )
-        _wait_for_service(qemu, client_key, known_hosts, unit)
+        try:
+            _wait_for_service(qemu, client_key, known_hosts, unit)
+        except QualificationStop as error:
+            if (
+                phase == "run"
+                and admission_digest is not None
+                and str(error).startswith("GUEST_SERVICE_FAILED:" + unit + ":")
+            ):
+                ledger.post_key_run_failure(
+                    start,
+                    admission_digest,
+                    _capture_post_key_run_failure_reason(
+                        client_key, known_hosts, unit
+                    ),
+                )
+            raise
         expected = "PRE_RESTART_PASS" if phase == "run" else "RECOVERY_PASS"
         result = _service_result(client_key, known_hosts, unit, expected)
         if phase == "recover":
