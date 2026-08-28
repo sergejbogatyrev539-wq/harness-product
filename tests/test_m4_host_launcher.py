@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime
 import importlib.util
 import inspect
@@ -337,6 +338,346 @@ class M4HostLauncherTests(unittest.TestCase):
             "/etc/harness-m4/source-archive.tgz",
             self.launcher._provision_script().decode("ascii"),
         )
+
+    def test_ubuntu_source_seed_plan_is_byte_exact_and_boundary_bound(self) -> None:
+        final_path = "/etc/apt/sources.list.d/ubuntu.sources"
+        seed_path = "/etc/harness-m4/apt-ubuntu.sources"
+        expected = (
+            "sha256:eafe8bd9490d039ddaa42d1ca6e2682b0a4e68fe13845aa47d8c195292574d55"
+        )
+        plan = self.launcher._package_runtime_plan()
+        self.assertEqual(plan["package_sources"][final_path], expected)
+        path, raw, mode = self.launcher._ubuntu_source_seed_entry(plan)
+        self.assertEqual((path, len(raw), mode), (seed_path, 321, 0o444))
+        self.assertEqual(self.launcher._digest_bytes(raw), expected)
+        cloud_entry = self.launcher._cloud_file(path, raw, mode)
+        self.assertEqual(
+            base64.b64decode(cloud_entry[-1].removeprefix("    content: "), validate=True),
+            raw,
+        )
+        self.assertEqual(
+            self.launcher._digest_bytes(self.launcher._provision_script()),
+            "sha256:e3e66da8b31e841910d491f3fdbf94735badce3ee36eceb9241c72003366fd2c",
+        )
+        entry = self.launcher._provision_entry_script().decode("ascii")
+        self.assertIn(seed_path, entry)
+        self.assertIn(final_path, entry)
+        self.assertIn("source /root/harness-m4-provision.sh", entry)
+        self.assertIn('[[ "$command" == "/usr/bin/apt-get clean" ]]', entry)
+        self.assertIn("AFTER_EXACT_PACKAGE_INSTALL_AND_CLEAN", entry)
+        cloud = self.launcher._cloud_config("ssh-ed25519 AAAATEST", []).decode(
+            "utf-8"
+        )
+        self.assertIn(
+            "  - [ /bin/bash, /root/harness-m4-provision-entry.sh ]", cloud
+        )
+        self.assertNotIn(
+            "  - [ /bin/bash, /root/harness-m4-provision.sh ]", cloud
+        )
+
+        for case_name, wrong_before, changed_during, expected_outcomes in (
+            ("exact", False, False, ["MATCH", "MATCH"]),
+            ("wrong-before-apt", True, False, ["MISMATCH"]),
+            ("changed-during-apt", False, True, ["MATCH", "MISMATCH"]),
+        ):
+            with self.subTest(boundary_case=case_name):
+                case_root = self.root / case_name
+                case_root.mkdir()
+                canonical = case_root / "apt-ubuntu.sources"
+                final = case_root / "installed-ubuntu.sources"
+                records = case_root / "package-source-boundaries.jsonl"
+                wrong_source = case_root / "wrong.sources"
+                canonical.write_bytes(raw)
+                wrong_source.write_bytes((case_name + "\n").encode("ascii"))
+
+                def executable(name: str, body: str) -> Path:
+                    path = case_root / name
+                    path.write_text("#!/bin/bash\nset -euo pipefail\n" + body)
+                    os.chmod(path, 0o700)
+                    return path
+
+                mutate = executable(
+                    "mutate-before",
+                    f'/usr/bin/cp -- "{wrong_source}" "{final}"\n',
+                )
+                update_body = "/usr/bin/printf 'APT_UPDATE\\n'\n"
+                if changed_during:
+                    update_body += f'/usr/bin/cp -- "{wrong_source}" "{final}"\n'
+                update = executable("apt-update", update_body)
+                clean = executable("apt-clean", "/usr/bin/printf 'APT_CLEAN\\n'\n")
+                after = executable("after-base", "/usr/bin/printf 'AFTER_BASE\\n'\n")
+                main = case_root / "provision.sh"
+                commands = ([str(mutate)] if wrong_before else []) + [
+                    str(update), str(clean), str(after)
+                ]
+                main.write_text("#!/bin/bash\nset -euo pipefail\n" + "\n".join(commands) + "\n")
+
+                local_entry = entry
+                replacements = (
+                    (
+                        f"boundary_canonical='{seed_path}'",
+                        f"boundary_canonical='{canonical}'",
+                    ),
+                    (
+                        f"boundary_final='{final_path}'",
+                        f"boundary_final='{final}'",
+                    ),
+                    (
+                        "boundary_records='/var/lib/harness-m4-provisioning/"
+                        "package-source-boundaries.jsonl'",
+                        f"boundary_records='{records}'",
+                    ),
+                    (
+                        "/usr/bin/install -d -o root -g root -m 0700 "
+                        "/var/lib/harness-m4-provisioning",
+                        f'/usr/bin/install -d -m 0700 "{case_root}"',
+                    ),
+                    (
+                        "/usr/bin/install -o root -g root -m 0644",
+                        "/usr/bin/install -m 0644",
+                    ),
+                    (
+                        '[[ "$command" == "/usr/bin/apt-get update" ]]',
+                        f'[[ "$command" == "{update}" ]]',
+                    ),
+                    (
+                        '[[ "$command" == "/usr/bin/apt-get clean" ]]',
+                        f'[[ "$command" == "{clean}" ]]',
+                    ),
+                    (
+                        "source /root/harness-m4-provision.sh",
+                        f'source "{main}"',
+                    ),
+                )
+                for original, replacement in replacements:
+                    self.assertIn(original, local_entry)
+                    local_entry = local_entry.replace(original, replacement, 1)
+                wrapper = case_root / "entry.sh"
+                wrapper.write_text(local_entry)
+                result = subprocess.run(
+                    ["/bin/bash", str(wrapper)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=5,
+                    text=True,
+                )
+                observations = (
+                    self.launcher._extract_package_source_boundary_observations(
+                        records.read_bytes()
+                    )
+                )
+                self.assertEqual(
+                    [observation["outcome"] for observation in observations],
+                    expected_outcomes,
+                )
+                observation_lines = [
+                    self.launcher._canonical(observation).decode("ascii")
+                    for observation in observations
+                ]
+                stdout_lines = result.stdout.splitlines()
+                if case_name == "exact":
+                    self.assertEqual(result.returncode, 0)
+                    self.launcher._require_exact_package_source_boundaries(
+                        records.read_bytes()
+                    )
+                    self.assertEqual(
+                        stdout_lines,
+                        [
+                            observation_lines[0], "APT_UPDATE", "APT_CLEAN",
+                            observation_lines[1], "AFTER_BASE",
+                        ],
+                    )
+                elif case_name == "wrong-before-apt":
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(stdout_lines, observation_lines)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(
+                        stdout_lines,
+                        [
+                            observation_lines[0], "APT_UPDATE", "APT_CLEAN",
+                            observation_lines[1],
+                        ],
+                    )
+                self.assertEqual(result.stderr, "")
+
+        changed = json.loads(self.launcher._canonical(plan))
+        changed["package_sources"][final_path] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(
+            self.launcher.QualificationStop, "PACKAGE_RUNTIME_PLAN_SEED_MISMATCH"
+        ):
+            self.launcher._ubuntu_source_seed_entry(changed)
+
+        image_lab = self.root / "wrong-image-lab"
+        image_lab.mkdir()
+        wrong = image_lab / "apt-ubuntu.sources"
+        wrong.write_bytes(b"x" * 321)
+        os.chmod(wrong, 0o444)
+        attempt_root = self.root / "wrong-seed"
+        attempt_root.mkdir()
+        source = {"commit": "a" * 40, "tree": "b" * 40}
+        with (
+            mock.patch.object(self.launcher, "IMAGE_LAB", image_lab),
+            mock.patch.object(self.launcher, "_generate_key") as generate_key,
+            mock.patch.object(self.launcher, "_run") as run,
+            self.assertRaisesRegex(
+                self.launcher.QualificationStop,
+                "PACKAGE_RUNTIME_PLAN_SEED_MISMATCH",
+            ),
+        ):
+            self.launcher._create_seed(
+                attempt_root,
+                attempt=1,
+                source=source,
+                package_runtime_plan=plan,
+            )
+        generate_key.assert_not_called()
+        run.assert_not_called()
+
+    def test_package_source_boundary_observation_parser_is_closed(self) -> None:
+        expected = (
+            "sha256:eafe8bd9490d039ddaa42d1ca6e2682b0a4e68fe13845aa47d8c195292574d55"
+        )
+
+        def record(boundary: str, outcome: str = "MATCH") -> dict[str, object]:
+            return {
+                "binding_id": "PACKAGE_SOURCE_UBUNTU",
+                "boundary": boundary,
+                "expected_sha256": expected,
+                "non_authorizing": True,
+                "observed_sha256": expected,
+                "outcome": outcome,
+                "record_type": "M4_PACKAGE_SOURCE_BOUNDARY_OBSERVATION",
+            }
+
+        before = record("BEFORE_APT_GET_UPDATE")
+        after = record("AFTER_EXACT_PACKAGE_INSTALL_AND_CLEAN")
+        exact_raw = b"\n".join(
+            (self.launcher._canonical(before), self.launcher._canonical(after), b"")
+        )
+        self.assertEqual(
+            self.launcher._extract_package_source_boundary_observations(exact_raw),
+            [before, after],
+        )
+        before_prefix = self.launcher._canonical(before) + b"\n"
+        self.assertEqual(
+            self.launcher._extract_package_source_boundary_observations(
+                before_prefix
+            ),
+            [before],
+        )
+        self.assertEqual(
+            self.launcher._require_exact_package_source_boundaries(exact_raw),
+            [before, after],
+        )
+        self.assertEqual(
+            self.launcher._extract_package_source_boundary_observations(
+                b"historical log without the token\n"
+            ),
+            [],
+        )
+        mismatch = {
+            **before,
+            "observed_sha256": "sha256:" + "0" * 64,
+            "outcome": "MISMATCH",
+        }
+        read_error = {
+            **after,
+            "observed_sha256": None,
+            "outcome": "READ_ERROR",
+        }
+        self.assertEqual(
+            self.launcher._extract_package_source_boundary_observations(
+                self.launcher._canonical(mismatch) + b"\n"
+            ),
+            [mismatch],
+        )
+        self.assertEqual(
+            self.launcher._extract_package_source_boundary_observations(
+                self.launcher._canonical(before)
+                + b"\n"
+                + self.launcher._canonical(read_error)
+                + b"\n"
+            ),
+            [before, read_error],
+        )
+
+        malformed_cases = (
+            json.dumps(before, sort_keys=True).encode("utf-8") + b"\n",
+            self.launcher._canonical(before)
+            + b"\n"
+            + self.launcher._canonical(before)
+            + b"\n",
+            self.launcher._canonical({**before, "binding_id": "UNALLOWLISTED"})
+            + b"\n",
+            self.launcher._canonical({**before, "boundary": "UNALLOWLISTED"})
+            + b"\n",
+            self.launcher._canonical({**before, "boundary": []}) + b"\n",
+            self.launcher._canonical({**before, "outcome": "UNALLOWLISTED"})
+            + b"\n",
+            self.launcher._canonical({**before, "outcome": []}) + b"\n",
+            self.launcher._canonical({**before, "extra": "secret"}) + b"\n",
+            before_prefix,
+        )
+        for raw in malformed_cases:
+            with self.subTest(raw=raw[:80]), self.assertRaisesRegex(
+                self.launcher.QualificationStop,
+                "PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED",
+            ):
+                if raw == malformed_cases[-1]:
+                    self.launcher._require_exact_package_source_boundaries(raw)
+                else:
+                    self.launcher._extract_package_source_boundary_observations(raw)
+
+        prefix_root = self.root / "boundary-prefix-capture"
+        prefix_root.mkdir()
+        prefix_log = prefix_root / "provision.serial.log"
+        prefix_log.write_bytes(before_prefix + b"provisioning failed\n")
+        os.chmod(prefix_log, 0o600)
+        prefix_capture = self.launcher._capture_post_v2_qemu_logs(prefix_root)
+        self.assertEqual(
+            prefix_capture["provision.serial.log"]["lines"][0],
+            self.launcher._canonical(before).decode("utf-8"),
+        )
+
+        attempt_root = self.root / "boundary-log-capture"
+        attempt_root.mkdir()
+        ordinary = [f"ordinary-{index}" for index in range(140)]
+        serial = (
+            self.launcher._canonical(before)
+            + b"\n"
+            + "\n".join(ordinary).encode("ascii")
+            + b"\n"
+            + self.launcher._canonical(after)
+            + b"\n"
+        )
+        serial_path = attempt_root / "provision.serial.log"
+        serial_path.write_bytes(serial)
+        os.chmod(serial_path, 0o600)
+        captured = self.launcher._capture_post_v2_qemu_logs(attempt_root)
+        retained = captured["provision.serial.log"]["lines"]
+        self.assertEqual(
+            retained[:2],
+            [
+                self.launcher._canonical(before).decode("utf-8"),
+                self.launcher._canonical(after).decode("utf-8"),
+            ],
+        )
+        self.assertLessEqual(len(retained), 128)
+
+        provision_source = inspect.getsource(self.launcher._provision_vm)
+        self.assertLess(
+            provision_source.index("_require_exact_package_source_boundaries"),
+            provision_source.index("_install_guest_file"),
+        )
+        for authority_path in (
+            self.launcher._key_admission,
+            self.launcher.AttemptLedger.admit,
+        ):
+            self.assertNotIn(
+                "package_source_boundary", inspect.getsource(authority_path).casefold()
+            )
 
     def test_v2_lab_qemu_and_ledger_never_continue_old_contracts(self) -> None:
         self.assertEqual(

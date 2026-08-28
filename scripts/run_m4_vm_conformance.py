@@ -64,6 +64,9 @@ QUALIFICATION_REQUEST = Path("/etc/harness-m4/qualification.json")
 SOURCE_ARCHIVE = Path("/etc/harness-m4/source-archive.tgz")
 PACKAGE_RUNTIME_PLAN = Path("/etc/harness-m4/package-runtime-plan.json")
 PROVISIONING_SCRIPT = Path("/root/harness-m4-provision.sh")
+PACKAGE_SOURCE_BOUNDARY_OBSERVATIONS = Path(
+    "/var/lib/harness-m4-provisioning/package-source-boundaries.jsonl"
+)
 PROFILE_PATH = SOURCE / "profiles/m4-lx-a.json"
 M4_PROFILE = Path(__file__).resolve().parents[1] / "profiles/m4-lx-a.json"
 APPARMOR_POLICY = SOURCE / "profiles/m4-lx-a.apparmor"
@@ -170,10 +173,21 @@ PACKAGE_VERSIONS = {
     "openssl": "3.0.13-0ubuntu3.12",
     "python3.12": "3.12.3-1ubuntu0.15",
 }
+PACKAGE_SOURCE_UBUNTU_PATH = "/etc/apt/sources.list.d/ubuntu.sources"
+PACKAGE_SOURCE_UBUNTU_DIGEST = (
+    "sha256:eafe8bd9490d039ddaa42d1ca6e2682b0a4e68fe13845aa47d8c195292574d55"
+)
+PACKAGE_SOURCE_BOUNDARIES = (
+    "BEFORE_APT_GET_UPDATE",
+    "AFTER_EXACT_PACKAGE_INSTALL_AND_CLEAN",
+)
+PACKAGE_SOURCE_BOUNDARY_OUTCOMES = frozenset(
+    {"MATCH", "MISMATCH", "READ_ERROR"}
+)
 PACKAGE_SOURCE_PATHS = frozenset(
     {
         "/etc/apt/apt.conf.d/99-harness-m4",
-        "/etc/apt/sources.list.d/ubuntu.sources",
+        PACKAGE_SOURCE_UBUNTU_PATH,
     }
 )
 RUNTIME_CONFIG_PATHS = frozenset(
@@ -394,6 +408,12 @@ _PACKAGE_RUNTIME_PLAN_KEYS = frozenset(
         "package_sources", "runtime_configs", "runtime_tools",
     }
 )
+_PACKAGE_SOURCE_BOUNDARY_OBSERVATION_KEYS = frozenset(
+    {
+        "record_type", "non_authorizing", "binding_id", "boundary",
+        "outcome", "expected_sha256", "observed_sha256",
+    }
+)
 _KEY_ADMISSION_KEYS = frozenset(
     {
         "admission_version", "mode", "qualification_contract",
@@ -466,6 +486,19 @@ def _emit_package_runtime_plan_observation(binding_id: str, outcome: str) -> Non
     except OSError as error:
         raise QualificationStop(
             "M4_PACKAGE_RUNTIME_PLAN_OBSERVATION_WRITE_FAILED"
+        ) from error
+
+
+def _emit_package_source_boundary_observation(
+    value: dict[str, object],
+) -> None:
+    raw = _canonical(value) + b"\n"
+    try:
+        if os.write(1, raw) != len(raw):
+            _stop("M4_PACKAGE_SOURCE_BOUNDARY_OBSERVATION_WRITE_FAILED")
+    except OSError as error:
+        raise QualificationStop(
+            "M4_PACKAGE_SOURCE_BOUNDARY_OBSERVATION_WRITE_FAILED"
         ) from error
 
 
@@ -894,6 +927,8 @@ def _validate_package_runtime_plan(value: object) -> dict[str, object]:
         or not _is_digest(value["provisioning_script_digest"])
         or type(sources) is not dict
         or frozenset(sources) != PACKAGE_SOURCE_PATHS
+        or sources.get(PACKAGE_SOURCE_UBUNTU_PATH)
+        != PACKAGE_SOURCE_UBUNTU_DIGEST
         or type(configs) is not dict
         or frozenset(configs) != RUNTIME_CONFIG_PATHS
         or type(tools) is not dict
@@ -906,6 +941,79 @@ def _validate_package_runtime_plan(value: object) -> dict[str, object]:
     ):
         _stop("PACKAGE_RUNTIME_PLAN_MISMATCH")
     return value
+
+
+def _validate_package_source_boundary_observation(
+    value: object,
+) -> dict[str, object]:
+    if (
+        type(value) is not dict
+        or frozenset(value) != _PACKAGE_SOURCE_BOUNDARY_OBSERVATION_KEYS
+        or value.get("record_type")
+        != "M4_PACKAGE_SOURCE_BOUNDARY_OBSERVATION"
+        or value.get("non_authorizing") is not True
+        or value.get("binding_id") != "PACKAGE_SOURCE_UBUNTU"
+        or type(value.get("boundary")) is not str
+        or value.get("boundary") not in PACKAGE_SOURCE_BOUNDARIES
+        or type(value.get("outcome")) is not str
+        or value.get("outcome") not in PACKAGE_SOURCE_BOUNDARY_OUTCOMES
+        or value.get("expected_sha256") != PACKAGE_SOURCE_UBUNTU_DIGEST
+    ):
+        _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+    outcome = value["outcome"]
+    observed = value["observed_sha256"]
+    if (
+        outcome == "READ_ERROR"
+        and observed is not None
+        or outcome != "READ_ERROR"
+        and not _is_digest(observed)
+        or outcome == "MATCH"
+        and observed != PACKAGE_SOURCE_UBUNTU_DIGEST
+        or outcome == "MISMATCH"
+        and observed == PACKAGE_SOURCE_UBUNTU_DIGEST
+    ):
+        _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+    return value
+
+
+def _package_source_boundary_observations(
+    *, diagnostic_observation: bool,
+) -> None:
+    if type(diagnostic_observation) is not bool:
+        _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+    try:
+        raw = _read_regular(PACKAGE_SOURCE_BOUNDARY_OBSERVATIONS, 2 << 10)
+        if not raw.endswith(b"\n"):
+            _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+        lines = raw[:-1].split(b"\n")
+        if len(lines) not in {1, 2}:
+            _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+        observations = [
+            _validate_package_source_boundary_observation(
+                _strict_bytes(line, 1024)
+            )
+            for line in lines
+        ]
+        if (
+            observations[0]["boundary"] != PACKAGE_SOURCE_BOUNDARIES[0]
+            or len(observations) == 1
+            and observations[0]["outcome"] == "MATCH"
+            or len(observations) == 2
+            and (
+                observations[0]["outcome"] != "MATCH"
+                or observations[1]["boundary"] != PACKAGE_SOURCE_BOUNDARIES[1]
+            )
+        ):
+            _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+    except (OSError, QualificationStop, TypeError, ValueError, RecursionError) as error:
+        raise QualificationStop(
+            "PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED"
+        ) from error
+    if diagnostic_observation:
+        for observation in observations:
+            _emit_package_source_boundary_observation(observation)
+    if any(observation["outcome"] != "MATCH" for observation in observations):
+        _stop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
 
 
 def _package_runtime_plan(
@@ -928,6 +1036,9 @@ def _package_runtime_plan(
         _package_runtime_plan_binding_stop(
             "PROVISIONING_SCRIPT", "MISMATCH", diagnostic_observation
         )
+    _package_source_boundary_observations(
+        diagnostic_observation=diagnostic_observation
+    )
     for name, expected in PACKAGE_VERSIONS.items():
         binding_id = _PACKAGE_VERSION_BINDING_IDS.get(name)
         try:

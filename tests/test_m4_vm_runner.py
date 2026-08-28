@@ -213,7 +213,12 @@ class M4VMRunnerContractTests(unittest.TestCase):
             "packages": dict(module.PACKAGE_VERSIONS),
             "provisioning_script_digest": digest,
             "package_sources": {
-                path: digest for path in module.PACKAGE_SOURCE_PATHS
+                path: (
+                    module.PACKAGE_SOURCE_UBUNTU_DIGEST
+                    if path == module.PACKAGE_SOURCE_UBUNTU_PATH
+                    else digest
+                )
+                for path in module.PACKAGE_SOURCE_PATHS
             },
             "runtime_configs": {
                 path: digest for path in module.RUNTIME_CONFIG_PATHS
@@ -764,6 +769,276 @@ class M4VMRunnerContractTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertNotIn('_diagnostic_stage("KEY_ADMITTED")', source)
 
+    def test_ubuntu_source_boundaries_distinguish_before_and_during_apt(
+        self,
+    ) -> None:
+        module = _module()
+        expected = (
+            "sha256:eafe8bd9490d039ddaa42d1ca6e2682b0a4e68fe13845aa47d8c195292574d55"
+        )
+        different = "sha256:" + "0" * 64
+        generic = "sha256:" + "a" * 64
+        before = "BEFORE_APT_GET_UPDATE"
+        after = "AFTER_EXACT_PACKAGE_INSTALL_AND_CLEAN"
+        self.assertEqual(module.PACKAGE_SOURCE_UBUNTU_DIGEST, expected)
+        self.assertEqual(
+            module.PACKAGE_SOURCE_BOUNDARIES,
+            (before, after),
+        )
+        self.assertEqual(
+            module.PACKAGE_SOURCE_BOUNDARY_OUTCOMES,
+            frozenset({"MATCH", "MISMATCH", "READ_ERROR"}),
+        )
+
+        def observation(
+            boundary: str,
+            outcome: str,
+            observed: str | None,
+            *,
+            binding_id: str = "PACKAGE_SOURCE_UBUNTU",
+            expected_sha256: str = expected,
+        ) -> dict[str, object]:
+            return {
+                "binding_id": binding_id,
+                "boundary": boundary,
+                "expected_sha256": expected_sha256,
+                "non_authorizing": True,
+                "observed_sha256": observed,
+                "outcome": outcome,
+                "record_type": "M4_PACKAGE_SOURCE_BOUNDARY_OBSERVATION",
+            }
+
+        exact_rows = (
+            observation(before, "MATCH", expected),
+            observation(after, "MATCH", expected),
+        )
+        plan = {
+            "plan_version": "1.0.0",
+            "packages": dict(module.PACKAGE_VERSIONS),
+            "provisioning_script_digest": generic,
+            "package_sources": {
+                path: (
+                    expected
+                    if path == module.PACKAGE_SOURCE_UBUNTU_PATH
+                    else generic
+                )
+                for path in module.PACKAGE_SOURCE_PATHS
+            },
+            "runtime_configs": {
+                path: generic for path in module.RUNTIME_CONFIG_PATHS
+            },
+            "runtime_tools": {
+                path: generic for path in module.RUNTIME_TOOL_PATHS
+            },
+        }
+
+        with tempfile.TemporaryDirectory(
+            prefix="m4-ubuntu-source-boundaries-"
+        ) as directory:
+            boundary_path = Path(directory) / "package-source-boundaries.jsonl"
+
+            def invoke(
+                raw: bytes,
+                *,
+                diagnostic_observation: bool = True,
+                final_source_digest: str = expected,
+            ) -> tuple[
+                dict[str, object] | None,
+                str | None,
+                list[dict[str, object]],
+                mock.Mock,
+            ]:
+                boundary_path.write_bytes(raw)
+                writes: list[dict[str, object]] = []
+                dpkg = mock.Mock(
+                    side_effect=lambda argv, **_kwargs: (
+                        module.subprocess.CompletedProcess(
+                            argv,
+                            0,
+                            stdout=module.PACKAGE_VERSIONS[argv[-1]].encode(
+                                "ascii"
+                            ),
+                            stderr=b"",
+                        )
+                    )
+                )
+
+                def digest_file(path, _maximum=64 << 20):
+                    if path == module.PROVISIONING_SCRIPT:
+                        return generic
+                    if str(path) == module.PACKAGE_SOURCE_UBUNTU_PATH:
+                        return final_source_digest
+                    return generic
+
+                def capture(_descriptor, raw_record):
+                    writes.append(
+                        module._strict_bytes(raw_record.removesuffix(b"\n"), 1024)
+                    )
+                    return len(raw_record)
+
+                result = None
+                reason = None
+                with (
+                    mock.patch.object(
+                        module,
+                        "PACKAGE_SOURCE_BOUNDARY_OBSERVATIONS",
+                        boundary_path,
+                    ),
+                    mock.patch.object(module, "_strict_file", return_value=plan),
+                    mock.patch.object(
+                        module, "_digest_file", side_effect=digest_file
+                    ),
+                    mock.patch.object(module.subprocess, "run", dpkg),
+                    mock.patch.object(
+                        module.Path,
+                        "resolve",
+                        new=lambda path, strict=False: path,
+                    ),
+                    mock.patch.object(module.os, "write", side_effect=capture),
+                ):
+                    try:
+                        result = module._package_runtime_plan(
+                            diagnostic_observation=diagnostic_observation
+                        )
+                    except module.QualificationStop as error:
+                        reason = str(error)
+                return result, reason, writes, dpkg
+
+            def jsonl(*rows: dict[str, object]) -> bytes:
+                return b"".join(module._canonical(row) + b"\n" for row in rows)
+
+            result, reason, writes, dpkg = invoke(
+                jsonl(observation(before, "MISMATCH", different))
+            )
+            self.assertIsNone(result)
+            self.assertEqual(reason, "PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
+            self.assertEqual(
+                writes, [observation(before, "MISMATCH", different)]
+            )
+            dpkg.assert_not_called()
+
+            result, reason, writes, dpkg = invoke(
+                jsonl(
+                    observation(before, "MATCH", expected),
+                    observation(after, "MISMATCH", different),
+                )
+            )
+            self.assertIsNone(result)
+            self.assertEqual(reason, "PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
+            self.assertEqual(
+                writes,
+                [
+                    observation(before, "MATCH", expected),
+                    observation(after, "MISMATCH", different),
+                ],
+            )
+            dpkg.assert_not_called()
+
+            result, reason, writes, dpkg = invoke(jsonl(*exact_rows))
+            self.assertEqual(result, plan)
+            self.assertIsNone(reason)
+            self.assertEqual(writes, list(exact_rows))
+            self.assertEqual(dpkg.call_count, len(module.PACKAGE_VERSIONS))
+
+            malformed = {**exact_rows[0], "unknown": True}
+            for name, raw in (
+                ("malformed", jsonl(malformed)),
+                ("duplicate", jsonl(exact_rows[0], exact_rows[0])),
+                (
+                    "unknown-binding",
+                    jsonl(
+                        observation(
+                            before,
+                            "MATCH",
+                            expected,
+                            binding_id="PACKAGE_SOURCE_UNKNOWN",
+                        )
+                    ),
+                ),
+                (
+                    "unknown-boundary",
+                    jsonl(observation("DURING_APT", "MATCH", expected)),
+                ),
+                (
+                    "nonstring-boundary",
+                    jsonl({**exact_rows[0], "boundary": []}),
+                ),
+                (
+                    "unknown-outcome",
+                    jsonl(observation(before, "UNKNOWN", expected)),
+                ),
+                (
+                    "nonstring-outcome",
+                    jsonl({**exact_rows[0], "outcome": []}),
+                ),
+                (
+                    "wrong-expected",
+                    jsonl(
+                        observation(
+                            before,
+                            "MATCH",
+                            different,
+                            expected_sha256=different,
+                        )
+                    ),
+                ),
+                (
+                    "match-observed-mismatch",
+                    jsonl(observation(before, "MATCH", different)),
+                ),
+                (
+                    "mismatch-observed-match",
+                    jsonl(observation(before, "MISMATCH", expected)),
+                ),
+                (
+                    "read-error-observed-digest",
+                    jsonl(observation(before, "READ_ERROR", different)),
+                ),
+            ):
+                with self.subTest(name=name):
+                    result, reason, writes, dpkg = invoke(raw)
+                    self.assertIsNone(result)
+                    self.assertEqual(
+                        reason,
+                        "PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED",
+                    )
+                    self.assertEqual(writes, [])
+                    dpkg.assert_not_called()
+
+            for name, rows in (
+                (
+                    "wrong-before",
+                    (observation(before, "MISMATCH", different),),
+                ),
+                (
+                    "changed-during-apt",
+                    (
+                        observation(before, "MATCH", expected),
+                        observation(after, "MISMATCH", different),
+                    ),
+                ),
+            ):
+                with self.subTest(ordinary_non_authorizing=name):
+                    result, reason, writes, dpkg = invoke(
+                        jsonl(*rows), diagnostic_observation=False
+                    )
+                    self.assertIsNone(result)
+                    self.assertEqual(
+                        reason, "PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH"
+                    )
+                    self.assertEqual(writes, [])
+                    dpkg.assert_not_called()
+
+            result, reason, writes, dpkg = invoke(
+                jsonl(*exact_rows),
+                diagnostic_observation=False,
+                final_source_digest=different,
+            )
+            self.assertIsNone(result)
+            self.assertEqual(reason, "PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
+            self.assertEqual(writes, [])
+            self.assertEqual(dpkg.call_count, len(module.PACKAGE_VERSIONS))
+
     def test_post_v2_package_runtime_plan_observation_discriminates_all_bindings(
         self,
     ) -> None:
@@ -825,7 +1100,12 @@ class M4VMRunnerContractTests(unittest.TestCase):
             "packages": dict(module.PACKAGE_VERSIONS),
             "provisioning_script_digest": digest,
             "package_sources": {
-                path: digest for path in module.PACKAGE_SOURCE_PATHS
+                path: (
+                    module.PACKAGE_SOURCE_UBUNTU_DIGEST
+                    if path == module.PACKAGE_SOURCE_UBUNTU_PATH
+                    else digest
+                )
+                for path in module.PACKAGE_SOURCE_PATHS
             },
             "runtime_configs": {
                 path: digest for path in module.RUNTIME_CONFIG_PATHS
@@ -877,7 +1157,13 @@ class M4VMRunnerContractTests(unittest.TestCase):
                     raise OSError("synthetic read error")
                 if current == binding_id and failure == "mismatch":
                     return other_digest
-                return digest
+                if path == module.PROVISIONING_SCRIPT:
+                    return plan["provisioning_script_digest"]
+                return {
+                    **plan["package_sources"],
+                    **plan["runtime_configs"],
+                    **plan["runtime_tools"],
+                }[text]
 
             def resolve(path, strict=False):
                 del strict
@@ -890,6 +1176,9 @@ class M4VMRunnerContractTests(unittest.TestCase):
 
             with (
                 mock.patch.object(module, "_strict_file", return_value=plan),
+                mock.patch.object(
+                    module, "_package_source_boundary_observations"
+                ),
                 mock.patch.object(module, "_digest_file", side_effect=digest_file),
                 mock.patch.object(module.subprocess, "run", side_effect=dpkg),
                 mock.patch.object(module.Path, "resolve", new=resolve),
@@ -973,6 +1262,7 @@ class M4VMRunnerContractTests(unittest.TestCase):
 
         with (
             mock.patch.object(module, "_strict_file", return_value=plan),
+            mock.patch.object(module, "_package_source_boundary_observations"),
             mock.patch.object(
                 module,
                 "_digest_file",
@@ -989,9 +1279,21 @@ class M4VMRunnerContractTests(unittest.TestCase):
             del strict
             raise OSError("ordinary resolve failure")
 
+        def exact_digest_file(path, _maximum=64 << 20):
+            if path == module.PROVISIONING_SCRIPT:
+                return plan["provisioning_script_digest"]
+            return {
+                **plan["package_sources"],
+                **plan["runtime_configs"],
+                **plan["runtime_tools"],
+            }[str(path)]
+
         with (
             mock.patch.object(module, "_strict_file", return_value=plan),
-            mock.patch.object(module, "_digest_file", return_value=digest),
+            mock.patch.object(module, "_package_source_boundary_observations"),
+            mock.patch.object(
+                module, "_digest_file", side_effect=exact_digest_file
+            ),
             mock.patch.object(module.subprocess, "run", side_effect=successful_dpkg),
             mock.patch.object(module.Path, "resolve", new=resolve_failure),
             mock.patch.object(module.os, "write") as write,
@@ -1551,11 +1853,18 @@ class M4VMRunnerContractTests(unittest.TestCase):
                 mock.patch.object(module, "PROFILE_PATH", PROFILE),
                 mock.patch.object(module, "PACKAGE_VERSIONS", packages),
                 mock.patch.object(module, "PACKAGE_SOURCE_PATHS", frozenset({str(package_source)})),
+                mock.patch.object(module, "PACKAGE_SOURCE_UBUNTU_PATH", str(package_source)),
+                mock.patch.object(
+                    module,
+                    "PACKAGE_SOURCE_UBUNTU_DIGEST",
+                    module._digest_file(package_source),
+                ),
                 mock.patch.object(module, "RUNTIME_CONFIG_PATHS", frozenset({str(runtime_config)})),
                 mock.patch.object(module, "RUNTIME_TOOL_PATHS", frozenset({str(runtime_tool)})),
+                mock.patch.object(module, "_package_source_boundary_observations"),
                 mock.patch.object(module.subprocess, "run", side_effect=dpkg),
             )
-            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10], patches[11]:
                 profile = json.loads(PROFILE.read_bytes())
                 self.assertEqual(
                     module._verify_qualification_environment(

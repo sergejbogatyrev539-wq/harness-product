@@ -95,6 +95,15 @@ _IMAGE_URL = (
 )
 _IMAGE_DIGEST = "sha256:6e40c07ae715f744f84af0bec76415cc1987dd115b4b8de437818561f01a3733"
 _M4_PROFILE_DIGEST = "sha256:50947b4b4ae139effbaddd749c7175a15755675f824e0ae1ed734a85694b4682"
+_UBUNTU_SOURCE_BYTES = 321
+_UBUNTU_SOURCE_DIGEST = (
+    "sha256:eafe8bd9490d039ddaa42d1ca6e2682b0a4e68fe13845aa47d8c195292574d55"
+)
+_UBUNTU_SOURCE_FINAL_PATH = "/etc/apt/sources.list.d/ubuntu.sources"
+_UBUNTU_SOURCE_SEED_PATH = "/etc/harness-m4/apt-ubuntu.sources"
+_PACKAGE_SOURCE_BOUNDARY_PATH = (
+    "/var/lib/harness-m4-provisioning/package-source-boundaries.jsonl"
+)
 _SUMS_DIGEST = "sha256:0f92d5610dfc5797f9574a5a8a000021d845c70c70f6b187b2b78eb1584618cf"
 _SUMS_SIGNATURE_DIGEST = "sha256:a4466d91a9481850908ce0e8c518ebb1cf3ca414add6ba378e783c7d553618a7"
 _UBUNTU_SIGNER = "D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81"
@@ -210,6 +219,20 @@ _PACKAGE_RUNTIME_PLAN_REJECTED = (
 _PACKAGE_RUNTIME_PLAN_OBSERVATION_KEYS = frozenset(
     {"record_type", "non_authorizing", "binding_id", "outcome"}
 )
+_PACKAGE_SOURCE_BOUNDARY_KEYS = frozenset(
+    {
+        "record_type", "non_authorizing", "binding_id", "boundary", "outcome",
+        "expected_sha256", "observed_sha256",
+    }
+)
+_PACKAGE_SOURCE_BOUNDARIES = (
+    "BEFORE_APT_GET_UPDATE",
+    "AFTER_EXACT_PACKAGE_INSTALL_AND_CLEAN",
+)
+_PACKAGE_SOURCE_BOUNDARY_OUTCOMES = frozenset(
+    {"MATCH", "MISMATCH", "READ_ERROR"}
+)
+_PACKAGE_SOURCE_BOUNDARY_TOKEN = b'"M4_PACKAGE_SOURCE_BOUNDARY_OBSERVATION"'
 _SERVICE_PROPERTIES = (
     "ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus",
 )
@@ -765,9 +788,7 @@ def _package_runtime_plan() -> dict[str, object]:
             "/etc/apt/apt.conf.d/99-harness-m4": _digest_file(
                 IMAGE_LAB / "apt-harness-m3.conf", 1 << 20
             ),
-            "/etc/apt/sources.list.d/ubuntu.sources": _digest_file(
-                IMAGE_LAB / "apt-ubuntu.sources", 1 << 20
-            ),
+            _UBUNTU_SOURCE_FINAL_PATH: _UBUNTU_SOURCE_DIGEST,
         },
         "runtime_configs": {
             "/etc/harness-m4/nftables-offline.conf": _digest_file(
@@ -787,6 +808,24 @@ def _package_runtime_plan() -> dict[str, object]:
             "/usr/sbin/apparmor_parser": "sha256:6bc852b37807961c14976be9a227ae96bd817f73b5189cb0e0ff5eca4448c01c",
         },
     }
+
+
+def _ubuntu_source_seed_entry(
+    package_runtime_plan: dict[str, object],
+) -> tuple[str, bytes, int]:
+    sources = package_runtime_plan.get("package_sources")
+    try:
+        raw = _read_regular(IMAGE_LAB / "apt-ubuntu.sources", _UBUNTU_SOURCE_BYTES)
+    except QualificationStop as error:
+        raise QualificationStop("PACKAGE_RUNTIME_PLAN_SEED_MISMATCH") from error
+    if (
+        type(sources) is not dict
+        or sources.get(_UBUNTU_SOURCE_FINAL_PATH) != _UBUNTU_SOURCE_DIGEST
+        or len(raw) != _UBUNTU_SOURCE_BYTES
+        or _digest_bytes(raw) != _UBUNTU_SOURCE_DIGEST
+    ):
+        _stop("PACKAGE_RUNTIME_PLAN_SEED_MISMATCH")
+    return _UBUNTU_SOURCE_SEED_PATH, raw, 0o444
 
 
 def _qemu_argv(attempt: int, phase: str, *, lab: Path = LAB) -> list[str]:
@@ -2766,6 +2805,87 @@ printf '%s  %s\n' \
 """
 
 
+def _provision_entry_script() -> bytes:
+    return f"""#!/bin/bash
+set -euo pipefail
+boundary_expected='{_UBUNTU_SOURCE_DIGEST}'
+boundary_canonical='{_UBUNTU_SOURCE_SEED_PATH}'
+boundary_final='{_UBUNTU_SOURCE_FINAL_PATH}'
+boundary_records='{_PACKAGE_SOURCE_BOUNDARY_PATH}'
+/usr/bin/install -d -o root -g root -m 0700 /var/lib/harness-m4-provisioning
+if [[ -e "$boundary_records" || -L "$boundary_records" ]]; then
+  exit 1
+fi
+(umask 077; : > "$boundary_records")
+
+_harness_m4_observe_ubuntu_source() {{
+  local boundary="$1"
+  local result hex observed observed_json outcome
+  if result=$(/usr/bin/sha256sum -- "$boundary_final" 2>/dev/null); then
+    hex="${{result%% *}}"
+    if [[ "$hex" =~ ^[0-9a-f]{{64}}$ ]]; then
+      observed="sha256:$hex"
+      observed_json="\\\"$observed\\\""
+      if [[ "$observed" == "$boundary_expected" ]]; then
+        outcome='MATCH'
+      else
+        outcome='MISMATCH'
+      fi
+    else
+      observed_json='null'
+      outcome='READ_ERROR'
+    fi
+  else
+    observed_json='null'
+    outcome='READ_ERROR'
+  fi
+  if ! /usr/bin/printf '{{"binding_id":"PACKAGE_SOURCE_UBUNTU","boundary":"%s","expected_sha256":"%s","non_authorizing":true,"observed_sha256":%s,"outcome":"%s","record_type":"M4_PACKAGE_SOURCE_BOUNDARY_OBSERVATION"}}\\n' \
+    "$boundary" "$boundary_expected" "$observed_json" "$outcome" \
+    | /usr/bin/tee -a "$boundary_records"; then
+    return 1
+  fi
+  [[ "$outcome" == 'MATCH' ]]
+}}
+
+/usr/bin/install -o root -g root -m 0644 "$boundary_canonical" "$boundary_final"
+_harness_m4_seen_update=0
+_harness_m4_clean_state=0
+_harness_m4_debug() {{
+  local command="$BASH_COMMAND"
+  trap - DEBUG
+  if [[ "$_harness_m4_clean_state" == 1 ]]; then
+    _harness_m4_clean_state=2
+    if ! _harness_m4_observe_ubuntu_source \
+      'AFTER_EXACT_PACKAGE_INSTALL_AND_CLEAN'; then
+      exit 1
+    fi
+  fi
+  if [[ "$command" == "/usr/bin/apt-get update" ]]; then
+    if [[ "$_harness_m4_seen_update" != 0 ]]; then
+      exit 1
+    fi
+    if ! _harness_m4_observe_ubuntu_source 'BEFORE_APT_GET_UPDATE'; then
+      exit 1
+    fi
+    _harness_m4_seen_update=1
+  elif [[ "$command" == "/usr/bin/apt-get clean" ]]; then
+    if [[ "$_harness_m4_seen_update" != 1 || "$_harness_m4_clean_state" != 0 ]]; then
+      exit 1
+    fi
+    _harness_m4_clean_state=1
+  fi
+  trap _harness_m4_debug DEBUG
+}}
+set -T
+trap _harness_m4_debug DEBUG
+source /root/harness-m4-provision.sh
+trap - DEBUG
+if [[ "$_harness_m4_seen_update" != 1 || "$_harness_m4_clean_state" != 2 ]]; then
+  exit 1
+fi
+""".encode("ascii")
+
+
 def _cloud_config(client_public: str, writes: list[str]) -> bytes:
     lines = (
         [
@@ -2787,7 +2907,11 @@ def _cloud_config(client_public: str, writes: list[str]) -> bytes:
             "write_files:",
         ]
         + writes
-        + ["runcmd:", "  - [ /bin/bash, /root/harness-m4-provision.sh ]", ""]
+        + [
+            "runcmd:",
+            "  - [ /bin/bash, /root/harness-m4-provision-entry.sh ]",
+            "",
+        ]
     )
     return "\n".join(lines).encode("utf-8")
 
@@ -2799,6 +2923,17 @@ def _create_seed(
     source: dict[str, object],
     package_runtime_plan: dict[str, object] | None = None,
 ) -> tuple[Path, Path, Path]:
+    runtime_plan = (
+        _package_runtime_plan()
+        if package_runtime_plan is None
+        else package_runtime_plan
+    )
+    if (
+        type(runtime_plan) is not dict
+        or _strict_json(_canonical(runtime_plan), 1 << 20) != runtime_plan
+    ):
+        _stop("PACKAGE_RUNTIME_PLAN_MALFORMED")
+    ubuntu_source_entry = _ubuntu_source_seed_entry(runtime_plan)
     client_key = attempt_root / "ssh-client"
     host_key = attempt_root / "ssh-host"
     _generate_key(client_key, f"harness-m4-client-attempt-{attempt}")
@@ -2824,16 +2959,6 @@ def _create_seed(
         "qemu_machine": "q35",
         "offline_egress": True,
     }
-    runtime_plan = (
-        _package_runtime_plan()
-        if package_runtime_plan is None
-        else package_runtime_plan
-    )
-    if (
-        type(runtime_plan) is not dict
-        or _strict_json(_canonical(runtime_plan), 1 << 20) != runtime_plan
-    ):
-        _stop("PACKAGE_RUNTIME_PLAN_MALFORMED")
     writes: list[str] = []
     for path, raw, mode in (
         ("/var/tmp/harness-source.tgz", _read_regular(source_archive, 16 << 20), 0o600),
@@ -2844,11 +2969,7 @@ def _create_seed(
             _read_regular(ROOT / "profiles/harness-m4-controller@.service", 1 << 20),
             0o444,
         ),
-        (
-            "/etc/apt/sources.list.d/ubuntu.sources",
-            _read_regular(IMAGE_LAB / "apt-ubuntu.sources", 1 << 20),
-            0o644,
-        ),
+        ubuntu_source_entry,
         (
             "/etc/apt/apt.conf.d/99-harness-m4",
             _read_regular(IMAGE_LAB / "apt-harness-m3.conf", 1 << 20),
@@ -2877,6 +2998,11 @@ def _create_seed(
             0o644,
         ),
         ("/root/harness-m4-provision.sh", _provision_script(), 0o700),
+        (
+            "/root/harness-m4-provision-entry.sh",
+            _provision_entry_script(),
+            0o700,
+        ),
     ):
         writes.extend(_cloud_file(path, raw, mode))
     client_public = _read_regular(client_key.with_suffix(".pub"), 4096).decode("ascii").strip()
@@ -3251,6 +3377,94 @@ def _extract_package_runtime_plan_observation(
     if terminal != expected_terminal or observation_index >= terminal_index:
         _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ORDER_MISMATCH")
     return observation
+
+
+def _validate_package_source_boundary_observation(
+    value: object,
+) -> dict[str, object]:
+    if (
+        type(value) is not dict
+        or frozenset(value) != _PACKAGE_SOURCE_BOUNDARY_KEYS
+        or value.get("record_type")
+        != "M4_PACKAGE_SOURCE_BOUNDARY_OBSERVATION"
+        or value.get("non_authorizing") is not True
+        or value.get("binding_id") != "PACKAGE_SOURCE_UBUNTU"
+        or type(value.get("boundary")) is not str
+        or value.get("boundary") not in _PACKAGE_SOURCE_BOUNDARIES
+        or type(value.get("outcome")) is not str
+        or value.get("outcome") not in _PACKAGE_SOURCE_BOUNDARY_OUTCOMES
+        or value.get("expected_sha256") != _UBUNTU_SOURCE_DIGEST
+    ):
+        _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+    observed = value["observed_sha256"]
+    outcome = value["outcome"]
+    if (
+        (outcome == "MATCH" and observed != _UBUNTU_SOURCE_DIGEST)
+        or (
+            outcome == "MISMATCH"
+            and (
+                type(observed) is not str
+                or _DIGEST.fullmatch(observed) is None
+                or observed == _UBUNTU_SOURCE_DIGEST
+            )
+        )
+        or (outcome == "READ_ERROR" and observed is not None)
+    ):
+        _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+    return value
+
+
+def _extract_package_source_boundary_observations(
+    raw: bytes,
+) -> list[dict[str, object]]:
+    if type(raw) is not bytes or len(raw) > _MAX_PHASE_LOG_BYTES:
+        _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+    token_rows = [
+        line for line in raw.splitlines() if _PACKAGE_SOURCE_BOUNDARY_TOKEN in line
+    ]
+    if not token_rows:
+        return []
+    if len(token_rows) not in {1, 2}:
+        _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+    observations: list[dict[str, object]] = []
+    for line in token_rows:
+        if not line or len(line) > 1024:
+            _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+        try:
+            observation = _validate_package_source_boundary_observation(
+                _strict_json(line, 1024)
+            )
+        except QualificationStop as error:
+            raise QualificationStop(
+                "PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED"
+            ) from error
+        observations.append(observation)
+    if (
+        observations[0]["boundary"] != _PACKAGE_SOURCE_BOUNDARIES[0]
+        or (
+            len(observations) == 2
+            and (
+                observations[0]["outcome"] != "MATCH"
+                or observations[1]["boundary"] != _PACKAGE_SOURCE_BOUNDARIES[1]
+            )
+        )
+    ):
+        _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+    return observations
+
+
+def _require_exact_package_source_boundaries(
+    raw: bytes,
+) -> list[dict[str, object]]:
+    observations = _extract_package_source_boundary_observations(raw)
+    expected_raw = b"".join(_canonical(row) + b"\n" for row in observations)
+    if (
+        len(observations) != 2
+        or any(row["outcome"] != "MATCH" for row in observations)
+        or raw != expected_raw
+    ):
+        _stop("PACKAGE_SOURCE_BOUNDARY_OBSERVATION_MALFORMED")
+    return observations
 
 
 def _collect_pre_key_diagnostics(
@@ -3644,6 +3858,14 @@ def _provision_vm(
             client_key,
             known_hosts,
             ["sudo", "/usr/bin/test", "-f", "/var/lib/harness-m4-provisioning/complete"],
+        )
+        _require_exact_package_source_boundaries(
+            _ssh(
+                client_key,
+                known_hosts,
+                ["sudo", "/usr/bin/cat", _PACKAGE_SOURCE_BOUNDARY_PATH],
+                maximum=4096,
+            )
         )
         created.append(
             _install_guest_file(
@@ -4196,11 +4418,25 @@ def _capture_post_v2_qemu_logs(attempt_root: Path) -> dict[str, object]:
                     "lines": ["UNAVAILABLE:LOG_ABSENT"],
                 }
                 continue
-            lines = raw.decode("utf-8", "replace").splitlines()[-128:]
+            boundary_lines = (
+                [
+                    _canonical(row).decode("utf-8")
+                    for row in _extract_package_source_boundary_observations(raw)
+                ]
+                if name == "provision.serial.log"
+                else []
+            )
+            lines = [
+                _sanitize_diagnostic_line(line)
+                for line in raw.decode("utf-8", "replace").splitlines()[-128:]
+            ]
+            if boundary_lines:
+                lines = [line for line in lines if line not in boundary_lines]
+                lines = boundary_lines + lines[-(128 - len(boundary_lines)):]
             result[name] = {
                 "bytes": len(raw),
                 "digest": _digest_bytes(raw),
-                "lines": [_sanitize_diagnostic_line(line) for line in lines],
+                "lines": lines,
             }
     return _validate_post_v2_qemu_log_capture(result)
 
