@@ -60,6 +60,10 @@ DENIED_REPOSITORY = PUBLICATION_PARENT.parent / "synthetic-repository"
 RUN_STATE = CONTROLLER / "run-state.json"
 KEY_ADMISSION = Path("/etc/harness-m4/key-admission.json")
 RUNTIME_TRUST = Path("/etc/harness-m4/runtime-trust.json")
+QUALIFICATION_REQUEST = Path("/etc/harness-m4/qualification.json")
+SOURCE_ARCHIVE = Path("/etc/harness-m4/source-archive.tgz")
+PACKAGE_RUNTIME_PLAN = Path("/etc/harness-m4/package-runtime-plan.json")
+PROVISIONING_SCRIPT = Path("/root/harness-m4-provision.sh")
 PROFILE_PATH = SOURCE / "profiles/m4-lx-a.json"
 M4_PROFILE = Path(__file__).resolve().parents[1] / "profiles/m4-lx-a.json"
 APPARMOR_POLICY = SOURCE / "profiles/m4-lx-a.apparmor"
@@ -92,6 +96,60 @@ SEALED_FD_ONLY = "SEALED_FD_ONLY"
 PUBLISHER_BEFORE_REPLACE = "publisher_before_replace"
 EXPECTED_SCOPE = "DEPLOYMENT_ATTESTED"
 KEY_ADMISSION_MODE = "HOST_ATTEMPT_LEDGER_PIN_BEFORE_WORKER_GATE"
+QUALIFICATION_CONTRACT_KIND = "M4_EXACT_DISPOSABLE_TEST_PROFILE_QUALIFICATION_V2"
+QUALIFICATION_GOAL_REFERENCE = (
+    "/home/a1/.codex/attachments/"
+    "4adf762e-32a5-45e2-bf75-3c79125ace23/pasted-text.txt"
+)
+QUALIFICATION_GOAL_DIGEST = (
+    "sha256:431777706d5b37c95c2dfebac910b1ce6a57908fe8650353058c58a83feff20b"
+)
+CANONICAL_PROFILE_DIGEST = (
+    "sha256:50947b4b4ae139effbaddd749c7175a15755675f824e0ae1ed734a85694b4682"
+)
+BASE_IMAGE_DIGEST = (
+    "sha256:6e40c07ae715f744f84af0bec76415cc1987dd115b4b8de437818561f01a3733"
+)
+PREDECESSOR_QUALIFICATION_LEDGER_DIGEST = (
+    "sha256:719505206caf364c6c0d40983687416bcca5644f879a46254714621cb070d5f9"
+)
+PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST = (
+    "sha256:6d5d1d00dc2fc303a061c1fc6f3456fb1e6c9fb1c1baae3f667a6521f8382d78"
+)
+PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST = (
+    "sha256:91abc47ad6070c8b9c8cad89369780b698a696c3e90aed5e2c84cb45f0b1418d"
+)
+PACKAGE_VERSIONS = {
+    "apparmor": "4.0.1really4.0.1-0ubuntu0.24.04.7",
+    "apparmor-utils": "4.0.1really4.0.1-0ubuntu0.24.04.7",
+    "bubblewrap": "0.9.0-1ubuntu0.1",
+    "libssl3t64": "3.0.13-0ubuntu3.12",
+    "openssl": "3.0.13-0ubuntu3.12",
+    "python3.12": "3.12.3-1ubuntu0.15",
+}
+PACKAGE_SOURCE_PATHS = frozenset(
+    {
+        "/etc/apt/apt.conf.d/99-harness-m4",
+        "/etc/apt/sources.list.d/ubuntu.sources",
+    }
+)
+RUNTIME_CONFIG_PATHS = frozenset(
+    {
+        "/etc/hosts",
+        "/etc/harness-m4/nftables-offline.conf",
+        "/etc/harness-m4/nftables-provisioning.conf",
+    }
+)
+RUNTIME_TOOL_PATHS = frozenset(
+    {
+        AA_EXEC,
+        BWRAP,
+        OPENSSL,
+        PYTHON,
+        LIBCRYPTO,
+        APPARMOR_PARSER,
+    }
+)
 ROLE_LABELS = {
     "CONTROLLER": "harness-l0-lx-a.controller",
     "EXECUTOR": "harness-l0-lx-a.executor",
@@ -140,7 +198,11 @@ RUN_STATE_KEYS = frozenset(
     {"record_version", "phase", "identity", "trust", "durable", "publication", "execution"}
 )
 _RUN_IDENTITY_KEYS = frozenset(
-    {"candidate", "environment", "attempt", "boot_id", "guest", "source", "host_provenance"}
+    {
+        "candidate", "environment", "attempt", "qualification_contract",
+        "qualification_contract_digest", "boot_id", "guest", "source",
+        "host_provenance", "package_runtime_plan",
+    }
 )
 _RUN_TRUST_KEYS = frozenset(
     {
@@ -173,6 +235,47 @@ _RUN_EXECUTION_KEYS = frozenset(
         "controller_facts", "publisher_facts", "executor_facts", "observer_facts",
         "runtime_events", "denial_events", "role_seccomp_digests",
         "m3_role_seccomp", "cleanup",
+    }
+)
+_QUALIFICATION_REQUEST_KEYS = frozenset(
+    {"request_version", "qualification_contract", "qualification_contract_digest"}
+)
+_QUALIFICATION_CONTRACT_KEYS = frozenset(
+    {
+        "contract_core", "contract_core_digest", "environment_preimage",
+        "environment_digest",
+    }
+)
+_QUALIFICATION_CORE_KEYS = frozenset(
+    {
+        "contract_version", "contract_kind", "user_scope_reference",
+        "user_goal_digest", "candidate", "tree", "attempt",
+        "source_files_digest", "canonical_profile_digest",
+        "raw_profile_artifact_digest", "base_image_digest",
+        "predecessor_qualification_ledger_digest",
+        "predecessor_diagnostic_ledger_digest",
+        "predecessor_diagnostic_bundle_digest", "max_attempts",
+        "success_target", "success_target_authorizing",
+    }
+)
+_QUALIFICATION_ENVIRONMENT_KEYS = frozenset(
+    {
+        "contract_core_digest", "source_archive_digest", "seed_digest",
+        "package_runtime_plan_digest", "host_provenance_digest",
+    }
+)
+_PACKAGE_RUNTIME_PLAN_KEYS = frozenset(
+    {
+        "plan_version", "packages", "provisioning_script_digest",
+        "package_sources", "runtime_configs", "runtime_tools",
+    }
+)
+_KEY_ADMISSION_KEYS = frozenset(
+    {
+        "admission_version", "mode", "qualification_contract",
+        "qualification_contract_digest", "contract_core_digest", "ledger_entry_digest",
+        "receipt_public_key_digests", "supply_public_key_digest",
+        "runtime_trust_digest",
     }
 )
 
@@ -323,10 +426,72 @@ def _is_digest(value: object) -> bool:
     return type(value) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
 
 
+def _validate_qualification_contract(value: object) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != _QUALIFICATION_CONTRACT_KEYS:
+        _stop("M4_QUALIFICATION_CONTRACT_MISMATCH")
+    core = value["contract_core"]
+    environment = value["environment_preimage"]
+    if (
+        type(core) is not dict
+        or frozenset(core) != _QUALIFICATION_CORE_KEYS
+        or type(environment) is not dict
+        or frozenset(environment) != _QUALIFICATION_ENVIRONMENT_KEYS
+        or core["contract_version"] != "2.0.0"
+        or core["contract_kind"] != QUALIFICATION_CONTRACT_KIND
+        or core["user_scope_reference"] != QUALIFICATION_GOAL_REFERENCE
+        or core["user_goal_digest"] != QUALIFICATION_GOAL_DIGEST
+        or type(core["candidate"]) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", core["candidate"]) is None
+        or type(core["tree"]) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", core["tree"]) is None
+        or type(core["attempt"]) is not int
+        or isinstance(core["attempt"], bool)
+        or core["attempt"] not in {1, 2}
+        or core["canonical_profile_digest"] != CANONICAL_PROFILE_DIGEST
+        or core["raw_profile_artifact_digest"] != CANONICAL_PROFILE_DIGEST
+        or core["base_image_digest"] != BASE_IMAGE_DIGEST
+        or core["predecessor_qualification_ledger_digest"]
+        != PREDECESSOR_QUALIFICATION_LEDGER_DIGEST
+        or core["predecessor_diagnostic_ledger_digest"]
+        != PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+        or core["predecessor_diagnostic_bundle_digest"]
+        != PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST
+        or type(core["max_attempts"]) is not int
+        or core["max_attempts"] != 2
+        or type(core["success_target"]) is not int
+        or core["success_target"] != 1
+        or core["success_target_authorizing"] is not False
+        or not _is_digest(core["source_files_digest"])
+        or not all(_is_digest(item) for item in environment.values())
+    ):
+        _stop("M4_QUALIFICATION_CONTRACT_MISMATCH")
+    core_digest = _digest_bytes(_canonical(core))
+    if (
+        value["contract_core_digest"] != core_digest
+        or environment["contract_core_digest"] != core_digest
+        or value["environment_digest"] != _digest_bytes(_canonical(environment))
+    ):
+        _stop("M4_QUALIFICATION_CONTRACT_DIGEST_MISMATCH")
+    return value
+
+
+def _qualification_request_contract(
+    request: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    if (
+        type(request) is not dict
+        or frozenset(request) != _QUALIFICATION_REQUEST_KEYS
+        or request.get("request_version") != "2.0.0"
+    ):
+        _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
+    contract = _validate_qualification_contract(request["qualification_contract"])
+    digest = _digest_bytes(_canonical(contract))
+    if request["qualification_contract_digest"] != digest:
+        _stop("M4_QUALIFICATION_CONTRACT_DIGEST_MISMATCH")
+    return contract, digest
+
+
 def _validate_launch_request(request: object) -> str:
-    qualification_keys = frozenset(
-        {"request_version", "candidate", "environment", "attempt"}
-    )
     diagnostic_keys = frozenset(
         {
             "request_version", "mode", "candidate", "tree", "environment",
@@ -336,17 +501,8 @@ def _validate_launch_request(request: object) -> str:
     )
     if type(request) is not dict:
         _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
-    if frozenset(request) == qualification_keys:
-        if (
-            request["request_version"] != "1.0.0"
-            or type(request["candidate"]) is not str
-            or re.fullmatch(r"[0-9a-f]{40}", request["candidate"]) is None
-            or not _is_digest(request["environment"])
-            or type(request["attempt"]) is not int
-            or isinstance(request["attempt"], bool)
-            or request["attempt"] not in {1, 2}
-        ):
-            _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
+    if frozenset(request) == _QUALIFICATION_REQUEST_KEYS:
+        _qualification_request_contract(request)
         return "QUALIFICATION"
     if frozenset(request) == diagnostic_keys:
         if (
@@ -366,6 +522,110 @@ def _validate_launch_request(request: object) -> str:
             _stop("M4_DIAGNOSTIC_REQUEST_MISMATCH")
         return "KEY_READY_DIAGNOSTIC"
     _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
+
+
+def _validate_package_runtime_plan(value: object) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != _PACKAGE_RUNTIME_PLAN_KEYS:
+        _stop("PACKAGE_RUNTIME_PLAN_MISMATCH")
+    packages = value["packages"]
+    sources = value["package_sources"]
+    configs = value["runtime_configs"]
+    tools = value["runtime_tools"]
+    if (
+        value["plan_version"] != "1.0.0"
+        or type(packages) is not dict
+        or packages != PACKAGE_VERSIONS
+        or not _is_digest(value["provisioning_script_digest"])
+        or type(sources) is not dict
+        or frozenset(sources) != PACKAGE_SOURCE_PATHS
+        or type(configs) is not dict
+        or frozenset(configs) != RUNTIME_CONFIG_PATHS
+        or type(tools) is not dict
+        or frozenset(tools) != RUNTIME_TOOL_PATHS
+        or not all(
+            _is_digest(digest)
+            for bindings in (sources, configs, tools)
+            for digest in bindings.values()
+        )
+    ):
+        _stop("PACKAGE_RUNTIME_PLAN_MISMATCH")
+    return value
+
+
+def _package_runtime_plan() -> dict[str, object]:
+    value = _validate_package_runtime_plan(
+        _strict_file(PACKAGE_RUNTIME_PLAN, _PACKAGE_RUNTIME_PLAN_KEYS, 1 << 20)
+    )
+    if value["provisioning_script_digest"] != _digest_file(
+        PROVISIONING_SCRIPT, 1 << 20
+    ):
+        _stop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
+    for name, expected in PACKAGE_VERSIONS.items():
+        try:
+            result = subprocess.run(
+                ["/usr/bin/dpkg-query", "-W", "-f=${Version}", name],
+                shell=False,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={"LC_ALL": "C", "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+                cwd="/",
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise QualificationStop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH") from error
+        try:
+            installed = result.stdout.decode("ascii", "strict")
+        except UnicodeDecodeError as error:
+            raise QualificationStop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH") from error
+        if result.returncode != 0 or installed != expected:
+            _stop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
+    for bindings in (
+        value["package_sources"], value["runtime_configs"], value["runtime_tools"]
+    ):
+        for name, expected in bindings.items():
+            path = Path(name)
+            if name == LIBCRYPTO:
+                path = path.resolve(strict=True)
+            if _digest_file(path, 16 << 20) != expected:
+                _stop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
+    return value
+
+
+def _verify_qualification_environment(
+    request: dict[str, object],
+    source: dict[str, object],
+    host_provenance: dict[str, object],
+    profile: dict[str, object],
+) -> dict[str, object]:
+    contract, _ = _qualification_request_contract(request)
+    core = contract["contract_core"]
+    environment = contract["environment_preimage"]
+    plan = _package_runtime_plan()
+    image = host_provenance.get("image") if type(host_provenance) is dict else None
+    vm = host_provenance.get("vm") if type(host_provenance) is dict else None
+    if (
+        type(source) is not dict
+        or source.get("commit") != core["candidate"]
+        or source.get("tree") != core["tree"]
+        or source.get("files_digest") != core["source_files_digest"]
+        or _digest_bytes(_canonical(profile)) != core["canonical_profile_digest"]
+        or _digest_file(PROFILE_PATH, 1 << 20) != core["raw_profile_artifact_digest"]
+        or type(image) is not dict
+        or image.get("sha256") != core["base_image_digest"]
+        or type(vm) is not dict
+        or vm.get("seed_digest") != environment["seed_digest"]
+        or _digest_file(SOURCE_ARCHIVE, 64 << 20)
+        != environment["source_archive_digest"]
+        or _digest_file(PACKAGE_RUNTIME_PLAN, 1 << 20)
+        != environment["package_runtime_plan_digest"]
+        or _digest_bytes(_canonical(host_provenance))
+        != environment["host_provenance_digest"]
+    ):
+        _stop("M4_QUALIFICATION_ENVIRONMENT_MISMATCH")
+    return plan
 
 
 def _validate_run_state(value: object) -> dict[str, object]:
@@ -397,6 +657,22 @@ def _validate_run_state(value: object) -> dict[str, object]:
     verifier = trust["verifier"]
     recovery = durable_state["m4_recovery"]
     session = durable_state["m3_runtime_session"]
+    contract = _validate_qualification_contract(identity["qualification_contract"])
+    contract_digest = _digest_bytes(_canonical(contract))
+    core = contract["contract_core"]
+    package_runtime_plan = _validate_package_runtime_plan(
+        identity["package_runtime_plan"]
+    )
+    host_image = (
+        identity["host_provenance"].get("image")
+        if type(identity["host_provenance"]) is dict
+        else None
+    )
+    host_vm = (
+        identity["host_provenance"].get("vm")
+        if type(identity["host_provenance"]) is dict
+        else None
+    )
     if (
         type(identity["candidate"]) is not str
         or re.fullmatch(r"[0-9a-f]{40}", identity["candidate"]) is None
@@ -409,7 +685,28 @@ def _validate_run_state(value: object) -> dict[str, object]:
         or re.fullmatch(r"[0-9a-f-]{36}", identity["boot_id"]) is None
         or type(source) is not dict
         or source.get("commit") != identity["candidate"]
-        or not all(type(identity[name]) is dict for name in ("guest", "source", "host_provenance"))
+        or source.get("tree") != core["tree"]
+        or source.get("files_digest") != core["source_files_digest"]
+        or identity["candidate"] != core["candidate"]
+        or identity["environment"] != contract["environment_digest"]
+        or identity["attempt"] != core["attempt"]
+        or identity["qualification_contract_digest"] != contract_digest
+        or _digest_bytes(_canonical(identity["host_provenance"]))
+        != contract["environment_preimage"]["host_provenance_digest"]
+        or type(host_image) is not dict
+        or host_image.get("sha256")
+        != core["base_image_digest"]
+        or type(host_vm) is not dict
+        or host_vm.get("seed_digest")
+        != contract["environment_preimage"]["seed_digest"]
+        or _digest_bytes(_canonical(package_runtime_plan))
+        != contract["environment_preimage"]["package_runtime_plan_digest"]
+        or not all(
+            type(identity[name]) is dict
+            for name in (
+                "guest", "source", "host_provenance", "package_runtime_plan"
+            )
+        )
         or not all(
             _is_digest(trust[name])
             for name in (
@@ -417,12 +714,17 @@ def _validate_run_state(value: object) -> dict[str, object]:
                 "runtime_trust_digest", "supply_public_key_digest",
             )
         )
+        or trust["profile_digest"] != core["canonical_profile_digest"]
         or trust["revocation_epoch"] != 0
         or trust["fencing_epoch"] != 1
         or type(admission) is not dict
-        or admission.get("candidate") != identity["candidate"]
-        or admission.get("environment") != identity["environment"]
-        or admission.get("attempt") != identity["attempt"]
+        or frozenset(admission) != _KEY_ADMISSION_KEYS
+        or admission.get("admission_version") != "2.0.0"
+        or admission.get("mode") != KEY_ADMISSION_MODE
+        or admission.get("qualification_contract") != contract
+        or admission.get("qualification_contract_digest") != contract_digest
+        or admission.get("contract_core_digest") != contract["contract_core_digest"]
+        or not _is_digest(admission.get("ledger_entry_digest"))
         or admission.get("receipt_public_key_digests") != receipt_digests
         or admission.get("supply_public_key_digest") != trust["supply_public_key_digest"]
         or admission.get("runtime_trust_digest") != trust["runtime_trust_digest"]
@@ -606,29 +908,23 @@ def _key_admission(
 ) -> dict[str, object]:
     """Require the host ledger pin before any untrusted start gate opens."""
 
+    contract, contract_digest = _qualification_request_contract(request)
     value = _strict_file(
         KEY_ADMISSION,
-        frozenset(
-            {
-                "admission_version", "mode", "candidate", "environment", "attempt",
-                "ledger_entry_digest", "receipt_public_key_digests",
-                "supply_public_key_digest", "runtime_trust_digest",
-            }
-        ),
+        _KEY_ADMISSION_KEYS,
         1 << 20,
     )
     expected_keys = {name: key.public_key_digest for name, key in keys.items()}
     if (
-        value["admission_version"] != "1.0.0"
+        value["admission_version"] != "2.0.0"
         or value["mode"] != KEY_ADMISSION_MODE
-        or value["candidate"] != request["candidate"]
-        or value["environment"] != request["environment"]
-        or value["attempt"] != request["attempt"]
+        or value["qualification_contract"] != contract
+        or value["qualification_contract_digest"] != contract_digest
+        or value["contract_core_digest"] != contract["contract_core_digest"]
         or value["receipt_public_key_digests"] != expected_keys
         or value["supply_public_key_digest"] != supply_public_digest
         or value["runtime_trust_digest"] != runtime_trust_digest
-        or type(value["ledger_entry_digest"]) is not str
-        or re.fullmatch(r"sha256:[0-9a-f]{64}", value["ledger_entry_digest"]) is None
+        or not _is_digest(value["ledger_entry_digest"])
     ):
         _stop("KEY_ADMISSION_REQUIRED")
     return value
@@ -3067,17 +3363,33 @@ def _await_key_admission(
     request: dict[str, object], keys: dict[str, RoleKey], supply: dict[str, object],
     runtime_trust: dict[str, object],
 ) -> dict[str, object]:
-    ready = {
-        "ready_version": "1.0.0",
-        "candidate": request["candidate"],
-        "environment": request["environment"],
-        "attempt": request["attempt"],
-        "receipt_public_key_digests": {
-            name: key.public_key_digest for name, key in keys.items()
-        },
-        "supply_public_key_digest": supply["public_key_digest"],
-        "runtime_trust_digest": _digest_bytes(_canonical(runtime_trust)),
-    }
+    key_digests = {name: key.public_key_digest for name, key in keys.items()}
+    runtime_trust_digest = _digest_bytes(_canonical(runtime_trust))
+    if _validate_launch_request(request) == "QUALIFICATION":
+        contract, contract_digest = _qualification_request_contract(request)
+        core = contract["contract_core"]
+        ready = {
+            "ready_version": "2.0.0",
+            "candidate": core["candidate"],
+            "environment": contract["environment_digest"],
+            "attempt": core["attempt"],
+            "qualification_contract": contract,
+            "qualification_contract_digest": contract_digest,
+            "contract_core_digest": contract["contract_core_digest"],
+            "receipt_public_key_digests": key_digests,
+            "supply_public_key_digest": supply["public_key_digest"],
+            "runtime_trust_digest": runtime_trust_digest,
+        }
+    else:
+        ready = {
+            "ready_version": "1.0.0",
+            "candidate": request["candidate"],
+            "environment": request["environment"],
+            "attempt": request["attempt"],
+            "receipt_public_key_digests": key_digests,
+            "supply_public_key_digest": supply["public_key_digest"],
+            "runtime_trust_digest": runtime_trust_digest,
+        }
     _write_exact(RUNTIME / "key-ready.json", _canonical(ready), 0o444)
     _diagnostic_stage("KEY_READY_WRITTEN")
     deadline = time.monotonic() + 120
@@ -3087,7 +3399,7 @@ def _await_key_admission(
                 request,
                 keys,
                 str(supply["public_key_digest"]),
-                _digest_bytes(_canonical(runtime_trust)),
+                runtime_trust_digest,
             )
         time.sleep(0.1)
     _stop("KEY_ADMISSION_REQUIRED")
@@ -4461,6 +4773,35 @@ def _utc_text(value: datetime) -> str:
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _qualification_evidence_projection(
+    state: dict[str, object],
+) -> dict[str, object]:
+    identity = state["identity"]
+    contract = _validate_qualification_contract(identity["qualification_contract"])
+    contract_digest = _digest_bytes(_canonical(contract))
+    admission = state["trust"]["key_admission"]
+    admission_digest = admission["ledger_entry_digest"]
+    package_runtime_plan = _validate_package_runtime_plan(
+        identity["package_runtime_plan"]
+    )
+    if (
+        identity["qualification_contract_digest"] != contract_digest
+        or admission["qualification_contract"] != contract
+        or admission["qualification_contract_digest"] != contract_digest
+        or admission["contract_core_digest"] != contract["contract_core_digest"]
+        or not _is_digest(admission_digest)
+        or _digest_bytes(_canonical(package_runtime_plan))
+        != contract["environment_preimage"]["package_runtime_plan_digest"]
+    ):
+        _stop("M4_EVIDENCE_CONTRACT_MISMATCH")
+    return {
+        "qualification_contract": contract,
+        "qualification_contract_digest": contract_digest,
+        "admission_digest": admission_digest,
+        "package_runtime_plan": package_runtime_plan,
+    }
+
+
 def _export_m4_evidence(
     *,
     state: dict[str, object],
@@ -4473,14 +4814,22 @@ def _export_m4_evidence(
 ) -> tuple[str, dict[str, object], dict[str, bytes]]:
     if any(EVIDENCE.iterdir()):
         _stop("EVIDENCE_OUTPUT_REUSE_FORBIDDEN")
+    identity = state["identity"]
+    admission = state["trust"]["key_admission"]
+    contract_projection = _qualification_evidence_projection(state)
+    contract = contract_projection["qualification_contract"]
+    contract_digest = contract_projection["qualification_contract_digest"]
+    admission_digest = contract_projection["admission_digest"]
     supply_public_raw = _read_regular(Path(str(supply["public_key"])), 4096)
     try:
         supply_public_pem = supply_public_raw.decode("ascii")
     except UnicodeDecodeError as error:
         raise QualificationStop("M4_SUPPLY_PUBLIC_KEY_MALFORMED") from error
     evidence = {
-        "evidence_version": "1.0.0",
+        "evidence_version": "2.0.0",
+        "bundle_version": "2.0.0",
         "claim": "M4_EXACT_DISPOSABLE_TEST_PROFILE_RUNTIME_CONFORMANCE",
+        **contract_projection,
         "scope": {
             "profile_id": "M4-LX-A",
             "assurance_scope": EXPECTED_SCOPE,
@@ -4509,12 +4858,12 @@ def _export_m4_evidence(
         _stop("M4_EVIDENCE_UNBOUNDED")
     issued = datetime.now(UTC).replace(microsecond=0)
     durable_anchor = state["durable"]["m4_recovery"]
-    admission = state["trust"]["key_admission"]
     manifest = {
-        "bundle_version": "1.0.0",
+        "bundle_version": "2.0.0",
         "claim": "M4_EXACT_DISPOSABLE_TEST_PROFILE_RUNTIME_CONFORMANCE",
         "outcome": "VERIFIED",
         "status": "NOT_ATTESTED",
+        **contract_projection,
         "candidate": state["identity"]["candidate"],
         "environment": state["identity"]["environment"],
         "attempt": state["identity"]["attempt"],
@@ -4528,9 +4877,12 @@ def _export_m4_evidence(
             "verifier": state["trust"]["verifier"],
         },
         "attempt_ledger": {
-            "ledger_entry_digest": admission["ledger_entry_digest"],
+            "ledger_entry_digest": admission_digest,
             "max_attempts": 2,
             "success_target": 1,
+            "success_target_authorizing": False,
+            "contract_core_digest": contract["contract_core_digest"],
+            "qualification_contract_digest": contract_digest,
         },
         "durable": durable_anchor,
         "attestation": {
@@ -4657,14 +5009,22 @@ def _run_phase() -> None:
     if re.fullmatch(r"[0-9a-f-]{36}", boot_id) is None:
         _stop("BOOT_ID_MALFORMED")
     request = _strict_bytes(
-        _read_regular(Path("/etc/harness-m4/qualification.json"), 1 << 20),
+        _read_regular(QUALIFICATION_REQUEST, 1 << 20),
         1 << 20,
     )
     request_mode = _validate_launch_request(request)
-    if request["candidate"] != source["commit"] or (
-        request_mode == "KEY_READY_DIAGNOSTIC" and request["tree"] != source["tree"]
-    ):
-        _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
+    qualification_contract: dict[str, object] | None = None
+    qualification_contract_digest: str | None = None
+    package_runtime_plan: dict[str, object] | None = None
+    if request_mode == "QUALIFICATION":
+        qualification_contract, qualification_contract_digest = (
+            _qualification_request_contract(request)
+        )
+        package_runtime_plan = _verify_qualification_environment(
+            request, source, host_provenance, profile
+        )
+    elif request["candidate"] != source["commit"] or request["tree"] != source["tree"]:
+        _stop("M4_DIAGNOSTIC_REQUEST_MISMATCH")
     _diagnostic_stage("REQUEST_VALIDATED")
     if (
         RUNTIME.exists()
@@ -4704,6 +5064,12 @@ def _run_phase() -> None:
         key_admission = _await_key_admission(
             request, keys, supply_key, runtime_trust
         )
+        if (
+            qualification_contract is None
+            or qualification_contract_digest is None
+            or package_runtime_plan is None
+        ):
+            _stop("M4_DIAGNOSTIC_REQUEST_NONAUTHORIZING")
         raw_l0, compiled_l0, measurement, seccomp_program = (
             _configure_m3_supply_trust(m3, supply_key)
         )
@@ -4935,13 +5301,16 @@ def _run_phase() -> None:
             "record_version": "1.0.0",
             "phase": "PRE_RESTART_PASS",
             "identity": {
-                "candidate": request["candidate"],
-                "environment": request["environment"],
-                "attempt": request["attempt"],
+                "candidate": qualification_contract["contract_core"]["candidate"],
+                "environment": qualification_contract["environment_digest"],
+                "attempt": qualification_contract["contract_core"]["attempt"],
+                "qualification_contract": qualification_contract,
+                "qualification_contract_digest": qualification_contract_digest,
                 "boot_id": boot_id,
                 "guest": guest,
                 "source": source,
                 "host_provenance": host_provenance,
+                "package_runtime_plan": package_runtime_plan,
             },
             "trust": {
                 "profile_digest": _digest_bytes(_canonical(profile)),
@@ -5040,6 +5409,15 @@ def _recover_phase() -> None:
     source = m3._source_identity()
     host_provenance = m3._host_provenance()
     state = _validate_run_state(_strict_file(RUN_STATE, RUN_STATE_KEYS))
+    request = _strict_bytes(
+        _read_regular(QUALIFICATION_REQUEST, 1 << 20), 1 << 20
+    )
+    if _validate_launch_request(request) != "QUALIFICATION":
+        _stop("M4_RECOVERY_QUALIFICATION_CONTRACT_MISMATCH")
+    contract, contract_digest = _qualification_request_contract(request)
+    package_runtime_plan = _verify_qualification_environment(
+        request, source, host_provenance, profile
+    )
     current_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
         encoding="ascii"
     ).strip()
@@ -5062,6 +5440,9 @@ def _recover_phase() -> None:
         or identity["guest"] != guest
         or identity["source"] != source
         or identity["host_provenance"] != host_provenance
+        or identity["qualification_contract"] != contract
+        or identity["qualification_contract_digest"] != contract_digest
+        or identity["package_runtime_plan"] != package_runtime_plan
         or source["commit"] != identity["candidate"]
         or trust["profile_digest"] != _digest_bytes(_canonical(profile))
         or trust["m4_apparmor_digest"] != _digest_file(APPARMOR_POLICY, 1 << 20)
@@ -5080,13 +5461,7 @@ def _recover_phase() -> None:
         _stop("M4_RECOVERY_PROVENANCE_MISMATCH")
     admission = _strict_file(
         KEY_ADMISSION,
-        frozenset(
-            {
-                "admission_version", "mode", "candidate", "environment", "attempt",
-                "ledger_entry_digest", "receipt_public_key_digests",
-                "supply_public_key_digest", "runtime_trust_digest",
-            }
-        ),
+        _KEY_ADMISSION_KEYS,
         1 << 20,
     )
     if admission != trust["key_admission"]:
@@ -5155,6 +5530,8 @@ def _recover_phase() -> None:
                 pass
     recovery = {
         "recovery_version": "1.0.0",
+        "qualification_contract": contract,
+        "qualification_contract_digest": contract_digest,
         "previous_boot_id": identity["boot_id"],
         "current_boot_id": current_boot_id,
         "durable": {

@@ -28,18 +28,142 @@ def _module():
 
 class M4VMRunnerContractTests(unittest.TestCase):
     @staticmethod
+    def _qualification_contract(
+        module,
+        *,
+        candidate: str = "b" * 40,
+        tree: str = "c" * 40,
+        source_files_digest: str = "sha256:" + "d" * 64,
+        seed_digest: str = "sha256:" + "e" * 64,
+        host_provenance_digest: str = "sha256:" + "f" * 64,
+    ):
+        core = {
+            "contract_version": "2.0.0",
+            "contract_kind": "M4_EXACT_DISPOSABLE_TEST_PROFILE_QUALIFICATION_V2",
+            "user_scope_reference": (
+                "/home/a1/.codex/attachments/"
+                "4adf762e-32a5-45e2-bf75-3c79125ace23/pasted-text.txt"
+            ),
+            "user_goal_digest": (
+                "sha256:431777706d5b37c95c2dfebac910b1ce6a57908fe8650353058c58a83feff20b"
+            ),
+            "candidate": candidate,
+            "tree": tree,
+            "attempt": 1,
+            "source_files_digest": source_files_digest,
+            "canonical_profile_digest": (
+                "sha256:50947b4b4ae139effbaddd749c7175a15755675f824e0ae1ed734a85694b4682"
+            ),
+            "raw_profile_artifact_digest": (
+                "sha256:50947b4b4ae139effbaddd749c7175a15755675f824e0ae1ed734a85694b4682"
+            ),
+            "base_image_digest": (
+                "sha256:6e40c07ae715f744f84af0bec76415cc1987dd115b4b8de437818561f01a3733"
+            ),
+            "predecessor_qualification_ledger_digest": (
+                "sha256:719505206caf364c6c0d40983687416bcca5644f879a46254714621cb070d5f9"
+            ),
+            "predecessor_diagnostic_ledger_digest": (
+                "sha256:6d5d1d00dc2fc303a061c1fc6f3456fb1e6c9fb1c1baae3f667a6521f8382d78"
+            ),
+            "predecessor_diagnostic_bundle_digest": (
+                "sha256:91abc47ad6070c8b9c8cad89369780b698a696c3e90aed5e2c84cb45f0b1418d"
+            ),
+            "max_attempts": 2,
+            "success_target": 1,
+            "success_target_authorizing": False,
+        }
+        core_digest = module._digest_bytes(module._canonical(core))
+        environment_preimage = {
+            "contract_core_digest": core_digest,
+            "source_archive_digest": "sha256:" + "2" * 64,
+            "seed_digest": seed_digest,
+            "package_runtime_plan_digest": "sha256:" + "3" * 64,
+            "host_provenance_digest": host_provenance_digest,
+        }
+        contract = {
+            "contract_core": core,
+            "contract_core_digest": core_digest,
+            "environment_preimage": environment_preimage,
+            "environment_digest": module._digest_bytes(
+                module._canonical(environment_preimage)
+            ),
+        }
+        return contract, module._digest_bytes(module._canonical(contract))
+
+    @staticmethod
+    def _qualification_request(module, **changes):
+        contract, contract_digest = M4VMRunnerContractTests._qualification_contract(
+            module, **changes
+        )
+        return {
+            "request_version": "2.0.0",
+            "qualification_contract": contract,
+            "qualification_contract_digest": contract_digest,
+        }
+
+    @staticmethod
     def _run_state(module):
         digest = "sha256:" + "a" * 64
         candidate = "b" * 40
+        tree = "c" * 40
+        source = {
+            "commit": candidate,
+            "tree": tree,
+            "files": {},
+            "files_digest": "sha256:" + "d" * 64,
+        }
+        host_provenance = {
+            "image": {
+                "sha256": (
+                    "sha256:6e40c07ae715f744f84af0bec76415cc1987dd115b4b8de437818561f01a3733"
+                )
+            },
+            "vm": {"seed_digest": "sha256:" + "e" * 64},
+        }
+        contract, contract_digest = M4VMRunnerContractTests._qualification_contract(
+            module,
+            candidate=candidate,
+            tree=tree,
+            source_files_digest=source["files_digest"],
+            seed_digest=host_provenance["vm"]["seed_digest"],
+            host_provenance_digest=module._digest_bytes(
+                module._canonical(host_provenance)
+            ),
+        )
+        package_runtime_plan = {
+            "plan_version": "1.0.0",
+            "packages": dict(module.PACKAGE_VERSIONS),
+            "provisioning_script_digest": digest,
+            "package_sources": {
+                path: digest for path in module.PACKAGE_SOURCE_PATHS
+            },
+            "runtime_configs": {
+                path: digest for path in module.RUNTIME_CONFIG_PATHS
+            },
+            "runtime_tools": {
+                path: digest for path in module.RUNTIME_TOOL_PATHS
+            },
+        }
+        contract["environment_preimage"]["package_runtime_plan_digest"] = (
+            module._digest_bytes(module._canonical(package_runtime_plan))
+        )
+        contract["environment_digest"] = module._digest_bytes(
+            module._canonical(contract["environment_preimage"])
+        )
+        contract_digest = module._digest_bytes(module._canonical(contract))
         receipt_keys = {
             "M4_AUTHORITY": digest,
             "OBSERVER": digest,
             "PUBLISHER": digest,
         }
         admission = {
-            "candidate": candidate,
-            "environment": digest,
-            "attempt": 1,
+            "admission_version": "2.0.0",
+            "mode": module.KEY_ADMISSION_MODE,
+            "qualification_contract": contract,
+            "qualification_contract_digest": contract_digest,
+            "contract_core_digest": contract["contract_core_digest"],
+            "ledger_entry_digest": digest,
             "receipt_public_key_digests": receipt_keys,
             "supply_public_key_digest": digest,
             "runtime_trust_digest": digest,
@@ -50,15 +174,18 @@ class M4VMRunnerContractTests(unittest.TestCase):
             "phase": "PRE_RESTART_PASS",
             "identity": {
                 "candidate": candidate,
-                "environment": digest,
+                "environment": contract["environment_digest"],
                 "attempt": 1,
+                "qualification_contract": contract,
+                "qualification_contract_digest": contract_digest,
                 "boot_id": "12345678-1234-1234-1234-123456789abc",
                 "guest": {},
-                "source": {"commit": candidate},
-                "host_provenance": {},
+                "source": source,
+                "host_provenance": host_provenance,
+                "package_runtime_plan": package_runtime_plan,
             },
             "trust": {
-                "profile_digest": digest,
+                "profile_digest": contract["contract_core"]["canonical_profile_digest"],
                 "m4_apparmor_digest": digest,
                 "m3_apparmor_digest": digest,
                 "runtime_trust_digest": digest,
@@ -582,6 +709,360 @@ class M4VMRunnerContractTests(unittest.TestCase):
         ):
             with self.subTest(mutation=mutation), self.assertRaises(module.QualificationStop):
                 module._validate_launch_request(mutation)
+
+    def test_launch_request_requires_closed_qualification_v2_contract(self) -> None:
+        module = _module()
+        request = self._qualification_request(module)
+        self.assertEqual(module._validate_launch_request(request), "QUALIFICATION")
+        with self.assertRaises(module.QualificationStop):
+            module._validate_launch_request(
+                {
+                    "request_version": "1.0.0",
+                    "candidate": "b" * 40,
+                    "environment": "sha256:" + "a" * 64,
+                    "attempt": 1,
+                }
+            )
+
+        mutations = []
+        for field in request:
+            value = deepcopy(request)
+            value.pop(field)
+            mutations.append(("missing-request-" + field, value))
+        mutations.append(("extra-request", {**request, "unknown": True}))
+        mutations.append(
+            (
+                "request-version",
+                {**request, "request_version": "1.0.0"},
+            )
+        )
+        mutations.append(
+            (
+                "contract-digest",
+                {**request, "qualification_contract_digest": "sha256:" + "0" * 64},
+            )
+        )
+        for field in request["qualification_contract"]:
+            value = deepcopy(request)
+            value["qualification_contract"].pop(field)
+            value["qualification_contract_digest"] = module._digest_bytes(
+                module._canonical(value["qualification_contract"])
+            )
+            mutations.append(("missing-contract-" + field, value))
+        value = deepcopy(request)
+        value["qualification_contract"]["unknown"] = True
+        value["qualification_contract_digest"] = module._digest_bytes(
+            module._canonical(value["qualification_contract"])
+        )
+        mutations.append(("extra-contract", value))
+        for field, replacement in (
+            ("attempt", True),
+            ("max_attempts", 2.0),
+            ("success_target", 1.0),
+        ):
+            value = deepcopy(request)
+            value["qualification_contract"]["contract_core"][field] = replacement
+            mutations.append(("type-alias-" + field, value))
+        for field in request["qualification_contract"]["contract_core"]:
+            value = deepcopy(request)
+            core = value["qualification_contract"]["contract_core"]
+            original = core[field]
+            if type(original) is bool:
+                core[field] = not original
+            elif type(original) is int:
+                core[field] = original + 1
+            else:
+                core[field] = str(original) + "-mutated"
+            mutations.append(("core-" + field, value))
+        for field in request["qualification_contract"]["environment_preimage"]:
+            value = deepcopy(request)
+            value["qualification_contract"]["environment_preimage"][field] = (
+                "sha256:" + "9" * 64
+            )
+            mutations.append(("environment-" + field, value))
+        for name, mutation in mutations:
+            with self.subTest(name=name), self.assertRaises(module.QualificationStop):
+                module._validate_launch_request(mutation)
+
+    def test_key_ready_and_admission_bind_the_full_exact_contract(self) -> None:
+        module = _module()
+        request = self._qualification_request(module)
+        contract = request["qualification_contract"]
+        contract_digest = request["qualification_contract_digest"]
+        digest = "sha256:" + "a" * 64
+        keys = {
+            name: type("Key", (), {"public_key_digest": digest})()
+            for name in ("M4_AUTHORITY", "OBSERVER", "PUBLISHER")
+        }
+        admission = {
+            "admission_version": "2.0.0",
+            "mode": module.KEY_ADMISSION_MODE,
+            "qualification_contract": contract,
+            "qualification_contract_digest": contract_digest,
+            "contract_core_digest": contract["contract_core_digest"],
+            "ledger_entry_digest": digest,
+            "receipt_public_key_digests": {
+                name: key.public_key_digest for name, key in keys.items()
+            },
+            "supply_public_key_digest": digest,
+            "runtime_trust_digest": digest,
+        }
+        with tempfile.TemporaryDirectory(prefix="m4-v2-admission-") as directory:
+            path = Path(directory) / "key-admission.json"
+            path.write_bytes(module._canonical(admission))
+            with mock.patch.object(module, "KEY_ADMISSION", path):
+                self.assertEqual(
+                    module._key_admission(request, keys, digest, digest),
+                    admission,
+                )
+            for name, mutation in (
+                ("contract", {**admission, "qualification_contract": {}}),
+                ("contract-digest", {**admission, "qualification_contract_digest": digest}),
+                ("core-digest", {**admission, "contract_core_digest": digest}),
+                ("extra", {**admission, "unknown": True}),
+            ):
+                path.write_bytes(module._canonical(mutation))
+                with self.subTest(name=name), mock.patch.object(
+                    module, "KEY_ADMISSION", path
+                ), self.assertRaises(module.QualificationStop):
+                    module._key_admission(request, keys, digest, digest)
+
+        ready_source = inspect.getsource(module._await_key_admission)
+        for field in (
+            "qualification_contract",
+            "qualification_contract_digest",
+            "contract_core_digest",
+        ):
+            self.assertIn(field, ready_source)
+
+    def test_guest_remeasures_all_locally_observable_environment_inputs(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="m4-v2-environment-") as directory:
+            root = Path(directory)
+            source_archive = root / "source.tgz"
+            package_plan_path = root / "package-runtime-plan.json"
+            provisioning_script = root / "provision.sh"
+            package_source = root / "ubuntu.sources"
+            runtime_config = root / "offline.conf"
+            runtime_tool = root / "tool"
+            for path, raw in (
+                (source_archive, b"source-archive"),
+                (provisioning_script, b"#!/bin/sh\nexit 0\n"),
+                (package_source, b"deb-source"),
+                (runtime_config, b"offline"),
+                (runtime_tool, b"tool"),
+            ):
+                path.write_bytes(raw)
+            packages = {"exact-package": "1.2.3-1"}
+            plan = {
+                "plan_version": "1.0.0",
+                "packages": packages,
+                "provisioning_script_digest": module._digest_file(
+                    provisioning_script
+                ),
+                "package_sources": {
+                    str(package_source): module._digest_file(package_source)
+                },
+                "runtime_configs": {
+                    str(runtime_config): module._digest_file(runtime_config)
+                },
+                "runtime_tools": {
+                    str(runtime_tool): module._digest_file(runtime_tool)
+                },
+            }
+            package_plan_path.write_bytes(module._canonical(plan))
+            source = {
+                "commit": "b" * 40,
+                "tree": "c" * 40,
+                "files": {},
+                "files_digest": "sha256:" + "d" * 64,
+            }
+            host_provenance = {
+                "image": {"sha256": module.BASE_IMAGE_DIGEST},
+                "vm": {"seed_digest": "sha256:" + "e" * 64},
+            }
+            contract, _ = self._qualification_contract(
+                module,
+                source_files_digest=source["files_digest"],
+                seed_digest=host_provenance["vm"]["seed_digest"],
+                host_provenance_digest=module._digest_bytes(
+                    module._canonical(host_provenance)
+                ),
+            )
+            environment = contract["environment_preimage"]
+            environment["source_archive_digest"] = module._digest_file(source_archive)
+            environment["package_runtime_plan_digest"] = module._digest_file(
+                package_plan_path
+            )
+            contract["environment_digest"] = module._digest_bytes(
+                module._canonical(environment)
+            )
+            request = {
+                "request_version": "2.0.0",
+                "qualification_contract": contract,
+                "qualification_contract_digest": module._digest_bytes(
+                    module._canonical(contract)
+                ),
+            }
+
+            def dpkg(argv, **_kwargs):
+                return module.subprocess.CompletedProcess(
+                    argv, 0, stdout=packages[argv[-1]].encode("ascii"), stderr=b""
+                )
+
+            patches = (
+                mock.patch.object(module, "SOURCE_ARCHIVE", source_archive),
+                mock.patch.object(module, "PACKAGE_RUNTIME_PLAN", package_plan_path),
+                mock.patch.object(module, "PROVISIONING_SCRIPT", provisioning_script),
+                mock.patch.object(module, "PROFILE_PATH", PROFILE),
+                mock.patch.object(module, "PACKAGE_VERSIONS", packages),
+                mock.patch.object(module, "PACKAGE_SOURCE_PATHS", frozenset({str(package_source)})),
+                mock.patch.object(module, "RUNTIME_CONFIG_PATHS", frozenset({str(runtime_config)})),
+                mock.patch.object(module, "RUNTIME_TOOL_PATHS", frozenset({str(runtime_tool)})),
+                mock.patch.object(module.subprocess, "run", side_effect=dpkg),
+            )
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+                profile = json.loads(PROFILE.read_bytes())
+                self.assertEqual(
+                    module._verify_qualification_environment(
+                        request, source, host_provenance, profile
+                    ),
+                    plan,
+                )
+                source_archive.write_bytes(b"substituted")
+                with self.assertRaises(module.QualificationStop):
+                    module._verify_qualification_environment(
+                        request, source, host_provenance, profile
+                    )
+                source_archive.write_bytes(b"source-archive")
+                package_plan_path.write_bytes(
+                    module._canonical({**plan, "unknown": True})
+                )
+                with self.assertRaises(module.QualificationStop):
+                    module._verify_qualification_environment(
+                        request, source, host_provenance, profile
+                    )
+                package_plan_path.write_bytes(module._canonical(plan))
+                for field, replacement in (
+                    ("commit", "0" * 40),
+                    ("tree", "0" * 40),
+                    ("files_digest", "sha256:" + "0" * 64),
+                ):
+                    mutated_source = {**source, field: replacement}
+                    with self.subTest(source_field=field), self.assertRaises(
+                        module.QualificationStop
+                    ):
+                        module._verify_qualification_environment(
+                            request, mutated_source, host_provenance, profile
+                        )
+                for field in ("base-image", "seed", "host-provenance"):
+                    mutated_provenance = deepcopy(host_provenance)
+                    if field == "base-image":
+                        mutated_provenance["image"]["sha256"] = (
+                            "sha256:" + "0" * 64
+                        )
+                    elif field == "seed":
+                        mutated_provenance["vm"]["seed_digest"] = (
+                            "sha256:" + "0" * 64
+                        )
+                    else:
+                        mutated_provenance["unknown"] = True
+                    with self.subTest(provenance_field=field), self.assertRaises(
+                        module.QualificationStop
+                    ):
+                        module._verify_qualification_environment(
+                            request, source, mutated_provenance, profile
+                        )
+                mutated_request = deepcopy(request)
+                mutated_environment = mutated_request["qualification_contract"][
+                    "environment_preimage"
+                ]
+                mutated_environment["seed_digest"] = "sha256:" + "0" * 64
+                mutated_request["qualification_contract"]["environment_digest"] = (
+                    module._digest_bytes(module._canonical(mutated_environment))
+                )
+                mutated_request["qualification_contract_digest"] = module._digest_bytes(
+                    module._canonical(mutated_request["qualification_contract"])
+                )
+                with self.assertRaises(module.QualificationStop):
+                    module._verify_qualification_environment(
+                        mutated_request, source, host_provenance, profile
+                    )
+
+    def test_run_state_rejects_contract_or_plan_projection_substitution(self) -> None:
+        module = _module()
+        valid = self._run_state(module)
+        self.assertIs(module._validate_run_state(valid), valid)
+        for name, mutate in (
+            (
+                "contract",
+                lambda value: value["identity"]["qualification_contract"]
+                ["contract_core"].update({"attempt": 2}),
+            ),
+            (
+                "contract-digest",
+                lambda value: value["identity"].update(
+                    {"qualification_contract_digest": "sha256:" + "0" * 64}
+                ),
+            ),
+            (
+                "admission-contract",
+                lambda value: value["trust"]["key_admission"].update(
+                    {"qualification_contract": {}}
+                ),
+            ),
+            (
+                "package-plan",
+                lambda value: value["identity"]["package_runtime_plan"].update(
+                    {"unknown": True}
+                ),
+            ),
+        ):
+            value = deepcopy(valid)
+            mutate(value)
+            with self.subTest(name=name), self.assertRaises(module.QualificationStop):
+                module._validate_run_state(value)
+
+    def test_manifest_and_evidence_export_exact_v2_contract_and_admission(self) -> None:
+        module = _module()
+        state = self._run_state(module)
+        projection = module._qualification_evidence_projection(state)
+        self.assertEqual(
+            frozenset(projection),
+            {
+                "qualification_contract",
+                "qualification_contract_digest",
+                "admission_digest",
+                "package_runtime_plan",
+            },
+        )
+        self.assertEqual(
+            projection["qualification_contract"],
+            state["identity"]["qualification_contract"],
+        )
+        self.assertEqual(
+            projection["qualification_contract_digest"],
+            state["identity"]["qualification_contract_digest"],
+        )
+        self.assertEqual(
+            projection["admission_digest"],
+            state["trust"]["key_admission"]["ledger_entry_digest"],
+        )
+        source = inspect.getsource(module._export_m4_evidence)
+        self.assertIn('"bundle_version": "2.0.0"', source)
+        self.assertEqual(source.count("**contract_projection"), 2)
+        run_source = inspect.getsource(module._run_phase)
+        self.assertLess(
+            run_source.index("_verify_qualification_environment("),
+            run_source.index("_prepare_keys("),
+        )
+        recover_source = inspect.getsource(module._recover_phase)
+        self.assertLess(
+            recover_source.index("_verify_qualification_environment("),
+            recover_source.index("_export_m4_evidence("),
+        )
+        self.assertIn('"qualification_contract": contract', recover_source)
+        self.assertIn('"qualification_contract_digest": contract_digest', recover_source)
 
     def test_run_state_writer_and_recovery_share_one_closed_schema(self) -> None:
         module = _module()

@@ -22,17 +22,30 @@ from typing import BinaryIO, Callable, NamedTuple, NoReturn
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LAB = Path("/home/a1/Загрузки/harness/harness-m4-lab")
+LAB = Path("/home/a1/Загрузки/harness/harness-m4-qualification-v2")
+OLD_QUALIFICATION_LAB = Path("/home/a1/Загрузки/harness/harness-m4-lab")
 DIAGNOSTIC_LAB = Path("/home/a1/Загрузки/harness/harness-m4-diagnostic-lab")
 IMAGE_LAB = Path("/home/a1/Загрузки/harness/harness-m3-lab")
-EVIDENCE_ROOT = Path("/home/a1/Загрузки/harness/harness-m4-evidence")
+EVIDENCE_ROOT = Path("/home/a1/Загрузки/harness/harness-m4-evidence-v2")
 USER_GOAL = Path(
-    "/home/a1/.codex/attachments/a1d7db13-d210-4875-b261-a086d01fca5a/goal-objective.md"
+    "/home/a1/.codex/attachments/4adf762e-32a5-45e2-bf75-3c79125ace23/"
+    "pasted-text.txt"
 )
 LEDGER_NAME = "m4-attempt-ledger.jsonl"
+INDEPENDENT_VERIFICATION_NAME = "independent-verification.json"
 DIAGNOSTIC_LEDGER_NAME = "m4-key-ready-diagnostic-ledger.jsonl"
-OLD_LEDGER = LAB / LEDGER_NAME
+OLD_LEDGER = OLD_QUALIFICATION_LAB / LEDGER_NAME
 OLD_LEDGER_DIGEST = "sha256:719505206caf364c6c0d40983687416bcca5644f879a46254714621cb070d5f9"
+PREDECESSOR_DIAGNOSTIC_LEDGER = DIAGNOSTIC_LAB / DIAGNOSTIC_LEDGER_NAME
+PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST = (
+    "sha256:6d5d1d00dc2fc303a061c1fc6f3456fb1e6c9fb1c1baae3f667a6521f8382d78"
+)
+PREDECESSOR_DIAGNOSTIC_BUNDLE = (
+    DIAGNOSTIC_LAB / "diagnostics/attempt-1/diagnostic.json"
+)
+PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST = (
+    "sha256:91abc47ad6070c8b9c8cad89369780b698a696c3e90aed5e2c84cb45f0b1418d"
+)
 _QEMU_PATH = "/usr/bin/qemu-system-x86_64"
 _QEMU_DIGEST = "sha256:8a35ccba41582fc6c38b9df85fc9e35fa1d42f414d2d7d8090ee9b2f5e7c0854"
 _OVERLAY_VIRTUAL_BYTES = 3758096384
@@ -65,25 +78,48 @@ _LEDGER_COMMON = frozenset(
         "ledger_version", "sequence", "previous_entry_digest", "entry_type",
         "recorded_at", "candidate", "tree", "environment",
         "user_scope_reference", "user_goal_digest", "max_attempts",
-        "success_target", "attempt",
+        "success_target", "success_target_authorizing", "attempt",
+        "contract_core_digest", "qualification_contract_digest",
     }
 )
 _LEDGER_EXTRA = {
-    "ATTEMPT_STARTED": frozenset(),
+    "ATTEMPT_STARTED": frozenset({"qualification_contract"}),
     "KEY_ADMITTED": frozenset(
         {
             "attempt_start_digest", "receipt_public_key_digests",
             "supply_public_key_digest", "runtime_trust_digest",
+            "admitted_qualification_contract_digest",
         }
     ),
     "ATTEMPT_TERMINAL": frozenset(
         {
             "attempt_start_digest", "key_admission_digest", "result",
-            "manifest_digest", "bundle_digest", "qemu_phase_outcomes",
+            "terminal_reason", "manifest_digest", "signed_payload_bundle_digest",
+            "qemu_phase_outcomes",
         }
     ),
 }
 _TERMINAL_RESULTS = frozenset({"BUNDLE_EXPORTED", "FAILED", "BLOCKED", "QUARANTINED"})
+_TERMINAL_REASON_BY_RESULT = {
+    "BUNDLE_EXPORTED": frozenset({"SIGNED_PAYLOAD_EXPORTED"}),
+    "FAILED": frozenset(
+        {
+            "PROVISION_FAILED", "QEMU_EXITED", "SERVICE_FAILED_PRE_KEY_READY",
+            "KEY_READY_TIMEOUT", "KEY_ADMISSION_FAILED", "RUN_FAILED",
+            "RECOVERY_FAILED", "EVIDENCE_EXPORT_FAILED",
+            "EVIDENCE_VERIFICATION_FAILED", "CLEANUP_FAILED",
+        }
+    ),
+    "BLOCKED": frozenset({"HOST_PREFLIGHT_FAILED", "ATTEMPT_LIMIT_REACHED"}),
+    "QUARANTINED": frozenset(
+        {
+            "PROVISION_FAILED", "QEMU_EXITED", "SERVICE_FAILED_PRE_KEY_READY",
+            "KEY_READY_TIMEOUT", "KEY_ADMISSION_FAILED", "RUN_FAILED",
+            "RECOVERY_FAILED", "EVIDENCE_EXPORT_FAILED",
+            "EVIDENCE_VERIFICATION_FAILED", "CLEANUP_FAILED",
+        }
+    ),
+}
 _DIAGNOSTIC_REASONS = frozenset(
     {
         "PROVISION_FAILED", "QEMU_EXITED", "SERVICE_FAILED_PRE_KEY_READY",
@@ -189,6 +225,177 @@ def _digest_file(path: Path, maximum: int) -> str:
     return _digest_bytes(_read_regular(path, maximum))
 
 
+def _qualification_contract(
+    *,
+    goal_reference: str,
+    goal_digest: str,
+    candidate: str,
+    tree: str,
+    attempt: int,
+    source_files_digest: str,
+    source_archive_digest: str,
+    seed_digest: str,
+    package_runtime_plan_digest: str,
+    host_provenance_digest: str,
+) -> dict[str, object]:
+    core = {
+        "contract_version": "2.0.0",
+        "contract_kind": "M4_EXACT_DISPOSABLE_TEST_PROFILE_QUALIFICATION_V2",
+        "user_scope_reference": goal_reference,
+        "user_goal_digest": goal_digest,
+        "candidate": candidate,
+        "tree": tree,
+        "attempt": attempt,
+        "source_files_digest": source_files_digest,
+        "canonical_profile_digest": _M4_PROFILE_DIGEST,
+        "raw_profile_artifact_digest": _M4_PROFILE_DIGEST,
+        "base_image_digest": _IMAGE_DIGEST,
+        "predecessor_qualification_ledger_digest": OLD_LEDGER_DIGEST,
+        "predecessor_diagnostic_ledger_digest": PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST,
+        "predecessor_diagnostic_bundle_digest": PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST,
+        "max_attempts": 2,
+        "success_target": 1,
+        "success_target_authorizing": False,
+    }
+    core_digest = _digest_bytes(_canonical(core))
+    environment_preimage = {
+        "contract_core_digest": core_digest,
+        "source_archive_digest": source_archive_digest,
+        "seed_digest": seed_digest,
+        "package_runtime_plan_digest": package_runtime_plan_digest,
+        "host_provenance_digest": host_provenance_digest,
+    }
+    contract = {
+        "contract_core": core,
+        "contract_core_digest": core_digest,
+        "environment_preimage": environment_preimage,
+        "environment_digest": _digest_bytes(_canonical(environment_preimage)),
+    }
+    return _validate_qualification_contract(contract)
+
+
+def _validate_qualification_contract(value: object) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != {
+        "contract_core", "contract_core_digest", "environment_preimage",
+        "environment_digest",
+    }:
+        _stop("QUALIFICATION_CONTRACT_MALFORMED")
+    core = value["contract_core"]
+    core_keys = {
+        "contract_version", "contract_kind", "user_scope_reference",
+        "user_goal_digest", "candidate", "tree", "attempt",
+        "source_files_digest", "canonical_profile_digest",
+        "raw_profile_artifact_digest", "base_image_digest",
+        "predecessor_qualification_ledger_digest",
+        "predecessor_diagnostic_ledger_digest",
+        "predecessor_diagnostic_bundle_digest", "max_attempts",
+        "success_target", "success_target_authorizing",
+    }
+    if type(core) is not dict or frozenset(core) != core_keys:
+        _stop("QUALIFICATION_CONTRACT_MALFORMED")
+    digests = (
+        core["user_goal_digest"], core["source_files_digest"],
+        core["canonical_profile_digest"], core["raw_profile_artifact_digest"],
+        core["base_image_digest"], core["predecessor_qualification_ledger_digest"],
+        core["predecessor_diagnostic_ledger_digest"],
+        core["predecessor_diagnostic_bundle_digest"],
+    )
+    if (
+        core["contract_version"] != "2.0.0"
+        or core["contract_kind"]
+        != "M4_EXACT_DISPOSABLE_TEST_PROFILE_QUALIFICATION_V2"
+        or type(core["user_scope_reference"]) is not str
+        or not core["user_scope_reference"]
+        or type(core["candidate"]) is not str
+        or _COMMIT.fullmatch(core["candidate"]) is None
+        or type(core["tree"]) is not str
+        or _COMMIT.fullmatch(core["tree"]) is None
+        or type(core["attempt"]) is not int
+        or isinstance(core["attempt"], bool)
+        or core["attempt"] not in {1, 2}
+        or any(type(item) is not str or _DIGEST.fullmatch(item) is None for item in digests)
+        or core["canonical_profile_digest"] != _M4_PROFILE_DIGEST
+        or core["raw_profile_artifact_digest"] != _M4_PROFILE_DIGEST
+        or core["base_image_digest"] != _IMAGE_DIGEST
+        or core["predecessor_qualification_ledger_digest"] != OLD_LEDGER_DIGEST
+        or core["predecessor_diagnostic_ledger_digest"]
+        != PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+        or core["predecessor_diagnostic_bundle_digest"]
+        != PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST
+        or core["max_attempts"] != 2
+        or core["success_target"] != 1
+        or core["success_target_authorizing"] is not False
+    ):
+        _stop("QUALIFICATION_CONTRACT_BINDING_MISMATCH")
+    core_digest = _digest_bytes(_canonical(core))
+    environment = value["environment_preimage"]
+    if (
+        value["contract_core_digest"] != core_digest
+        or type(environment) is not dict
+        or frozenset(environment)
+        != {
+            "contract_core_digest", "source_archive_digest", "seed_digest",
+            "package_runtime_plan_digest", "host_provenance_digest",
+        }
+        or environment["contract_core_digest"] != core_digest
+        or any(
+            type(environment[name]) is not str
+            or _DIGEST.fullmatch(environment[name]) is None
+            for name in (
+                "source_archive_digest", "seed_digest",
+                "package_runtime_plan_digest", "host_provenance_digest",
+            )
+        )
+        or value["environment_digest"] != _digest_bytes(_canonical(environment))
+    ):
+        _stop("QUALIFICATION_CONTRACT_DIGEST_MISMATCH")
+    return value
+
+
+def _qualification_contract_digest(contract: object) -> str:
+    return _digest_bytes(_canonical(_validate_qualification_contract(contract)))
+
+
+def _package_runtime_plan() -> dict[str, object]:
+    return {
+        "plan_version": "1.0.0",
+        "packages": {
+            "apparmor": "4.0.1really4.0.1-0ubuntu0.24.04.7",
+            "apparmor-utils": "4.0.1really4.0.1-0ubuntu0.24.04.7",
+            "bubblewrap": "0.9.0-1ubuntu0.1",
+            "libssl3t64": "3.0.13-0ubuntu3.12",
+            "openssl": "3.0.13-0ubuntu3.12",
+            "python3.12": "3.12.3-1ubuntu0.15",
+        },
+        "provisioning_script_digest": _digest_bytes(_provision_script()),
+        "package_sources": {
+            "/etc/apt/apt.conf.d/99-harness-m4": _digest_file(
+                IMAGE_LAB / "apt-harness-m3.conf", 1 << 20
+            ),
+            "/etc/apt/sources.list.d/ubuntu.sources": _digest_file(
+                IMAGE_LAB / "apt-ubuntu.sources", 1 << 20
+            ),
+        },
+        "runtime_configs": {
+            "/etc/harness-m4/nftables-offline.conf": _digest_file(
+                IMAGE_LAB / "nftables-offline.conf", 1 << 20
+            ),
+            "/etc/harness-m4/nftables-provisioning.conf": _digest_file(
+                IMAGE_LAB / "nftables-provisioning.conf", 1 << 20
+            ),
+            "/etc/hosts": _digest_file(IMAGE_LAB / "guest-hosts", 1 << 20),
+        },
+        "runtime_tools": {
+            "/usr/bin/aa-exec": "sha256:f28cbce3c8664cab5154492fdbc55ecb937a3e7ce1a9478c881a5f5965d7ce3e",
+            "/usr/bin/bwrap": "sha256:52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712",
+            "/usr/bin/openssl": "sha256:b86b739329008369aebe1f7cff6c2adb18965609d68a19456fca55232f2908f5",
+            "/usr/bin/python3.12": "sha256:1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
+            "/usr/lib/x86_64-linux-gnu/libcrypto.so.3": "sha256:1451aceec262c3338052fa77542eb971d4ba311c6bf12d9aa70d0b56aca942f9",
+            "/usr/sbin/apparmor_parser": "sha256:6bc852b37807961c14976be9a227ae96bd817f73b5189cb0e0ff5eca4448c01c",
+        },
+    }
+
+
 def _qemu_argv(attempt: int, phase: str, *, lab: Path = LAB) -> list[str]:
     if type(attempt) is not int or isinstance(attempt, bool) or attempt not in {1, 2}:
         _stop("ATTEMPT_MISMATCH")
@@ -254,6 +461,9 @@ class AttemptStart(NamedTuple):
     candidate: str
     tree: str
     environment: str
+    contract_core_digest: str
+    qualification_contract_digest: str
+    qualification_contract: dict[str, object]
     digest: str
 
 
@@ -301,6 +511,16 @@ class AttemptLedger:
                 _stop("LEDGER_UNTRUSTED")
             if lab_created:
                 _fsync_directory(self.lab.parent)
+            names = set(os.listdir(self.lab))
+            if (
+                LEDGER_NAME not in names
+                and names
+                or LEDGER_NAME in names
+                and not names <= {
+                    LEDGER_NAME, INDEPENDENT_VERIFICATION_NAME, "runs"
+                }
+            ):
+                _stop("QUALIFICATION_LAB_REUSE_FORBIDDEN")
             ledger_created = False
             try:
                 self._descriptor = os.open(
@@ -377,7 +597,7 @@ class AttemptLedger:
             if frozenset(row) != _LEDGER_COMMON | _LEDGER_EXTRA[str(row["entry_type"])]:
                 _stop("LEDGER_MALFORMED")
             if (
-                row["ledger_version"] != "1.0.0"
+                row["ledger_version"] != "2.0.0"
                 or type(row["sequence"]) is not int
                 or isinstance(row["sequence"], bool)
                 or row["sequence"] != sequence
@@ -392,9 +612,14 @@ class AttemptLedger:
                 or row["user_goal_digest"] != self.goal_digest
                 or row["max_attempts"] != 2
                 or row["success_target"] != 1
+                or row["success_target_authorizing"] is not False
                 or type(row["attempt"]) is not int
                 or isinstance(row["attempt"], bool)
                 or row["attempt"] not in {1, 2}
+                or type(row["contract_core_digest"]) is not str
+                or _DIGEST.fullmatch(row["contract_core_digest"]) is None
+                or type(row["qualification_contract_digest"]) is not str
+                or _DIGEST.fullmatch(row["qualification_contract_digest"]) is None
                 or type(row["recorded_at"]) is not str
                 or _TIME.fullmatch(row["recorded_at"]) is None
             ):
@@ -411,7 +636,27 @@ class AttemptLedger:
 
     @staticmethod
     def _validate_row(row: dict[str, object]) -> None:
-        if row["entry_type"] == "KEY_ADMITTED":
+        if row["entry_type"] == "ATTEMPT_STARTED":
+            contract = _validate_qualification_contract(row["qualification_contract"])
+            core = contract["contract_core"]
+            if (
+                type(core) is not dict
+                or row["candidate"] != core["candidate"]
+                or row["tree"] != core["tree"]
+                or row["environment"] != contract["environment_digest"]
+                or row["attempt"] != core["attempt"]
+                or row["user_scope_reference"] != core["user_scope_reference"]
+                or row["user_goal_digest"] != core["user_goal_digest"]
+                or row["max_attempts"] != core["max_attempts"]
+                or row["success_target"] != core["success_target"]
+                or row["success_target_authorizing"]
+                is not core["success_target_authorizing"]
+                or row["contract_core_digest"] != contract["contract_core_digest"]
+                or row["qualification_contract_digest"]
+                != _qualification_contract_digest(contract)
+            ):
+                _stop("LEDGER_BINDING_MISMATCH")
+        elif row["entry_type"] == "KEY_ADMITTED":
             keys = row["receipt_public_key_digests"]
             if type(keys) is not dict or frozenset(keys) != {
                 "M4_AUTHORITY", "OBSERVER", "PUBLISHER"
@@ -419,25 +664,36 @@ class AttemptLedger:
                 _stop("LEDGER_BINDING_MISMATCH")
             values = [
                 row["attempt_start_digest"], row["supply_public_key_digest"],
-                row["runtime_trust_digest"], *keys.values(),
+                row["runtime_trust_digest"],
+                row["admitted_qualification_contract_digest"], *keys.values(),
             ]
             if any(type(value) is not str or _DIGEST.fullmatch(value) is None for value in values):
+                _stop("LEDGER_BINDING_MISMATCH")
+            if (
+                row["admitted_qualification_contract_digest"]
+                != row["qualification_contract_digest"]
+            ):
                 _stop("LEDGER_BINDING_MISMATCH")
         elif row["entry_type"] == "ATTEMPT_TERMINAL":
             if (
                 row["result"] not in _TERMINAL_RESULTS
+                or row["terminal_reason"]
+                not in _TERMINAL_REASON_BY_RESULT[row["result"]]
                 or type(row["attempt_start_digest"]) is not str
                 or _DIGEST.fullmatch(row["attempt_start_digest"]) is None
             ):
                 _stop("LEDGER_BINDING_MISMATCH")
             if row["result"] == "BUNDLE_EXPORTED":
-                values = [row["key_admission_digest"], row["manifest_digest"], row["bundle_digest"]]
+                values = [
+                    row["key_admission_digest"], row["manifest_digest"],
+                    row["signed_payload_bundle_digest"],
+                ]
                 if any(type(value) is not str or _DIGEST.fullmatch(value) is None for value in values):
                     _stop("LEDGER_BINDING_MISMATCH")
                 _validate_qemu_phase_outcomes(row["qemu_phase_outcomes"], row["attempt"])
             elif (
                 row["manifest_digest"] is not None
-                or row["bundle_digest"] is not None
+                or row["signed_payload_bundle_digest"] is not None
                 or row["qemu_phase_outcomes"] is not None
                 or (
                     row["key_admission_digest"] is not None
@@ -453,7 +709,6 @@ class AttemptLedger:
     def _validate_lifecycle(rows: list[tuple[dict[str, object], str]]) -> None:
         cursor = 0
         attempt = 1
-        exported = False
         pairs: set[tuple[object, object]] = set()
         while cursor < len(rows):
             start, start_digest = rows[cursor]
@@ -462,7 +717,6 @@ class AttemptLedger:
                 start["entry_type"] != "ATTEMPT_STARTED"
                 or start["attempt"] != attempt
                 or pair in pairs
-                or exported
             ):
                 _stop("LEDGER_LIFECYCLE_MISMATCH")
             pairs.add(pair)
@@ -477,7 +731,13 @@ class AttemptLedger:
             cursor += 1
             group = ([] if admission is None else [admission[0]]) + [terminal]
             if any(
-                any(row[key] != start[key] for key in ("candidate", "tree", "environment", "attempt"))
+                any(
+                    row[key] != start[key]
+                    for key in (
+                        "candidate", "tree", "environment", "attempt",
+                        "contract_core_digest", "qualification_contract_digest",
+                    )
+                )
                 for row in group
             ):
                 _stop("LEDGER_LIFECYCLE_MISMATCH")
@@ -493,7 +753,6 @@ class AttemptLedger:
                 _stop("LEDGER_LIFECYCLE_MISMATCH")
             if terminal["result"] == "BUNDLE_EXPORTED" and admission is None:
                 _stop("LEDGER_LIFECYCLE_MISMATCH")
-            exported = terminal["result"] == "BUNDLE_EXPORTED"
             attempt += 1
 
     def _recorded_at(self) -> str:
@@ -502,7 +761,7 @@ class AttemptLedger:
     def _append(self, entry_type: str, start: AttemptStart, extra: dict[str, object]) -> str:
         previous = None if not self._rows else self._rows[-1][1]
         row = {
-            "ledger_version": "1.0.0",
+            "ledger_version": "2.0.0",
             "sequence": len(self._rows) + 1,
             "previous_entry_digest": previous,
             "entry_type": entry_type,
@@ -514,7 +773,10 @@ class AttemptLedger:
             "user_goal_digest": self.goal_digest,
             "max_attempts": 2,
             "success_target": 1,
+            "success_target_authorizing": False,
             "attempt": start.attempt,
+            "contract_core_digest": start.contract_core_digest,
+            "qualification_contract_digest": start.qualification_contract_digest,
             **extra,
         }
         raw = _canonical(row)
@@ -529,36 +791,58 @@ class AttemptLedger:
         self._rows.append((row, digest))
         return digest
 
-    def begin(self, candidate: str, tree: str, environment: str) -> AttemptStart:
+    def begin(self, qualification_contract: object) -> AttemptStart:
         if self._active_start is not None:
             _stop("ATTEMPT_ALREADY_STARTED")
+        contract = _strict_json(
+            _canonical(_validate_qualification_contract(qualification_contract)),
+            1 << 20,
+        )
+        if type(contract) is not dict:
+            _stop("QUALIFICATION_CONTRACT_MALFORMED")
+        core = contract["contract_core"]
+        if type(core) is not dict:
+            _stop("QUALIFICATION_CONTRACT_MALFORMED")
         attempt = self.next_attempt()
         starts = [row for row, _ in self._rows if row["entry_type"] == "ATTEMPT_STARTED"]
         if (
-            type(candidate) is not str
-            or _COMMIT.fullmatch(candidate) is None
-            or type(tree) is not str
-            or _COMMIT.fullmatch(tree) is None
-            or type(environment) is not str
-            or _DIGEST.fullmatch(environment) is None
+            core["user_scope_reference"] != self.goal_reference
+            or core["user_goal_digest"] != self.goal_digest
+            or core["attempt"] != attempt
             or any(
-                row["candidate"] == candidate and row["environment"] == environment
+                row["candidate"] == core["candidate"]
+                and row["environment"] == contract["environment_digest"]
                 for row in starts
             )
         ):
             _stop("ATTEMPT_BINDING_MISMATCH")
-        provisional = AttemptStart(attempt, candidate, tree, environment, "")
-        digest = self._append("ATTEMPT_STARTED", provisional, {})
-        self._active_start = AttemptStart(attempt, candidate, tree, environment, digest)
+        contract_digest = _qualification_contract_digest(contract)
+        provisional = AttemptStart(
+            attempt,
+            str(core["candidate"]),
+            str(core["tree"]),
+            str(contract["environment_digest"]),
+            str(contract["contract_core_digest"]),
+            contract_digest,
+            contract,
+            "",
+        )
+        digest = self._append(
+            "ATTEMPT_STARTED",
+            provisional,
+            {"qualification_contract": contract},
+        )
+        self._active_start = AttemptStart(*provisional[:-1], digest)
         return self._active_start
 
     def next_attempt(self) -> int:
+        marker = self.lab / INDEPENDENT_VERIFICATION_NAME
+        if marker.exists() or marker.is_symlink():
+            _validate_independent_verification(
+                self, _strict_json(_read_regular(marker, 1 << 20), 1 << 20)
+            )
+            _stop("QUALIFICATION_ALREADY_VERIFIED")
         starts = [row for row, _ in self._rows if row["entry_type"] == "ATTEMPT_STARTED"]
-        if any(
-            row["entry_type"] == "ATTEMPT_TERMINAL" and row["result"] == "BUNDLE_EXPORTED"
-            for row, _ in self._rows
-        ):
-            _stop("QUALIFICATION_ALREADY_EXPORTED")
         if len(starts) >= 2:
             _stop("ATTEMPT_LIMIT_REACHED")
         return len(starts) + 1
@@ -568,16 +852,27 @@ class AttemptLedger:
             _stop("KEY_ADMISSION_ORDER_MISMATCH")
         if type(ready) is not dict or frozenset(ready) != {
             "ready_version", "candidate", "environment", "attempt",
+            "qualification_contract",
+            "qualification_contract_digest", "contract_core_digest",
             "receipt_public_key_digests", "supply_public_key_digest",
             "runtime_trust_digest",
         }:
             _stop("KEY_READY_MALFORMED")
+        ready_contract = _validate_qualification_contract(
+            ready["qualification_contract"]
+        )
         keys = ready["receipt_public_key_digests"]
         if (
-            ready["ready_version"] != "1.0.0"
+            ready["ready_version"] != "2.0.0"
             or ready["candidate"] != start.candidate
             or ready["environment"] != start.environment
             or ready["attempt"] != start.attempt
+            or _canonical(ready_contract) != _canonical(start.qualification_contract)
+            or ready["qualification_contract_digest"]
+            != start.qualification_contract_digest
+            or ready["qualification_contract_digest"]
+            != _qualification_contract_digest(ready_contract)
+            or ready["contract_core_digest"] != start.contract_core_digest
             or type(keys) is not dict
             or frozenset(keys) != {"M4_AUTHORITY", "OBSERVER", "PUBLISHER"}
             or any(type(value) is not str or _DIGEST.fullmatch(value) is None for value in keys.values())
@@ -592,6 +887,9 @@ class AttemptLedger:
             start,
             {
                 "attempt_start_digest": start.digest,
+                "admitted_qualification_contract_digest": (
+                    start.qualification_contract_digest
+                ),
                 "receipt_public_key_digests": keys,
                 "supply_public_key_digest": ready["supply_public_key_digest"],
                 "runtime_trust_digest": ready["runtime_trust_digest"],
@@ -613,14 +911,16 @@ class AttemptLedger:
         admission_digest: str | None,
         result: str,
         *,
+        terminal_reason: str,
         manifest_digest: str | None = None,
-        bundle_digest: str | None = None,
+        signed_payload_bundle_digest: str | None = None,
         qemu_phase_outcomes: dict[str, object] | None = None,
     ) -> str:
         if (
             start != self._active_start
             or admission_digest != self._active_admission
             or result not in _TERMINAL_RESULTS
+            or terminal_reason not in _TERMINAL_REASON_BY_RESULT[result]
         ):
             _stop("ATTEMPT_TERMINAL_ORDER_MISMATCH")
         if result == "BUNDLE_EXPORTED":
@@ -628,14 +928,14 @@ class AttemptLedger:
                 admission_digest is None
                 or type(manifest_digest) is not str
                 or _DIGEST.fullmatch(manifest_digest) is None
-                or type(bundle_digest) is not str
-                or _DIGEST.fullmatch(bundle_digest) is None
+                or type(signed_payload_bundle_digest) is not str
+                or _DIGEST.fullmatch(signed_payload_bundle_digest) is None
             ):
                 _stop("ATTEMPT_TERMINAL_MALFORMED")
             _validate_qemu_phase_outcomes(qemu_phase_outcomes, start.attempt)
         elif (
             manifest_digest is not None
-            or bundle_digest is not None
+            or signed_payload_bundle_digest is not None
             or qemu_phase_outcomes is not None
         ):
             _stop("ATTEMPT_TERMINAL_MALFORMED")
@@ -646,8 +946,9 @@ class AttemptLedger:
                 "attempt_start_digest": start.digest,
                 "key_admission_digest": admission_digest,
                 "result": result,
+                "terminal_reason": terminal_reason,
                 "manifest_digest": manifest_digest,
-                "bundle_digest": bundle_digest,
+                "signed_payload_bundle_digest": signed_payload_bundle_digest,
                 "qemu_phase_outcomes": qemu_phase_outcomes,
             },
         )
@@ -1071,6 +1372,30 @@ def _profile() -> tuple[dict[str, object], str]:
     return value, _M4_PROFILE_DIGEST
 
 
+def _verify_qualification_predecessors() -> dict[str, str]:
+    artifacts = {
+        "predecessor_qualification_ledger_digest": (
+            OLD_LEDGER, OLD_LEDGER_DIGEST, 4 << 20
+        ),
+        "predecessor_diagnostic_ledger_digest": (
+            PREDECESSOR_DIAGNOSTIC_LEDGER,
+            PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST,
+            4 << 20,
+        ),
+        "predecessor_diagnostic_bundle_digest": (
+            PREDECESSOR_DIAGNOSTIC_BUNDLE,
+            PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST,
+            1 << 20,
+        ),
+    }
+    verified: dict[str, str] = {}
+    for name, (path, expected, maximum) in artifacts.items():
+        if _digest_file(path, maximum) != expected:
+            _stop("QUALIFICATION_PREDECESSOR_DIGEST_MISMATCH")
+        verified[name] = expected
+    return verified
+
+
 def _verify_host_assets() -> tuple[dict[str, object], str]:
     image = IMAGE_LAB / _IMAGE_NAME
     sums = IMAGE_LAB / "SHA256SUMS"
@@ -1200,6 +1525,164 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _independent_bundle_file_digests(attempt: int) -> dict[str, str]:
+    bundle = EVIDENCE_ROOT / f"attempt-{attempt}" / "bundle"
+    expected = {
+        "attempt-ledger.jsonl", "evidence.json", "manifest.json", "manifest.sig"
+    }
+    try:
+        directory = os.lstat(bundle)
+        names = {entry.name for entry in os.scandir(bundle)}
+    except OSError as error:
+        raise QualificationStop("INDEPENDENT_VERIFICATION_MISMATCH") from error
+    if (
+        not stat.S_ISDIR(directory.st_mode)
+        or directory.st_uid != os.geteuid()
+        or stat.S_IMODE(directory.st_mode) != 0o700
+        or names != expected
+    ):
+        _stop("INDEPENDENT_VERIFICATION_MISMATCH")
+    result: dict[str, str] = {}
+    for name in sorted(expected):
+        path = bundle / name
+        info = os.lstat(path)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o444
+        ):
+            _stop("INDEPENDENT_VERIFICATION_MISMATCH")
+        result[name] = _digest_file(
+            path, 128 if name == "manifest.sig" else 8 << 20
+        )
+    return result
+
+
+def _validate_independent_verification(
+    ledger: AttemptLedger, value: object
+) -> dict[str, object]:
+    keys = frozenset({
+        "record_version", "verifier_digest", "attempt", "candidate", "tree",
+        "environment", "contract_core_digest", "qualification_contract_digest",
+        "admission_digest", "manifest_digest", "signed_payload_bundle_digest",
+        "aggregate_bundle_digest", "bundle_file_digests",
+    })
+    if type(value) is not dict or frozenset(value) != keys:
+        _stop("INDEPENDENT_VERIFICATION_MISMATCH")
+    files = value["bundle_file_digests"]
+    if (
+        value["record_version"] != "1.0.0"
+        or value["verifier_digest"]
+        != _digest_file(ROOT / "scripts/check_m4_runtime_evidence.py", 16 << 20)
+        or type(value["attempt"]) is not int
+        or isinstance(value["attempt"], bool)
+        or value["attempt"] not in {1, 2}
+        or type(value["candidate"]) is not str
+        or _COMMIT.fullmatch(value["candidate"]) is None
+        or type(value["tree"]) is not str
+        or _COMMIT.fullmatch(value["tree"]) is None
+        or any(
+            type(value[name]) is not str or _DIGEST.fullmatch(value[name]) is None
+            for name in (
+                "environment", "contract_core_digest",
+                "qualification_contract_digest", "admission_digest",
+                "manifest_digest", "signed_payload_bundle_digest",
+                "aggregate_bundle_digest",
+            )
+        )
+        or type(files) is not dict
+        or frozenset(files) != {
+            "attempt-ledger.jsonl", "evidence.json", "manifest.json", "manifest.sig"
+        }
+        or any(type(item) is not str or _DIGEST.fullmatch(item) is None for item in files.values())
+        or value["manifest_digest"] != files["manifest.json"]
+        or value["signed_payload_bundle_digest"]
+        != _digest_bytes(_canonical({
+            name: digest for name, digest in files.items()
+            if name != "attempt-ledger.jsonl"
+        }))
+        or value["aggregate_bundle_digest"] != _digest_bytes(_canonical(files))
+        or files != _independent_bundle_file_digests(value["attempt"])
+        or files["attempt-ledger.jsonl"]
+        != _digest_file(ledger.lab / LEDGER_NAME, 4 << 20)
+    ):
+        _stop("INDEPENDENT_VERIFICATION_MISMATCH")
+    starts = [
+        (row, digest) for row, digest in ledger._rows
+        if row["entry_type"] == "ATTEMPT_STARTED" and row["attempt"] == value["attempt"]
+    ]
+    admissions = [
+        (row, digest) for row, digest in ledger._rows
+        if row["entry_type"] == "KEY_ADMITTED" and row["attempt"] == value["attempt"]
+    ]
+    terminals = [
+        row for row, _digest in ledger._rows
+        if row["entry_type"] == "ATTEMPT_TERMINAL" and row["attempt"] == value["attempt"]
+    ]
+    if len(starts) != 1 or len(admissions) != 1 or len(terminals) != 1:
+        _stop("INDEPENDENT_VERIFICATION_MISMATCH")
+    start, _start_digest = starts[0]
+    _admission, admission_digest = admissions[0]
+    terminal = terminals[0]
+    if (
+        terminal is not ledger._rows[-1][0]
+        or terminal["result"] != "BUNDLE_EXPORTED"
+        or terminal["terminal_reason"] != "SIGNED_PAYLOAD_EXPORTED"
+        or value["candidate"] != start["candidate"]
+        or value["tree"] != start["tree"]
+        or value["environment"] != start["environment"]
+        or value["contract_core_digest"] != start["contract_core_digest"]
+        or value["qualification_contract_digest"]
+        != start["qualification_contract_digest"]
+        or value["admission_digest"] != admission_digest
+        or terminal["key_admission_digest"] != admission_digest
+        or value["manifest_digest"] != terminal["manifest_digest"]
+        or value["signed_payload_bundle_digest"]
+        != terminal["signed_payload_bundle_digest"]
+    ):
+        _stop("INDEPENDENT_VERIFICATION_MISMATCH")
+    return value
+
+
+def _record_independent_verification(
+    ledger: AttemptLedger, verified: object
+) -> None:
+    if (
+        type(verified) is not dict
+        or verified.get("outcome") != "VERIFIED"
+        or verified.get("claim_status")
+        != "M4_EXACT_DISPOSABLE_TEST_PROFILE_RUNTIME_CONFORMANCE_VERIFIED"
+    ):
+        _stop("INDEPENDENT_VERIFICATION_MISMATCH")
+    record = {
+        "record_version": "1.0.0",
+        "verifier_digest": _digest_file(
+            ROOT / "scripts/check_m4_runtime_evidence.py", 16 << 20
+        ),
+        "attempt": verified.get("attempt"),
+        "candidate": verified.get("commit"),
+        "tree": verified.get("tree"),
+        "environment": verified.get("environment"),
+        "contract_core_digest": ledger._rows[-1][0]["contract_core_digest"],
+        "qualification_contract_digest": verified.get(
+            "qualification_contract_digest"
+        ),
+        "admission_digest": verified.get("admission_digest"),
+        "manifest_digest": verified.get("manifest_digest"),
+        "signed_payload_bundle_digest": verified.get(
+            "signed_payload_bundle_digest"
+        ),
+        "aggregate_bundle_digest": verified.get("aggregate_bundle_digest"),
+        "bundle_file_digests": verified.get("bundle_file_digests"),
+    }
+    _validate_independent_verification(ledger, record)
+    _write_exact(
+        ledger.lab / INDEPENDENT_VERIFICATION_NAME, _canonical(record), 0o444
+    )
+    _fsync_directory(ledger.lab)
+
+
 def _generate_key(path: Path, comment: str) -> None:
     _run(
         [
@@ -1260,6 +1743,8 @@ printf '%s  %s\n' \
   1451aceec262c3338052fa77542eb971d4ba311c6bf12d9aa70d0b56aca942f9 /usr/lib/x86_64-linux-gnu/libcrypto.so.3 \
   | /usr/bin/sha256sum -c -
 /usr/bin/install -d -o root -g root -m 0755 /opt/harness-m3-source
+/usr/bin/install -o root -g root -m 0444 \
+  /var/tmp/harness-source.tgz /etc/harness-m4/source-archive.tgz
 /usr/bin/tar -xzf /var/tmp/harness-source.tgz -C /opt/harness-m3-source
 /usr/bin/chown -R root:root /opt/harness-m3-source
 /usr/bin/chmod -R go-w /opt/harness-m3-source
@@ -1305,6 +1790,7 @@ def _create_seed(
     *,
     attempt: int,
     source: dict[str, object],
+    package_runtime_plan: dict[str, object] | None = None,
 ) -> tuple[Path, Path, Path]:
     client_key = attempt_root / "ssh-client"
     host_key = attempt_root / "ssh-host"
@@ -1331,6 +1817,16 @@ def _create_seed(
         "qemu_machine": "q35",
         "offline_egress": True,
     }
+    runtime_plan = (
+        _package_runtime_plan()
+        if package_runtime_plan is None
+        else package_runtime_plan
+    )
+    if (
+        type(runtime_plan) is not dict
+        or _strict_json(_canonical(runtime_plan), 1 << 20) != runtime_plan
+    ):
+        _stop("PACKAGE_RUNTIME_PLAN_MALFORMED")
     writes: list[str] = []
     for path, raw, mode in (
         ("/var/tmp/harness-source.tgz", _read_regular(source_archive, 16 << 20), 0o600),
@@ -1360,6 +1856,11 @@ def _create_seed(
         (
             "/etc/harness-m4/nftables-offline.conf",
             _read_regular(IMAGE_LAB / "nftables-offline.conf", 1 << 20),
+            0o444,
+        ),
+        (
+            "/etc/harness-m4/package-runtime-plan.json",
+            _canonical(runtime_plan),
             0o444,
         ),
         ("/etc/ssh/ssh_host_ed25519_key", _read_regular(host_key, 4096), 0o600),
@@ -2041,6 +2542,38 @@ def _provision_vm(
     return created, outcome
 
 
+def _key_admission(
+    start: AttemptStart,
+    ready: dict[str, object],
+    ledger_entry_digest: str,
+) -> dict[str, object]:
+    if (
+        type(start) is not AttemptStart
+        or type(ready) is not dict
+        or ready.get("candidate") != start.candidate
+        or ready.get("environment") != start.environment
+        or ready.get("attempt") != start.attempt
+        or ready.get("qualification_contract") != start.qualification_contract
+        or ready.get("qualification_contract_digest")
+        != start.qualification_contract_digest
+        or ready.get("contract_core_digest") != start.contract_core_digest
+        or type(ledger_entry_digest) is not str
+        or _DIGEST.fullmatch(ledger_entry_digest) is None
+    ):
+        _stop("KEY_ADMISSION_BINDING_MISMATCH")
+    return {
+        "admission_version": "2.0.0",
+        "mode": "HOST_ATTEMPT_LEDGER_PIN_BEFORE_WORKER_GATE",
+        "qualification_contract": start.qualification_contract,
+        "qualification_contract_digest": start.qualification_contract_digest,
+        "contract_core_digest": start.contract_core_digest,
+        "ledger_entry_digest": ledger_entry_digest,
+        "receipt_public_key_digests": ready["receipt_public_key_digests"],
+        "supply_public_key_digest": ready["supply_public_key_digest"],
+        "runtime_trust_digest": ready["runtime_trust_digest"],
+    }
+
+
 def _run_vm_phase(
     attempt_root: Path,
     attempt: int,
@@ -2064,17 +2597,7 @@ def _run_vm_phase(
         if phase == "run":
             ready = _wait_key_ready(qemu, client_key, known_hosts)
             admission_digest = ledger.admit(start, ready)
-            admission = {
-                "admission_version": "1.0.0",
-                "mode": "HOST_ATTEMPT_LEDGER_PIN_BEFORE_WORKER_GATE",
-                "candidate": start.candidate,
-                "environment": start.environment,
-                "attempt": start.attempt,
-                "ledger_entry_digest": admission_digest,
-                "receipt_public_key_digests": ready["receipt_public_key_digests"],
-                "supply_public_key_digest": ready["supply_public_key_digest"],
-                "runtime_trust_digest": ready["runtime_trust_digest"],
-            }
+            admission = _key_admission(start, ready, admission_digest)
             created.append(
                 _install_guest_file(
                     attempt_root,
@@ -2214,24 +2737,119 @@ def _export_bundle(
     return bundle
 
 
-def _bundle_digests(bundle: Path, admission_digest: str) -> tuple[str, str]:
-    manifest = _read_regular(bundle / "manifest.json", 1 << 20)
-    signature = _read_regular(bundle / "manifest.sig", 128)
-    evidence = _read_regular(bundle / "evidence.json", 8 << 20)
-    if len(signature) != 64:
+def _signed_payload_digests(
+    bundle: Path,
+    *,
+    qualification_contract: dict[str, object] | None = None,
+    qualification_contract_digest: str | None = None,
+    admission_digest: str | None = None,
+) -> tuple[str, str]:
+    try:
+        directory = os.lstat(bundle)
+        names = {entry.name for entry in os.scandir(bundle)}
+    except OSError as error:
+        raise QualificationStop("EVIDENCE_BUNDLE_MALFORMED") from error
+    expected = {"manifest.json", "manifest.sig", "evidence.json"}
+    if not stat.S_ISDIR(directory.st_mode) or names != expected:
+        _stop("EVIDENCE_BUNDLE_MALFORMED")
+    raw: dict[str, bytes] = {}
+    for name, maximum in (
+        ("manifest.json", 1 << 20),
+        ("manifest.sig", 128),
+        ("evidence.json", 8 << 20),
+    ):
+        path = bundle / name
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o444:
+            _stop("EVIDENCE_BUNDLE_MALFORMED")
+        raw[name] = _read_regular(path, maximum)
+    if len(raw["manifest.sig"]) != 64:
         _stop("EVIDENCE_SIGNATURE_LENGTH_MISMATCH")
-    manifest_digest = _digest_bytes(manifest)
-    bundle_digest = _digest_bytes(
-        _canonical(
-            {
-                "manifest": manifest_digest,
-                "signature": _digest_bytes(signature),
-                "evidence": _digest_bytes(evidence),
-                "ledger_entry": admission_digest,
-            }
-        )
+    manifest = _strict_json(raw["manifest.json"], 1 << 20)
+    evidence = _strict_json(raw["evidence.json"], 8 << 20)
+    if (
+        type(manifest) is not dict
+        or type(evidence) is not dict
+        or manifest.get("bundle_version") != "2.0.0"
+        or evidence.get("bundle_version") != "2.0.0"
+    ):
+        _stop("EVIDENCE_V2_REQUIRED")
+    if qualification_contract is not None:
+        expected_contract = _validate_qualification_contract(qualification_contract)
+        if (
+            type(qualification_contract_digest) is not str
+            or type(admission_digest) is not str
+            or manifest.get("qualification_contract") != expected_contract
+            or evidence.get("qualification_contract") != expected_contract
+            or manifest.get("qualification_contract_digest")
+            != qualification_contract_digest
+            or evidence.get("qualification_contract_digest")
+            != qualification_contract_digest
+            or manifest.get("admission_digest") != admission_digest
+            or evidence.get("admission_digest") != admission_digest
+        ):
+            _stop("SIGNED_PAYLOAD_CONTRACT_MISMATCH")
+    digests = {name: _digest_bytes(content) for name, content in raw.items()}
+    return digests["manifest.json"], _digest_bytes(_canonical(digests))
+
+
+def _assemble_terminal_bundle(bundle: Path, ledger_path: Path) -> Path:
+    ledger_raw = _read_regular(ledger_path, 4 << 20)
+    if not ledger_raw.endswith(b"\n") or b"\n\n" in ledger_raw:
+        _stop("LEDGER_MALFORMED")
+    lines = ledger_raw[:-1].split(b"\n")
+    rows: list[tuple[dict[str, object], str]] = []
+    previous: str | None = None
+    for sequence, line in enumerate(lines, 1):
+        row = _strict_json(line, 1 << 20)
+        if (
+            type(row) is not dict
+            or row.get("entry_type") not in _LEDGER_EXTRA
+            or frozenset(row)
+            != _LEDGER_COMMON | _LEDGER_EXTRA[str(row["entry_type"])]
+            or row.get("ledger_version") != "2.0.0"
+            or row.get("sequence") != sequence
+            or row.get("previous_entry_digest") != previous
+        ):
+            _stop("LEDGER_MALFORMED")
+        AttemptLedger._validate_row(row)
+        digest = _digest_bytes(line)
+        rows.append((row, digest))
+        previous = digest
+    if not rows or rows[-1][0]["entry_type"] != "ATTEMPT_TERMINAL":
+        _stop("LEDGER_NOT_TERMINAL")
+    AttemptLedger._validate_lifecycle(rows)
+    terminal = rows[-1][0]
+    starts = [row for row, _ in rows if row["entry_type"] == "ATTEMPT_STARTED"]
+    start = starts[-1]
+    contract = start["qualification_contract"]
+    if type(contract) is not dict:
+        _stop("LEDGER_BINDING_MISMATCH")
+    manifest_digest, signed_payload_digest = _signed_payload_digests(
+        bundle,
+        qualification_contract=contract,
+        qualification_contract_digest=str(start["qualification_contract_digest"]),
+        admission_digest=str(terminal["key_admission_digest"]),
     )
-    return manifest_digest, bundle_digest
+    if (
+        terminal["result"] != "BUNDLE_EXPORTED"
+        or terminal["terminal_reason"] != "SIGNED_PAYLOAD_EXPORTED"
+        or terminal["manifest_digest"] != manifest_digest
+        or terminal["signed_payload_bundle_digest"] != signed_payload_digest
+    ):
+        _stop("TERMINAL_BUNDLE_LINKAGE_MISMATCH")
+    embedded = bundle / "attempt-ledger.jsonl"
+    _write_exact(embedded, ledger_raw, 0o444)
+    if {entry.name for entry in os.scandir(bundle)} != {
+        "manifest.json", "manifest.sig", "evidence.json", "attempt-ledger.jsonl"
+    }:
+        _stop("EVIDENCE_BUNDLE_MALFORMED")
+    for path in bundle.iterdir():
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o444:
+            _stop("EVIDENCE_BUNDLE_MALFORMED")
+    _fsync_directory(bundle)
+    return embedded
 
 
 def _verify_host_tools() -> dict[str, str]:
@@ -2478,6 +3096,51 @@ def _verify_bundle(bundle: Path) -> dict[str, object]:
     return value
 
 
+def _finalize_exported_attempt(
+    *,
+    ledger: AttemptLedger,
+    start: AttemptStart,
+    admission_digest: str,
+    bundle: Path,
+    phase_outcomes: dict[str, object],
+    attempt_root: Path,
+) -> tuple[dict[str, object], list[str]]:
+    """Finish the non-cyclic export before deleting disposable inputs."""
+
+    try:
+        manifest_digest, signed_payload_digest = _signed_payload_digests(
+            bundle,
+            qualification_contract=start.qualification_contract,
+            qualification_contract_digest=start.qualification_contract_digest,
+            admission_digest=admission_digest,
+        )
+        ledger.terminalize(
+            start,
+            admission_digest,
+            "BUNDLE_EXPORTED",
+            terminal_reason="SIGNED_PAYLOAD_EXPORTED",
+            manifest_digest=manifest_digest,
+            signed_payload_bundle_digest=signed_payload_digest,
+            qemu_phase_outcomes=phase_outcomes,
+        )
+        _assemble_terminal_bundle(bundle, ledger.lab / LEDGER_NAME)
+    except (OSError, ValueError, QualificationStop) as error:
+        raise QualificationStop("EVIDENCE_EXPORT_FAILED:" + str(error)) from error
+    try:
+        verified = _verify_bundle(bundle)
+    except (OSError, ValueError, QualificationStop) as error:
+        raise QualificationStop("EVIDENCE_VERIFICATION_FAILED:" + str(error)) from error
+    try:
+        removed = _cleanup_attempt(attempt_root, require_complete=True)
+    except (OSError, ValueError, QualificationStop) as error:
+        raise QualificationStop("CLEANUP_FAILED:" + str(error)) from error
+    try:
+        _record_independent_verification(ledger, verified)
+    except (OSError, ValueError, QualificationStop) as error:
+        raise QualificationStop("VERIFICATION_RECORD_FAILED:" + str(error)) from error
+    return verified, removed
+
+
 def _key_ready_diagnostic(goal: Path) -> dict[str, object]:
     goal_digest = _digest_file(goal, 1 << 20)
     predecessor_digest = _verify_diagnostic_predecessor(
@@ -2706,20 +3369,38 @@ def _key_ready_diagnostic(goal: Path) -> dict[str, object]:
             raise
 
 
+def _qualification_terminal_reason(error: BaseException, fallback: str) -> str:
+    detail = str(error)
+    for reason in (
+        "PROVISION_FAILED", "SERVICE_FAILED_PRE_KEY_READY", "KEY_READY_TIMEOUT",
+        "KEY_ADMISSION_FAILED", "RUN_FAILED", "RECOVERY_FAILED",
+        "EVIDENCE_EXPORT_FAILED", "EVIDENCE_VERIFICATION_FAILED",
+        "CLEANUP_FAILED",
+    ):
+        if reason in detail:
+            return reason
+    if "QEMU" in detail:
+        return "QEMU_EXITED"
+    return fallback
+
+
 def _qualification() -> dict[str, object]:
     goal_digest = _digest_file(USER_GOAL, 1 << 20)
+    _verify_qualification_predecessors()
     source = _source_state()
-    profile, profile_digest = _profile()
+    _profile()
     image, qemu_version = _verify_host_assets()
     tools = _verify_host_tools()
+    package_runtime_plan = _package_runtime_plan()
+    package_runtime_plan_digest = _digest_bytes(_canonical(package_runtime_plan))
     _verify_kvm()
     _verify_management_port_free()
     remaining = _verify_disk_budget(IMAGE_LAB.parent)
     start: AttemptStart | None = None
     admission_digest: str | None = None
     bundle: Path | None = None
-    cleanup_complete = False
     phase_outcomes: dict[str, object] = {}
+    failure_reason = "PROVISION_FAILED"
     with AttemptLedger(
         LAB,
         goal_reference=str(USER_GOAL),
@@ -2736,32 +3417,39 @@ def _qualification() -> dict[str, object]:
                 attempt_root,
                 attempt=attempt,
                 source=source,
+                package_runtime_plan=package_runtime_plan,
             )
             known_hosts = attempt_root / "known_hosts"
             _known_hosts(host_key.with_suffix(".pub"), known_hosts)
+            seed_digest = _digest_file(seed, _MAX_SEED_BYTES)
             provenance = _host_provenance(
                 image,
                 qemu_version=qemu_version,
-                seed_digest=_digest_file(seed, _MAX_SEED_BYTES),
+                seed_digest=seed_digest,
                 attempt=attempt,
             )
-            environment = _digest_bytes(
-                _canonical(
-                    {
-                        "host_provenance": provenance,
-                        "profile_digest": profile_digest,
-                    }
-                )
+            contract = _qualification_contract(
+                goal_reference=str(USER_GOAL),
+                goal_digest=goal_digest,
+                candidate=str(source["commit"]),
+                tree=str(source["tree"]),
+                attempt=attempt,
+                source_files_digest=str(source["files_digest"]),
+                source_archive_digest=_digest_file(
+                    attempt_root / "source.tgz", 16 << 20
+                ),
+                seed_digest=seed_digest,
+                package_runtime_plan_digest=package_runtime_plan_digest,
+                host_provenance_digest=_digest_bytes(_canonical(provenance)),
             )
             request = {
-                "request_version": "1.0.0",
-                "candidate": source["commit"],
-                "environment": environment,
-                "attempt": attempt,
+                "request_version": "2.0.0",
+                "qualification_contract": contract,
+                "qualification_contract_digest": _qualification_contract_digest(
+                    contract
+                ),
             }
-            start = ledger.begin(
-                str(source["commit"]), str(source["tree"]), environment
-            )
+            start = ledger.begin(contract)
             _create_overlay(attempt_root)
             _, phase_outcomes["provision"] = _provision_vm(
                 attempt_root,
@@ -2771,6 +3459,7 @@ def _qualification() -> dict[str, object]:
                 host_provenance=provenance,
                 request=request,
             )
+            failure_reason = "RUN_FAILED"
             run_result, admission_digest, _, phase_outcomes["run"] = _run_vm_phase(
                 attempt_root,
                 attempt,
@@ -2782,6 +3471,7 @@ def _qualification() -> dict[str, object]:
             )
             if admission_digest is None:
                 _stop("KEY_ADMISSION_ABSENT")
+            failure_reason = "RECOVERY_FAILED"
             recover_result, _, _, phase_outcomes["recover"] = _run_vm_phase(
                 attempt_root,
                 attempt,
@@ -2795,45 +3485,47 @@ def _qualification() -> dict[str, object]:
             if type(bundle_value) is not str:
                 _stop("EVIDENCE_EXPORT_ABSENT")
             bundle = Path(bundle_value)
-            removed = _cleanup_attempt(attempt_root, require_complete=True)
-            cleanup_complete = True
-            manifest_digest, bundle_digest = _bundle_digests(bundle, admission_digest)
-            ledger.terminalize(
-                start,
-                admission_digest,
-                "BUNDLE_EXPORTED",
-                manifest_digest=manifest_digest,
-                bundle_digest=bundle_digest,
-                qemu_phase_outcomes=phase_outcomes,
+            failure_reason = "EVIDENCE_EXPORT_FAILED"
+            verified, removed = _finalize_exported_attempt(
+                ledger=ledger,
+                start=start,
+                admission_digest=admission_digest,
+                bundle=bundle,
+                phase_outcomes=phase_outcomes,
+                attempt_root=attempt_root,
             )
-            verified = _verify_bundle(bundle)
             return {
                 "outcome": "VERIFIED",
                 "claim": verified["claim_status"],
                 "status": "NOT_ATTESTED",
                 "candidate": source["commit"],
                 "tree": source["tree"],
-                "environment": environment,
+                "environment": start.environment,
+                "qualification_contract_digest": start.qualification_contract_digest,
                 "attempt": attempt,
                 "bundle": str(bundle),
-                "evidence_bundle_digest": verified["evidence_bundle_digest"],
+                "aggregate_bundle_digest": verified["aggregate_bundle_digest"],
                 "host_tool_digests": tools,
                 "disk_bytes_remaining_after_worst_case": remaining,
                 "run_result_digest": _digest_bytes(_canonical(run_result)),
                 "recovery_result_digest": _digest_bytes(_canonical(recover_result)),
                 "removed_disposable_files": sorted(removed),
                 "preserved_base_image": str(IMAGE_LAB / _IMAGE_NAME),
+                "preserved_base_image_digest": _IMAGE_DIGEST,
             }
         except BaseException as error:
-            if isinstance(error, VMCleanupUnproven):
-                raise
+            terminal_reason = _qualification_terminal_reason(error, failure_reason)
             try:
                 _cleanup_attempt(attempt_root, require_complete=False)
-                cleanup_complete = True
             except QualificationStop:
-                cleanup_complete = False
-            if start is not None and ledger.active_start is not None and cleanup_complete:
-                ledger.terminalize(start, ledger.active_admission, "QUARANTINED")
+                terminal_reason = "CLEANUP_FAILED"
+            if start is not None and ledger.active_start is not None:
+                ledger.terminalize(
+                    start,
+                    ledger.active_admission,
+                    "QUARANTINED" if ledger.active_admission is not None else "FAILED",
+                    terminal_reason=terminal_reason,
+                )
             raise
 
 

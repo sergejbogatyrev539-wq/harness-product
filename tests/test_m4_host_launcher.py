@@ -6,6 +6,7 @@ import inspect
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -39,6 +40,7 @@ class M4HostLauncherTests(unittest.TestCase):
         self.goal = self.root / "goal.md"
         self.goal.write_text("authorized synthetic M4 goal\n", encoding="utf-8")
         os.chmod(self.goal, 0o444)
+        self.launcher.EVIDENCE_ROOT = self.root / "evidence"
         self.now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=UTC)
 
     def tearDown(self) -> None:
@@ -53,6 +55,45 @@ class M4HostLauncherTests(unittest.TestCase):
                 "return_code": 0,
             }
             for phase in ("provision", "run", "recover")
+        }
+
+    def _contract(self, attempt: int = 1, **changes: object) -> dict[str, object]:
+        values: dict[str, object] = {
+            "goal_reference": str(self.goal),
+            "goal_digest": self.launcher._digest_file(self.goal, 1 << 20),
+            "candidate": "a" * 40,
+            "tree": "b" * 40,
+            "attempt": attempt,
+            "source_files_digest": "sha256:" + "1" * 64,
+            "source_archive_digest": "sha256:" + "2" * 64,
+            "seed_digest": "sha256:" + "3" * 64,
+            "package_runtime_plan_digest": "sha256:" + "4" * 64,
+            "host_provenance_digest": "sha256:" + "5" * 64,
+        }
+        values.update(changes)
+        return self.launcher._qualification_contract(**values)
+
+    def _ready(self, contract: dict[str, object]) -> dict[str, object]:
+        return {
+            "ready_version": "2.0.0",
+            "candidate": contract["contract_core"]["candidate"],
+            "environment": contract["environment_digest"],
+            "attempt": contract["contract_core"]["attempt"],
+            "qualification_contract": contract,
+            "qualification_contract_digest": (
+                self.launcher._qualification_contract_digest(contract)
+            ),
+            "contract_core_digest": contract["contract_core_digest"],
+            "receipt_public_key_digests": {
+                role: "sha256:" + character * 64
+                for role, character in (
+                    ("M4_AUTHORITY", "1"),
+                    ("OBSERVER", "2"),
+                    ("PUBLISHER", "3"),
+                )
+            },
+            "supply_public_key_digest": "sha256:" + "4" * 64,
+            "runtime_trust_digest": "sha256:" + "5" * 64,
         }
 
     def test_qemu_lifecycle_matches_independent_checker_contract(self) -> None:
@@ -219,6 +260,143 @@ class M4HostLauncherTests(unittest.TestCase):
             current_source["files_digest"], previous_source["files_digest"]
         )
 
+    def test_qualification_contract_v2_is_closed_digest_bound_and_mutation_sensitive(self) -> None:
+        contract = self._contract()
+        self.assertEqual(
+            frozenset(contract),
+            {
+                "contract_core", "contract_core_digest", "environment_preimage",
+                "environment_digest",
+            },
+        )
+        core = contract["contract_core"]
+        self.assertEqual(core["contract_version"], "2.0.0")
+        self.assertEqual(core["attempt"], 1)
+        self.assertFalse(core["success_target_authorizing"])
+        self.assertEqual(
+            contract["contract_core_digest"],
+            self.launcher._digest_bytes(self.launcher._canonical(core)),
+        )
+        self.assertEqual(
+            contract["environment_preimage"]["contract_core_digest"],
+            contract["contract_core_digest"],
+        )
+        self.assertEqual(
+            contract["environment_digest"],
+            self.launcher._digest_bytes(
+                self.launcher._canonical(contract["environment_preimage"])
+            ),
+        )
+        contract_digest = self.launcher._qualification_contract_digest(contract)
+        self.assertEqual(
+            contract_digest,
+            self.launcher._digest_bytes(self.launcher._canonical(contract)),
+        )
+        self.assertEqual(self.launcher._validate_qualification_contract(contract), contract)
+
+        for field in (
+            "source_archive_digest", "seed_digest", "package_runtime_plan_digest",
+            "host_provenance_digest",
+        ):
+            changed = self._contract(**{field: "sha256:" + "9" * 64})
+            with self.subTest(field=field):
+                self.assertNotEqual(changed["environment_digest"], contract["environment_digest"])
+                self.assertNotEqual(
+                    self.launcher._qualification_contract_digest(changed), contract_digest
+                )
+
+        for mutation in (
+            {key: value for key, value in contract.items() if key != "environment_digest"},
+            {**contract, "extra": False},
+            {**contract, "contract_core_digest": "sha256:" + "8" * 64},
+        ):
+            with self.subTest(keys=sorted(mutation)), self.assertRaises(
+                self.launcher.QualificationStop
+            ):
+                self.launcher._validate_qualification_contract(mutation)
+
+    def test_package_runtime_plan_is_closed_and_binds_provisioning_inputs(self) -> None:
+        plan = self.launcher._package_runtime_plan()
+        self.assertEqual(
+            frozenset(plan),
+            {
+                "plan_version", "packages", "provisioning_script_digest",
+                "package_sources", "runtime_configs", "runtime_tools",
+            },
+        )
+        self.assertEqual(plan["plan_version"], "1.0.0")
+        self.assertEqual(plan["packages"]["bubblewrap"], "0.9.0-1ubuntu0.1")
+        self.assertEqual(
+            plan["provisioning_script_digest"],
+            self.launcher._digest_bytes(self.launcher._provision_script()),
+        )
+        self.assertIn("/etc/apt/sources.list.d/ubuntu.sources", plan["package_sources"])
+        self.assertIn("/etc/harness-m4/nftables-offline.conf", plan["runtime_configs"])
+        self.assertIn("/usr/lib/x86_64-linux-gnu/libcrypto.so.3", plan["runtime_tools"])
+        self.assertIn(
+            "/etc/harness-m4/source-archive.tgz",
+            self.launcher._provision_script().decode("ascii"),
+        )
+
+    def test_v2_lab_qemu_and_ledger_never_continue_old_contracts(self) -> None:
+        self.assertEqual(
+            self.launcher.LAB,
+            Path("/home/a1/Загрузки/harness/harness-m4-qualification-v2"),
+        )
+        self.assertEqual(
+            self.launcher.USER_GOAL,
+            Path(
+                "/home/a1/.codex/attachments/4adf762e-32a5-45e2-bf75-3c79125ace23/"
+                "pasted-text.txt"
+            ),
+        )
+        self.assertNotEqual(self.launcher.OLD_LEDGER.parent, self.launcher.LAB)
+        lifecycle = self.launcher._qemu_lifecycle(1)
+        self.assertTrue(
+            all("harness-m4-qualification-v2" in " ".join(argv) for argv in lifecycle.values())
+        )
+
+    def test_predecessor_artifacts_are_digest_checked_without_mutation(self) -> None:
+        paths = [self.root / name for name in ("old-ledger", "diagnostic-ledger", "diagnostic")]
+        for index, path in enumerate(paths):
+            path.write_bytes(f"immutable-{index}\n".encode("ascii"))
+            os.chmod(path, 0o444)
+        digests = [self.launcher._digest_file(path, 1 << 20) for path in paths]
+        before = [(path.read_bytes(), path.stat().st_mode) for path in paths]
+        with (
+            mock.patch.object(self.launcher, "OLD_LEDGER", paths[0]),
+            mock.patch.object(self.launcher, "OLD_LEDGER_DIGEST", digests[0]),
+            mock.patch.object(self.launcher, "PREDECESSOR_DIAGNOSTIC_LEDGER", paths[1]),
+            mock.patch.object(
+                self.launcher, "PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST", digests[1]
+            ),
+            mock.patch.object(self.launcher, "PREDECESSOR_DIAGNOSTIC_BUNDLE", paths[2]),
+            mock.patch.object(
+                self.launcher, "PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST", digests[2]
+            ),
+        ):
+            self.assertEqual(
+                self.launcher._verify_qualification_predecessors(),
+                {
+                    "predecessor_qualification_ledger_digest": digests[0],
+                    "predecessor_diagnostic_ledger_digest": digests[1],
+                    "predecessor_diagnostic_bundle_digest": digests[2],
+                },
+            )
+        self.assertEqual(before, [(path.read_bytes(), path.stat().st_mode) for path in paths])
+
+        with (
+            mock.patch.object(self.launcher, "OLD_LEDGER", paths[0]),
+            mock.patch.object(
+                self.launcher, "OLD_LEDGER_DIGEST", "sha256:" + "0" * 64
+            ),
+        ):
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop,
+                "QUALIFICATION_PREDECESSOR_DIGEST_MISMATCH",
+            ):
+                self.launcher._verify_qualification_predecessors()
+
     def test_ledger_consumes_failed_slot_and_rejects_third_attempt(self) -> None:
         lab = self.root / "lab"
         goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
@@ -228,17 +406,28 @@ class M4HostLauncherTests(unittest.TestCase):
             goal_digest=goal_digest,
             clock=lambda: self.now,
         ) as ledger:
-            first = ledger.begin("a" * 40, "b" * 40, "sha256:" + "c" * 64)
-            ledger.terminalize(first, None, "BLOCKED")
+            first = ledger.begin(self._contract())
+            ledger.terminalize(
+                first, None, "FAILED", terminal_reason="PROVISION_FAILED"
+            )
         with self.launcher.AttemptLedger(
             lab,
             goal_reference=str(self.goal),
             goal_digest=goal_digest,
             clock=lambda: self.now,
         ) as ledger:
-            second = ledger.begin("d" * 40, "e" * 40, "sha256:" + "f" * 64)
+            second = ledger.begin(
+                self._contract(
+                    2,
+                    candidate="d" * 40,
+                    tree="e" * 40,
+                    source_archive_digest="sha256:" + "f" * 64,
+                )
+            )
             self.assertEqual(second.attempt, 2)
-            ledger.terminalize(second, None, "FAILED")
+            ledger.terminalize(
+                second, None, "FAILED", terminal_reason="RUN_FAILED"
+            )
         with self.launcher.AttemptLedger(
             lab,
             goal_reference=str(self.goal),
@@ -248,12 +437,23 @@ class M4HostLauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 self.launcher.QualificationStop, "ATTEMPT_LIMIT_REACHED"
             ):
-                ledger.begin("1" * 40, "2" * 40, "sha256:" + "3" * 64)
+                ledger.begin(
+                    self._contract(
+                        2,
+                        candidate="1" * 40,
+                        tree="2" * 40,
+                        source_archive_digest="sha256:" + "3" * 64,
+                    )
+                )
         rows = [json.loads(line) for line in (lab / "m4-attempt-ledger.jsonl").read_bytes().splitlines()]
         self.assertEqual(
             [row["entry_type"] for row in rows],
             ["ATTEMPT_STARTED", "ATTEMPT_TERMINAL"] * 2,
         )
+        self.assertTrue(all(row["ledger_version"] == "2.0.0" for row in rows))
+        self.assertTrue(all(row["success_target_authorizing"] is False for row in rows))
+        self.assertTrue(all("contract_core_digest" in row for row in rows))
+        self.assertTrue(all("qualification_contract_digest" in row for row in rows))
 
     def test_admission_is_bound_before_success_terminal(self) -> None:
         lab = self.root / "lab"
@@ -264,36 +464,103 @@ class M4HostLauncherTests(unittest.TestCase):
             goal_digest=goal_digest,
             clock=lambda: self.now,
         ) as ledger:
-            start = ledger.begin("a" * 40, "b" * 40, "sha256:" + "c" * 64)
-            ready = {
-                "ready_version": "1.0.0",
-                "candidate": start.candidate,
-                "environment": start.environment,
-                "attempt": start.attempt,
-                "receipt_public_key_digests": {
-                    role: "sha256:" + character * 64
-                    for role, character in (
-                        ("M4_AUTHORITY", "1"),
-                        ("OBSERVER", "2"),
-                        ("PUBLISHER", "3"),
-                    )
-                },
-                "supply_public_key_digest": "sha256:" + "4" * 64,
-                "runtime_trust_digest": "sha256:" + "5" * 64,
-            }
+            contract = self._contract()
+            start = ledger.begin(contract)
+            ready = self._ready(contract)
             admission = ledger.admit(start, ready)
             ledger.terminalize(
                 start,
                 admission,
                 "BUNDLE_EXPORTED",
+                terminal_reason="SIGNED_PAYLOAD_EXPORTED",
                 manifest_digest="sha256:" + "6" * 64,
-                bundle_digest="sha256:" + "7" * 64,
+                signed_payload_bundle_digest="sha256:" + "7" * 64,
                 qemu_phase_outcomes=self._phase_outcomes(start.attempt),
             )
         rows = [json.loads(line) for line in (lab / "m4-attempt-ledger.jsonl").read_bytes().splitlines()]
         self.assertEqual(rows[1]["attempt_start_digest"], start.digest)
+        self.assertEqual(
+            rows[1]["admitted_qualification_contract_digest"],
+            start.qualification_contract_digest,
+        )
         self.assertEqual(rows[2]["key_admission_digest"], admission)
+        self.assertEqual(rows[2]["terminal_reason"], "SIGNED_PAYLOAD_EXPORTED")
+        self.assertNotIn("aggregate_bundle_digest", rows[2])
         self.assertEqual(rows[2]["qemu_phase_outcomes"], self._phase_outcomes(1))
+
+    def test_key_admission_rejects_v1_extra_and_substituted_exact_contract(self) -> None:
+        lab = self.root / "lab"
+        goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
+        with self.launcher.AttemptLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            contract = self._contract()
+            start = ledger.begin(contract)
+            valid = self._ready(contract)
+            substituted_contract = self._contract(candidate="d" * 40)
+            mutations = (
+                {**valid, "ready_version": "1.0.0"},
+                {**valid, "extra": False},
+                {key: value for key, value in valid.items() if key != "contract_core_digest"},
+                {
+                    **valid,
+                    "qualification_contract": substituted_contract,
+                    "qualification_contract_digest": (
+                        self.launcher._qualification_contract_digest(substituted_contract)
+                    ),
+                    "contract_core_digest": substituted_contract["contract_core_digest"],
+                },
+            )
+            for mutation in mutations:
+                with self.subTest(keys=sorted(mutation)), self.assertRaises(
+                    self.launcher.QualificationStop
+                ):
+                    ledger.admit(start, mutation)
+            admission = ledger.admit(start, valid)
+            ledger.terminalize(
+                start,
+                admission,
+                "QUARANTINED",
+                terminal_reason="RUN_FAILED",
+            )
+        rows = (lab / "m4-attempt-ledger.jsonl").read_bytes().splitlines()
+        self.assertEqual(len(rows), 3)
+
+    def test_host_generated_admission_has_minimal_nine_key_shape(self) -> None:
+        lab = self.root / "lab"
+        goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
+        with self.launcher.AttemptLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            contract = self._contract()
+            start = ledger.begin(contract)
+            ready = self._ready(contract)
+            digest = ledger.admit(start, ready)
+            admission = self.launcher._key_admission(start, ready, digest)
+            self.assertEqual(
+                frozenset(admission),
+                {
+                    "admission_version", "mode", "qualification_contract",
+                    "qualification_contract_digest", "contract_core_digest",
+                    "ledger_entry_digest", "receipt_public_key_digests",
+                    "supply_public_key_digest", "runtime_trust_digest",
+                },
+            )
+            self.assertNotIn("candidate", admission)
+            self.assertNotIn("environment", admission)
+            self.assertNotIn("attempt", admission)
+            ledger.terminalize(
+                start,
+                digest,
+                "QUARANTINED",
+                terminal_reason="RUN_FAILED",
+            )
 
     def test_admitted_failure_uses_durable_active_admission(self) -> None:
         lab = self.root / "lab"
@@ -304,28 +571,16 @@ class M4HostLauncherTests(unittest.TestCase):
             goal_digest=goal_digest,
             clock=lambda: self.now,
         ) as ledger:
-            start = ledger.begin("a" * 40, "b" * 40, "sha256:" + "c" * 64)
-            admission = ledger.admit(
-                start,
-                {
-                    "ready_version": "1.0.0",
-                    "candidate": start.candidate,
-                    "environment": start.environment,
-                    "attempt": start.attempt,
-                    "receipt_public_key_digests": {
-                        role: "sha256:" + character * 64
-                        for role, character in (
-                            ("M4_AUTHORITY", "1"),
-                            ("OBSERVER", "2"),
-                            ("PUBLISHER", "3"),
-                        )
-                    },
-                    "supply_public_key_digest": "sha256:" + "4" * 64,
-                    "runtime_trust_digest": "sha256:" + "5" * 64,
-                },
-            )
+            contract = self._contract()
+            start = ledger.begin(contract)
+            admission = ledger.admit(start, self._ready(contract))
             self.assertEqual(ledger.active_admission, admission)
-            ledger.terminalize(start, ledger.active_admission, "QUARANTINED")
+            ledger.terminalize(
+                start,
+                ledger.active_admission,
+                "QUARANTINED",
+                terminal_reason="RUN_FAILED",
+            )
         rows = [
             json.loads(line)
             for line in (lab / "m4-attempt-ledger.jsonl").read_bytes().splitlines()
@@ -335,6 +590,7 @@ class M4HostLauncherTests(unittest.TestCase):
             ["ATTEMPT_STARTED", "KEY_ADMITTED", "ATTEMPT_TERMINAL"],
         )
         self.assertEqual(rows[-1]["key_admission_digest"], admission)
+        self.assertEqual(rows[-1]["terminal_reason"], "RUN_FAILED")
         self.assertIsNone(rows[-1]["qemu_phase_outcomes"])
 
     def test_ledger_rejects_unresolved_or_repeated_pair_and_wrong_metadata(self) -> None:
@@ -346,7 +602,7 @@ class M4HostLauncherTests(unittest.TestCase):
             goal_digest=goal_digest,
             clock=lambda: self.now,
         ) as ledger:
-            ledger.begin("a" * 40, "b" * 40, "sha256:" + "c" * 64)
+            ledger.begin(self._contract())
         with self.assertRaisesRegex(
             self.launcher.QualificationStop, "PRIOR_ATTEMPT_UNRESOLVED"
         ):
@@ -365,8 +621,10 @@ class M4HostLauncherTests(unittest.TestCase):
             goal_digest=goal_digest,
             clock=lambda: self.now,
         ) as ledger:
-            completed = ledger.begin("a" * 40, "b" * 40, "sha256:" + "c" * 64)
-            ledger.terminalize(completed, None, "BLOCKED")
+            completed = ledger.begin(self._contract())
+            ledger.terminalize(
+                completed, None, "FAILED", terminal_reason="PROVISION_FAILED"
+            )
         with self.launcher.AttemptLedger(
             completed_lab,
             goal_reference=str(self.goal),
@@ -376,7 +634,13 @@ class M4HostLauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 self.launcher.QualificationStop, "ATTEMPT_BINDING_MISMATCH"
             ):
-                ledger.begin("a" * 40, "d" * 40, "sha256:" + "c" * 64)
+                ledger.begin(
+                    self._contract(
+                        2,
+                        goal_digest="sha256:" + "c" * 64,
+                        source_archive_digest="sha256:" + "d" * 64,
+                    )
+                )
         os.chmod(lab / "m4-attempt-ledger.jsonl", 0o644)
         with self.assertRaisesRegex(self.launcher.QualificationStop, "LEDGER_UNTRUSTED"):
             with self.launcher.AttemptLedger(
@@ -386,6 +650,371 @@ class M4HostLauncherTests(unittest.TestCase):
                 clock=lambda: self.now,
             ):
                 pass
+
+    def test_v2_ledger_rejects_v1_coherent_mutation_and_nonempty_new_lab(self) -> None:
+        goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
+
+        occupied = self.root / "occupied"
+        occupied.mkdir(mode=0o700)
+        (occupied / "unexpected").write_bytes(b"not a v2 ledger")
+        with self.assertRaisesRegex(
+            self.launcher.QualificationStop, "QUALIFICATION_LAB_REUSE_FORBIDDEN"
+        ):
+            with self.launcher.AttemptLedger(
+                occupied,
+                goal_reference=str(self.goal),
+                goal_digest=goal_digest,
+                clock=lambda: self.now,
+            ):
+                pass
+        self.assertFalse((occupied / "m4-attempt-ledger.jsonl").exists())
+
+        v1 = self.root / "v1"
+        v1.mkdir(mode=0o700)
+        old = v1 / "m4-attempt-ledger.jsonl"
+        old.write_bytes(
+            self.launcher._canonical(
+                {
+                    "ledger_version": "1.0.0",
+                    "sequence": 1,
+                    "previous_entry_digest": None,
+                    "entry_type": "ATTEMPT_STARTED",
+                }
+            )
+            + b"\n"
+        )
+        os.chmod(old, 0o600)
+        with self.assertRaises(self.launcher.QualificationStop):
+            with self.launcher.AttemptLedger(
+                v1,
+                goal_reference=str(self.goal),
+                goal_digest=goal_digest,
+                clock=lambda: self.now,
+            ):
+                pass
+
+        for field, replacement in (
+            ("candidate", "9" * 40),
+            ("tree", "8" * 40),
+            ("environment", "sha256:" + "7" * 64),
+            ("contract_core_digest", "sha256:" + "6" * 64),
+            ("qualification_contract_digest", "sha256:" + "5" * 64),
+            ("max_attempts", 3),
+            ("success_target", 2),
+            ("success_target_authorizing", True),
+        ):
+            lab = self.root / ("mutated-" + field)
+            with self.launcher.AttemptLedger(
+                lab,
+                goal_reference=str(self.goal),
+                goal_digest=goal_digest,
+                clock=lambda: self.now,
+            ) as ledger:
+                start = ledger.begin(self._contract())
+                ledger.terminalize(
+                    start, None, "FAILED", terminal_reason="PROVISION_FAILED"
+                )
+            path = lab / "m4-attempt-ledger.jsonl"
+            rows = [json.loads(line) for line in path.read_bytes().splitlines()]
+            rows[0][field] = replacement
+            first_raw = self.launcher._canonical(rows[0])
+            rows[1]["previous_entry_digest"] = self.launcher._digest_bytes(first_raw)
+            rows[1]["attempt_start_digest"] = self.launcher._digest_bytes(first_raw)
+            path.write_bytes(first_raw + b"\n" + self.launcher._canonical(rows[1]) + b"\n")
+            os.chmod(path, 0o600)
+            with self.subTest(field=field), self.assertRaises(
+                self.launcher.QualificationStop
+            ):
+                with self.launcher.AttemptLedger(
+                    lab,
+                    goal_reference=str(self.goal),
+                    goal_digest=goal_digest,
+                    clock=lambda: self.now,
+                ):
+                    pass
+
+    def test_four_file_bundle_is_assembled_only_after_terminalization_without_cycle(self) -> None:
+        lab = self.root / "lab"
+        bundle = self.root / "bundle"
+        bundle.mkdir(mode=0o700)
+        goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
+        with self.launcher.AttemptLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            contract = self._contract()
+            start = ledger.begin(contract)
+            admission = ledger.admit(start, self._ready(contract))
+            projection = self.launcher._canonical(
+                {
+                    "bundle_version": "2.0.0",
+                    "qualification_contract": contract,
+                    "qualification_contract_digest": (
+                        self.launcher._qualification_contract_digest(contract)
+                    ),
+                    "admission_digest": admission,
+                }
+            )
+            for name, raw in (
+                ("manifest.json", projection),
+                ("manifest.sig", b"s" * 64),
+                ("evidence.json", projection),
+            ):
+                path = bundle / name
+                path.write_bytes(raw)
+                os.chmod(path, 0o444)
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop, "LEDGER_NOT_TERMINAL"
+            ):
+                self.launcher._assemble_terminal_bundle(
+                    bundle, lab / "m4-attempt-ledger.jsonl"
+                )
+            manifest_digest, signed_digest = self.launcher._signed_payload_digests(bundle)
+            ledger.terminalize(
+                start,
+                admission,
+                "BUNDLE_EXPORTED",
+                terminal_reason="SIGNED_PAYLOAD_EXPORTED",
+                manifest_digest=manifest_digest,
+                signed_payload_bundle_digest=signed_digest,
+                qemu_phase_outcomes=self._phase_outcomes(1),
+            )
+            embedded = self.launcher._assemble_terminal_bundle(
+                bundle, lab / "m4-attempt-ledger.jsonl"
+            )
+        self.assertEqual(embedded, bundle / "attempt-ledger.jsonl")
+        self.assertEqual(
+            {item.name for item in bundle.iterdir()},
+            {"manifest.json", "manifest.sig", "evidence.json", "attempt-ledger.jsonl"},
+        )
+        self.assertTrue(
+            all(stat.S_IMODE(item.stat().st_mode) == 0o444 for item in bundle.iterdir())
+        )
+        terminal = json.loads(embedded.read_bytes().splitlines()[-1])
+        self.assertEqual(terminal["terminal_reason"], "SIGNED_PAYLOAD_EXPORTED")
+        self.assertEqual(terminal["signed_payload_bundle_digest"], signed_digest)
+        self.assertNotIn("aggregate_bundle_digest", terminal)
+
+    def test_export_is_not_independent_verification_and_does_not_reset_ceiling(self) -> None:
+        lab = self.root / "lab"
+        goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
+        with self.launcher.AttemptLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            first_contract = self._contract()
+            first = ledger.begin(first_contract)
+            admission = ledger.admit(first, self._ready(first_contract))
+            ledger.terminalize(
+                first,
+                admission,
+                "BUNDLE_EXPORTED",
+                terminal_reason="SIGNED_PAYLOAD_EXPORTED",
+                manifest_digest="sha256:" + "6" * 64,
+                signed_payload_bundle_digest="sha256:" + "7" * 64,
+                qemu_phase_outcomes=self._phase_outcomes(1),
+            )
+        with self.launcher.AttemptLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            second = ledger.begin(
+                self._contract(
+                    2,
+                    candidate="d" * 40,
+                    tree="e" * 40,
+                    source_archive_digest="sha256:" + "f" * 64,
+                )
+            )
+            self.assertEqual(second.attempt, 2)
+            ledger.terminalize(
+                second,
+                None,
+                "FAILED",
+                terminal_reason="EVIDENCE_VERIFICATION_FAILED",
+            )
+        rows = self.checker._ledger_entries(
+            (lab / "m4-attempt-ledger.jsonl").read_bytes(),
+            now=self.now,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+        )
+        self.assertEqual(
+            [row["entry_type"] for row, _digest in rows],
+            [
+                "ATTEMPT_STARTED",
+                "KEY_ADMITTED",
+                "ATTEMPT_TERMINAL",
+                "ATTEMPT_STARTED",
+                "ATTEMPT_TERMINAL",
+            ],
+        )
+        with self.launcher.AttemptLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop, "ATTEMPT_LIMIT_REACHED"
+            ):
+                ledger.begin(
+                    self._contract(
+                        2,
+                        candidate="1" * 40,
+                        tree="2" * 40,
+                        source_archive_digest="sha256:" + "3" * 64,
+                    )
+                )
+
+    def test_independent_verification_record_prevents_second_attempt_after_reopen(self) -> None:
+        lab = self.root / "lab"
+        goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
+        payload = {
+            "evidence.json": b"evidence",
+            "manifest.json": b"manifest",
+            "manifest.sig": b"s" * 64,
+        }
+        signed_files = {
+            name: self.launcher._digest_bytes(raw) for name, raw in payload.items()
+        }
+        signed_payload = self.launcher._digest_bytes(
+            self.launcher._canonical(signed_files)
+        )
+        with self.launcher.AttemptLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            contract = self._contract()
+            start = ledger.begin(contract)
+            admission = ledger.admit(start, self._ready(contract))
+            ledger.terminalize(
+                start,
+                admission,
+                "BUNDLE_EXPORTED",
+                terminal_reason="SIGNED_PAYLOAD_EXPORTED",
+                manifest_digest=signed_files["manifest.json"],
+                signed_payload_bundle_digest=signed_payload,
+                qemu_phase_outcomes=self._phase_outcomes(1),
+            )
+            payload["attempt-ledger.jsonl"] = (lab / "m4-attempt-ledger.jsonl").read_bytes()
+            files = {
+                name: self.launcher._digest_bytes(raw) for name, raw in payload.items()
+            }
+            bundle = self.launcher.EVIDENCE_ROOT / "attempt-1" / "bundle"
+            bundle.mkdir(mode=0o700, parents=True)
+            for name, raw in payload.items():
+                path = bundle / name
+                path.write_bytes(raw)
+                os.chmod(path, 0o444)
+            self.launcher._record_independent_verification(
+                ledger,
+                {
+                    "outcome": "VERIFIED",
+                    "claim_status": (
+                        "M4_EXACT_DISPOSABLE_TEST_PROFILE_RUNTIME_CONFORMANCE_VERIFIED"
+                    ),
+                    "commit": start.candidate,
+                    "tree": start.tree,
+                    "attempt": start.attempt,
+                    "environment": start.environment,
+                    "qualification_contract_digest": (
+                        start.qualification_contract_digest
+                    ),
+                    "admission_digest": admission,
+                    "manifest_digest": signed_files["manifest.json"],
+                    "signed_payload_bundle_digest": signed_payload,
+                    "aggregate_bundle_digest": self.launcher._digest_bytes(
+                        self.launcher._canonical(files)
+                    ),
+                    "bundle_file_digests": files,
+                },
+            )
+        with self.launcher.AttemptLedger(
+            lab,
+            goal_reference=str(self.goal),
+            goal_digest=goal_digest,
+            clock=lambda: self.now,
+        ) as ledger:
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop, "QUALIFICATION_ALREADY_VERIFIED"
+            ):
+                ledger.begin(
+                    self._contract(
+                        2,
+                        candidate="d" * 40,
+                        tree="e" * 40,
+                        source_archive_digest="sha256:" + "f" * 64,
+                    )
+                )
+
+    def test_success_finalization_orders_terminal_embed_verify_then_cleanup(self) -> None:
+        events: list[str] = []
+        contract = self._contract()
+        start = self.launcher.AttemptStart(
+            1,
+            "a" * 40,
+            "b" * 40,
+            contract["environment_digest"],
+            contract["contract_core_digest"],
+            self.launcher._qualification_contract_digest(contract),
+            contract,
+            "sha256:" + "1" * 64,
+        )
+        ledger = mock.Mock()
+        ledger.terminalize.side_effect = lambda *args, **kwargs: events.append("terminal")
+        ledger.lab = self.root / "lab"
+        bundle = self.root / "bundle"
+        attempt_root = self.root / "attempt-1"
+
+        with mock.patch.object(
+            self.launcher,
+            "_signed_payload_digests",
+            side_effect=lambda *args, **kwargs: (
+                events.append("signed") or "sha256:" + "2" * 64,
+                "sha256:" + "3" * 64,
+            ),
+        ), mock.patch.object(
+            self.launcher,
+            "_assemble_terminal_bundle",
+            side_effect=lambda *args, **kwargs: events.append("embedded"),
+        ), mock.patch.object(
+            self.launcher,
+            "_verify_bundle",
+            side_effect=lambda *args, **kwargs: (
+                events.append("verified") or {"outcome": "VERIFIED"}
+            ),
+        ), mock.patch.object(
+            self.launcher,
+            "_cleanup_attempt",
+            side_effect=lambda *args, **kwargs: events.append("cleanup") or ["seed.iso"],
+        ), mock.patch.object(
+            self.launcher,
+            "_record_independent_verification",
+            side_effect=lambda *args, **kwargs: events.append("recorded"),
+        ):
+            verified, removed = self.launcher._finalize_exported_attempt(
+                ledger=ledger,
+                start=start,
+                admission_digest="sha256:" + "4" * 64,
+                bundle=bundle,
+                phase_outcomes=self._phase_outcomes(1),
+                attempt_root=attempt_root,
+            )
+        self.assertEqual(
+            events,
+            ["signed", "terminal", "embedded", "verified", "cleanup", "recorded"],
+        )
+        self.assertEqual(verified, {"outcome": "VERIFIED"})
+        self.assertEqual(removed, ["seed.iso"])
 
     def test_diagnostic_ledger_is_separate_single_use_and_binds_terminal_reason(self) -> None:
         predecessor = self.root / "old-ledger.jsonl"

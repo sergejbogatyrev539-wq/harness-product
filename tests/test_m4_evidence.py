@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime
 from hashlib import sha256
 import importlib.util
@@ -46,6 +47,12 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="harness-m4-evidence-test-")
         self.root = Path(self.temporary.name)
         self.module = _module()
+        self.module.IMAGE_LAB = self.root / "host-assets"
+        self.module.IMAGE_LAB.mkdir(mode=0o700)
+        for name in set(self.module._PACKAGE_SOURCE_ASSETS.values()) | set(
+            self.module._RUNTIME_CONFIG_ASSETS.values()
+        ):
+            (self.module.IMAGE_LAB / name).write_bytes((name + "\n").encode("utf-8"))
         self.now = datetime(2026, 8, 27, 12, 0, 0, tzinfo=UTC)
         self.observed_at = "2026-08-27T11:59:00Z"
         self.expires_at = "2026-08-27T12:30:00Z"
@@ -57,6 +64,21 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_checker_requires_v2_embedded_ledger_bundle_surface(self) -> None:
+        self.assertEqual(
+            self.module._BUNDLE_FILES,
+            frozenset({
+                "manifest.json",
+                "manifest.sig",
+                "evidence.json",
+                "attempt-ledger.jsonl",
+            }),
+        )
+        self.assertEqual(
+            self.module.M4_LAB,
+            Path("/home/a1/Загрузки/harness/harness-m4-qualification-v2"),
+        )
 
     def _key(self, name: str) -> dict[str, object]:
         directory = self.root / name
@@ -112,7 +134,9 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         return signature.read_bytes()
 
     def _source(self) -> dict[str, object]:
-        files: dict[str, str] = {}
+        files = {
+            "profiles/m4-lx-a.json": _digest_bytes(PROFILE.read_bytes()),
+        }
         return {
             "commit": "b" * 40,
             "tree": "c" * 40,
@@ -150,6 +174,9 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 ),
             },
         }
+
+    def _package_runtime_plan(self) -> dict[str, object]:
+        return self.module._expected_package_runtime_plan()
 
     def _role_facts(self, profile: dict[str, object], role: str) -> dict[str, object]:
         expected = profile["roles"][role]
@@ -208,10 +235,12 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         attempt: int,
         goal_reference: str,
         goal_digest: str,
+        contract_core_digest: str,
+        qualification_contract_digest: str,
         extra: dict[str, object] | None = None,
     ) -> dict[str, object]:
         return {
-            "ledger_version": "1.0.0",
+            "ledger_version": "2.0.0",
             "sequence": sequence,
             "previous_entry_digest": previous,
             "entry_type": entry_type,
@@ -223,7 +252,10 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             "user_goal_digest": goal_digest,
             "max_attempts": 2,
             "success_target": 1,
+            "success_target_authorizing": False,
             "attempt": attempt,
+            "contract_core_digest": contract_core_digest,
+            "qualification_contract_digest": qualification_contract_digest,
             **({} if extra is None else extra),
         }
 
@@ -242,10 +274,55 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         profile = json.loads(PROFILE.read_text(encoding="utf-8"))
         digest = "sha256:" + "a" * 64
         source = self._source()
+        goal_reference = "/tmp/authorized-m4-goal.md"
+        goal_digest = _digest_bytes(b"authorized M4 test goal\n")
         host_provenance = self._host_provenance(digest, attempt)
-        profile_digest = _digest_bytes(_canonical(profile))
-        environment = _digest_bytes(
-            _canonical({"host_provenance": host_provenance, "profile_digest": profile_digest})
+        package_runtime_plan = self._package_runtime_plan()
+        profile_digest = _digest_bytes(PROFILE.read_bytes())
+        contract_core = {
+            "contract_version": "2.0.0",
+            "contract_kind": "M4_EXACT_DISPOSABLE_TEST_PROFILE_QUALIFICATION_V2",
+            "user_scope_reference": goal_reference,
+            "user_goal_digest": goal_digest,
+            "candidate": source["commit"],
+            "tree": source["tree"],
+            "attempt": attempt,
+            "source_files_digest": source["files_digest"],
+            "canonical_profile_digest": profile_digest,
+            "raw_profile_artifact_digest": profile_digest,
+            "base_image_digest": self.module._IMAGE_DIGEST,
+            "predecessor_qualification_ledger_digest": (
+                self.module._PREDECESSOR_QUALIFICATION_LEDGER_DIGEST
+            ),
+            "predecessor_diagnostic_ledger_digest": (
+                self.module._PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+            ),
+            "predecessor_diagnostic_bundle_digest": (
+                self.module._PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST
+            ),
+            "max_attempts": 2,
+            "success_target": 1,
+            "success_target_authorizing": False,
+        }
+        contract_core_digest = _digest_bytes(_canonical(contract_core))
+        environment_preimage = {
+            "contract_core_digest": contract_core_digest,
+            "source_archive_digest": self.module._source_archive_digest(),
+            "seed_digest": host_provenance["vm"]["seed_digest"],
+            "package_runtime_plan_digest": _digest_bytes(
+                _canonical(package_runtime_plan)
+            ),
+            "host_provenance_digest": _digest_bytes(_canonical(host_provenance)),
+        }
+        environment = _digest_bytes(_canonical(environment_preimage))
+        qualification_contract = {
+            "contract_core": contract_core,
+            "contract_core_digest": contract_core_digest,
+            "environment_preimage": environment_preimage,
+            "environment_digest": environment,
+        }
+        qualification_contract_digest = _digest_bytes(
+            _canonical(qualification_contract)
         )
         receipt_digests = {
             role: self.keys[role]["digest"]
@@ -258,19 +335,31 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 "supply_public_key_digest": self.keys["SUPPLY"]["digest"],
             })
         )
-        goal_reference = "/tmp/authorized-m4-goal.md"
-        goal_digest = _digest_bytes(b"authorized M4 test goal\n")
         ledger_prefix = b""
         sequence = 1
         previous: str | None = None
         if prior_result is not None:
             prior_candidate = source["commit"] if repeat_candidate_environment else "a" * 40
             prior_tree = source["tree"] if repeat_candidate_environment else "d" * 40
-            prior_environment = (
-                environment
-                if repeat_candidate_environment
-                else "sha256:" + "e" * 64
+            prior_core = deepcopy(contract_core)
+            prior_core.update(
+                candidate=prior_candidate,
+                tree=prior_tree,
+                attempt=1,
             )
+            prior_core_digest = _digest_bytes(_canonical(prior_core))
+            prior_preimage = deepcopy(environment_preimage)
+            prior_preimage["contract_core_digest"] = prior_core_digest
+            prior_environment = _digest_bytes(_canonical(prior_preimage))
+            prior_contract = {
+                "contract_core": prior_core,
+                "contract_core_digest": prior_core_digest,
+                "environment_preimage": prior_preimage,
+                "environment_digest": prior_environment,
+            }
+            prior_contract_digest = _digest_bytes(_canonical(prior_contract))
+            if repeat_candidate_environment:
+                prior_environment = environment
             prior_start = self._ledger_row(
                 sequence=1,
                 previous=None,
@@ -281,6 +370,9 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 attempt=1,
                 goal_reference=goal_reference,
                 goal_digest=goal_digest,
+                contract_core_digest=prior_core_digest,
+                qualification_contract_digest=prior_contract_digest,
+                extra={"qualification_contract": prior_contract},
             )
             prior_start_line = _canonical(prior_start)
             prior_start_digest = _digest_bytes(prior_start_line)
@@ -294,12 +386,19 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 attempt=1,
                 goal_reference=goal_reference,
                 goal_digest=goal_digest,
+                contract_core_digest=prior_core_digest,
+                qualification_contract_digest=prior_contract_digest,
                 extra={
                     "attempt_start_digest": prior_start_digest,
                     "key_admission_digest": None,
                     "result": prior_result,
+                    "terminal_reason": {
+                        "FAILED": "RUN_FAILED",
+                        "BLOCKED": "HOST_PREFLIGHT_FAILED",
+                        "QUARANTINED": "RUN_FAILED",
+                    }[prior_result],
                     "manifest_digest": None,
-                    "bundle_digest": None,
+                    "signed_payload_bundle_digest": None,
                     "qemu_phase_outcomes": None,
                 },
             )
@@ -317,6 +416,9 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             attempt=attempt,
             goal_reference=goal_reference,
             goal_digest=goal_digest,
+            contract_core_digest=contract_core_digest,
+            qualification_contract_digest=qualification_contract_digest,
+            extra={"qualification_contract": qualification_contract},
         )
         start_line = _canonical(start)
         start_digest = _digest_bytes(start_line)
@@ -330,8 +432,13 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             attempt=attempt,
             goal_reference=goal_reference,
             goal_digest=goal_digest,
+            contract_core_digest=contract_core_digest,
+            qualification_contract_digest=qualification_contract_digest,
             extra={
                 "attempt_start_digest": start_digest,
+                "admitted_qualification_contract_digest": (
+                    qualification_contract_digest
+                ),
                 "receipt_public_key_digests": receipt_digests,
                 "supply_public_key_digest": self.keys["SUPPLY"]["digest"],
                 "runtime_trust_digest": runtime_trust_digest,
@@ -564,6 +671,9 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 "guest": {},
                 "source": source,
                 "host_provenance": host_provenance,
+                "qualification_contract": qualification_contract,
+                "qualification_contract_digest": qualification_contract_digest,
+                "package_runtime_plan": package_runtime_plan,
             },
             "trust": {
                 "profile_digest": profile_digest,
@@ -575,15 +685,15 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 ),
                 "runtime_trust_digest": runtime_trust_digest,
                 "key_admission": {
-                    "admission_version": "1.0.0",
+                    "admission_version": "2.0.0",
                     "mode": "HOST_ATTEMPT_LEDGER_PIN_BEFORE_WORKER_GATE",
-                    "candidate": source["commit"],
-                    "environment": environment,
-                    "attempt": attempt,
                     "ledger_entry_digest": key_digest,
                     "receipt_public_key_digests": receipt_digests,
                     "supply_public_key_digest": self.keys["SUPPLY"]["digest"],
                     "runtime_trust_digest": runtime_trust_digest,
+                    "qualification_contract": qualification_contract,
+                    "qualification_contract_digest": qualification_contract_digest,
+                    "contract_core_digest": contract_core_digest,
                 },
                 "receipt_public_key_digests": receipt_digests,
                 "supply_public_key_digest": self.keys["SUPPLY"]["digest"],
@@ -693,6 +803,8 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         }
         recovery = {
             "recovery_version": "1.0.0",
+            "qualification_contract": qualification_contract,
+            "qualification_contract_digest": qualification_contract_digest,
             "previous_boot_id": state["identity"]["boot_id"],
             "current_boot_id": "87654321-4321-4321-4321-cba987654321",
             "durable": {
@@ -728,8 +840,13 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             "trust_reverified": True,
         }
         evidence = {
-            "evidence_version": "1.0.0",
+            "bundle_version": "2.0.0",
+            "evidence_version": "2.0.0",
             "claim": "M4_EXACT_DISPOSABLE_TEST_PROFILE_RUNTIME_CONFORMANCE",
+            "qualification_contract": qualification_contract,
+            "qualification_contract_digest": qualification_contract_digest,
+            "admission_digest": key_digest,
+            "package_runtime_plan": package_runtime_plan,
             "scope": {
                 "profile_id": "M4-LX-A",
                 "assurance_scope": "DEPLOYMENT_ATTESTED",
@@ -753,13 +870,17 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         }
         evidence_bytes = _canonical(evidence)
         manifest = {
-            "bundle_version": "1.0.0",
+            "bundle_version": "2.0.0",
             "claim": evidence["claim"],
             "outcome": "VERIFIED",
             "status": "NOT_ATTESTED",
             "candidate": source["commit"],
             "environment": environment,
             "attempt": attempt,
+            "qualification_contract": qualification_contract,
+            "qualification_contract_digest": qualification_contract_digest,
+            "admission_digest": key_digest,
+            "package_runtime_plan": package_runtime_plan,
             "source": source,
             "host_provenance": host_provenance,
             "profile": {
@@ -773,6 +894,9 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 "ledger_entry_digest": key_digest,
                 "max_attempts": 2,
                 "success_target": 1,
+                "success_target_authorizing": False,
+                "contract_core_digest": contract_core_digest,
+                "qualification_contract_digest": qualification_contract_digest,
             },
             "durable": durable,
             "attestation": {
@@ -796,12 +920,11 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         }
         manifest_bytes = _canonical(manifest)
         manifest_signature = self._signature("SUPPLY", manifest)
-        bundle_digest = _digest_bytes(
+        signed_payload_bundle_digest = _digest_bytes(
             _canonical({
-                "manifest": _digest_bytes(manifest_bytes),
-                "signature": _digest_bytes(manifest_signature),
-                "evidence": _digest_bytes(evidence_bytes),
-                "ledger_entry": key_digest,
+                "evidence.json": _digest_bytes(evidence_bytes),
+                "manifest.json": _digest_bytes(manifest_bytes),
+                "manifest.sig": _digest_bytes(manifest_signature),
             })
         )
         terminal = self._ledger_row(
@@ -814,12 +937,15 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             attempt=attempt,
             goal_reference=goal_reference,
             goal_digest=goal_digest,
+            contract_core_digest=contract_core_digest,
+            qualification_contract_digest=qualification_contract_digest,
             extra={
                 "attempt_start_digest": start_digest,
                 "key_admission_digest": key_digest,
                 "result": "BUNDLE_EXPORTED",
+                "terminal_reason": "SIGNED_PAYLOAD_EXPORTED",
                 "manifest_digest": _digest_bytes(manifest_bytes),
-                "bundle_digest": bundle_digest,
+                "signed_payload_bundle_digest": signed_payload_bundle_digest,
                 "qemu_phase_outcomes": {
                     phase: {
                         "argv_digest": _digest_bytes(
@@ -831,8 +957,7 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 },
             },
         )
-        ledger = workspace / "m4-attempt-ledger.jsonl"
-        ledger.write_bytes(
+        ledger_bytes = (
             ledger_prefix
             + start_line
             + b"\n"
@@ -841,17 +966,18 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             + _canonical(terminal)
             + b"\n"
         )
-        os.chmod(ledger, 0o600)
         bundle = workspace / "bundle"
         bundle.mkdir(mode=0o700)
         for name, raw in (
             ("manifest.json", manifest_bytes),
             ("manifest.sig", manifest_signature),
             ("evidence.json", evidence_bytes),
+            ("attempt-ledger.jsonl", ledger_bytes),
         ):
             path = bundle / name
             path.write_bytes(raw)
             os.chmod(path, 0o444)
+        ledger = bundle / "attempt-ledger.jsonl"
         return bundle, ledger, source, goal_reference, goal_digest
 
     def _rewrite_bundle(
@@ -862,6 +988,7 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
     ) -> None:
         manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
         evidence = json.loads((bundle / "evidence.json").read_text(encoding="utf-8"))
+        lines = [json.loads(line) for line in ledger.read_bytes().splitlines()]
         change(manifest, evidence)
         evidence["run_state_digest"] = _digest_bytes(_canonical(evidence["run_state"]))
         evidence_bytes = _canonical(evidence)
@@ -872,32 +999,151 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         }
         manifest_bytes = _canonical(manifest)
         signature = self._signature("SUPPLY", manifest)
+        lines[-1]["manifest_digest"] = _digest_bytes(manifest_bytes)
+        lines[-1]["signed_payload_bundle_digest"] = _digest_bytes(
+            _canonical({
+                "evidence.json": _digest_bytes(evidence_bytes),
+                "manifest.json": _digest_bytes(manifest_bytes),
+                "manifest.sig": _digest_bytes(signature),
+            })
+        )
+        ledger_bytes = b"".join(_canonical(row) + b"\n" for row in lines)
         for path in bundle.iterdir():
             os.chmod(path, 0o600)
         (bundle / "evidence.json").write_bytes(evidence_bytes)
         (bundle / "manifest.json").write_bytes(manifest_bytes)
         (bundle / "manifest.sig").write_bytes(signature)
+        ledger.write_bytes(ledger_bytes)
         for path in bundle.iterdir():
             os.chmod(path, 0o444)
-        lines = [json.loads(line) for line in ledger.read_bytes().splitlines()]
-        lines[-1]["manifest_digest"] = _digest_bytes(manifest_bytes)
-        lines[-1]["bundle_digest"] = _digest_bytes(
+
+    def _rewrite_contract_bundle(
+        self,
+        bundle: Path,
+        change: object,
+    ) -> None:
+        manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+        evidence = json.loads((bundle / "evidence.json").read_text(encoding="utf-8"))
+        ledger = bundle / "attempt-ledger.jsonl"
+        rows = [json.loads(line) for line in ledger.read_bytes().splitlines()]
+        contract = deepcopy(manifest["qualification_contract"])
+        source = deepcopy(manifest["source"])
+        plan = deepcopy(manifest["package_runtime_plan"])
+        change(contract["contract_core"], contract["environment_preimage"], source, plan)
+        core = contract["contract_core"]
+        core_digest = _digest_bytes(_canonical(core))
+        contract["contract_core_digest"] = core_digest
+        contract["environment_preimage"]["contract_core_digest"] = core_digest
+        contract["environment_preimage"]["package_runtime_plan_digest"] = (
+            _digest_bytes(_canonical(plan))
+        )
+        environment = _digest_bytes(_canonical(contract["environment_preimage"]))
+        contract["environment_digest"] = environment
+        contract_digest = _digest_bytes(_canonical(contract))
+
+        state = evidence["run_state"]
+        identity = state["identity"]
+        admission = state["trust"]["key_admission"]
+        for projection in (manifest, evidence):
+            projection["qualification_contract"] = contract
+            projection["qualification_contract_digest"] = contract_digest
+            projection["package_runtime_plan"] = plan
+        identity.update(
+            candidate=core["candidate"],
+            environment=environment,
+            attempt=core["attempt"],
+            source=source,
+            qualification_contract=contract,
+            qualification_contract_digest=contract_digest,
+            package_runtime_plan=plan,
+        )
+        evidence["recovery"]["qualification_contract"] = contract
+        evidence["recovery"]["qualification_contract_digest"] = contract_digest
+        admission.update(
+            qualification_contract=contract,
+            qualification_contract_digest=contract_digest,
+            contract_core_digest=core_digest,
+        )
+        manifest.update(
+            candidate=core["candidate"],
+            environment=environment,
+            attempt=core["attempt"],
+            source=source,
+        )
+
+        start, key_row, terminal = rows[-3:]
+        common = {
+            "candidate": core["candidate"],
+            "tree": core["tree"],
+            "environment": environment,
+            "attempt": core["attempt"],
+            "user_scope_reference": core["user_scope_reference"],
+            "user_goal_digest": core["user_goal_digest"],
+            "max_attempts": core["max_attempts"],
+            "success_target": core["success_target"],
+            "success_target_authorizing": core["success_target_authorizing"],
+            "contract_core_digest": core_digest,
+            "qualification_contract_digest": contract_digest,
+        }
+        start.update(common)
+        start["qualification_contract"] = contract
+        start_line = _canonical(start)
+        start_digest = _digest_bytes(start_line)
+        key_row.update(common)
+        key_row["previous_entry_digest"] = start_digest
+        key_row["attempt_start_digest"] = start_digest
+        key_row["admitted_qualification_contract_digest"] = contract_digest
+        key_line = _canonical(key_row)
+        key_digest = _digest_bytes(key_line)
+        admission["ledger_entry_digest"] = key_digest
+        manifest["admission_digest"] = key_digest
+        evidence["admission_digest"] = key_digest
+        manifest["attempt_ledger"] = {
+            "ledger_entry_digest": key_digest,
+            "max_attempts": core["max_attempts"],
+            "success_target": core["success_target"],
+            "success_target_authorizing": core["success_target_authorizing"],
+            "contract_core_digest": core_digest,
+            "qualification_contract_digest": contract_digest,
+        }
+        terminal.update(common)
+        terminal["previous_entry_digest"] = key_digest
+        terminal["attempt_start_digest"] = start_digest
+        terminal["key_admission_digest"] = key_digest
+
+        evidence["run_state_digest"] = _digest_bytes(_canonical(state))
+        evidence_bytes = _canonical(evidence)
+        manifest["evidence"] = {
+            "path": "evidence.json",
+            "bytes": len(evidence_bytes),
+            "digest": _digest_bytes(evidence_bytes),
+        }
+        manifest_bytes = _canonical(manifest)
+        signature = self._signature("SUPPLY", manifest)
+        terminal["manifest_digest"] = _digest_bytes(manifest_bytes)
+        terminal["signed_payload_bundle_digest"] = _digest_bytes(
             _canonical({
-                "manifest": _digest_bytes(manifest_bytes),
-                "signature": _digest_bytes(signature),
-                "evidence": _digest_bytes(evidence_bytes),
-                "ledger_entry": evidence["run_state"]["trust"]["key_admission"][
-                    "ledger_entry_digest"
-                ],
+                "evidence.json": _digest_bytes(evidence_bytes),
+                "manifest.json": _digest_bytes(manifest_bytes),
+                "manifest.sig": _digest_bytes(signature),
             })
         )
-        ledger.write_bytes(b"".join(_canonical(row) + b"\n" for row in lines))
+        ledger_bytes = b"".join(
+            _canonical(row) + b"\n" for row in rows[:-3]
+        ) + start_line + b"\n" + key_line + b"\n" + _canonical(terminal) + b"\n"
+        for path in bundle.iterdir():
+            os.chmod(path, 0o600)
+        (bundle / "manifest.json").write_bytes(manifest_bytes)
+        (bundle / "manifest.sig").write_bytes(signature)
+        (bundle / "evidence.json").write_bytes(evidence_bytes)
+        ledger.write_bytes(ledger_bytes)
+        for path in bundle.iterdir():
+            os.chmod(path, 0o444)
 
     def test_exact_signed_bundle_and_authoritative_attempt_ledger_verify(self) -> None:
         bundle, ledger, source, goal_reference, goal_digest = self._fixture()
         result = self.module._verify_bundle(
             bundle,
-            ledger=ledger,
             source_state=source,
             now=self.now,
             goal_reference=goal_reference,
@@ -906,6 +1152,218 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "VERIFIED")
         self.assertEqual(result["product_status"], "NOT_ATTESTED")
         self.assertEqual(result["attempt"], 1)
+        self.assertEqual(result["gate_version"], 2)
+        self.assertEqual(
+            result["aggregate_bundle_digest"],
+            self.module._closed_file_digest(
+                result["bundle_file_digests"], self.module._BUNDLE_FILES
+            ),
+        )
+        self.assertNotIn("aggregate_bundle_digest", ledger.read_text(encoding="utf-8"))
+
+    def test_v1_bundle_is_rejected_even_when_resigned_and_relinked(self) -> None:
+        bundle, ledger, source, goal_reference, goal_digest = self._fixture()
+        self._rewrite_bundle(
+            bundle,
+            ledger,
+            lambda manifest, evidence: (
+                manifest.__setitem__("bundle_version", "1.0.0"),
+                evidence.__setitem__("bundle_version", "1.0.0"),
+                evidence.__setitem__("evidence_version", "1.0.0"),
+            ),
+        )
+        with self.assertRaises(self.module._InvalidEvidence):
+            self.module._verify_bundle(
+                bundle,
+                source_state=source,
+                now=self.now,
+                goal_reference=goal_reference,
+                goal_digest=goal_digest,
+            )
+
+    def test_raw_profile_is_exact_canonical_and_alternate_bytes_are_rejected(self) -> None:
+        raw = PROFILE.read_bytes()
+        self.assertEqual(len(raw), 2698)
+        self.assertEqual(_digest_bytes(raw), self.module._PROFILE_DIGEST)
+        self.assertEqual(self.module._canonical(self.module._strict_json(raw, 1 << 20)), raw)
+        for changed in (raw + b"\n", b" " + raw):
+            with self.subTest(changed=changed[:1]), self.assertRaises(
+                self.module._InvalidEvidence
+            ):
+                self.module._strict_json(changed, 1 << 20)
+
+    def test_contract_binding_substitution_matrix_fails_closed(self) -> None:
+        replacement = "sha256:" + "0" * 64
+
+        def source_files(core: dict[str, object], _environment: dict[str, object],
+                         source: dict[str, object], _plan: dict[str, object]) -> None:
+            core["source_files_digest"] = replacement
+            source["files_digest"] = replacement
+
+        mutations = {
+            "candidate": lambda core, _env, source, _plan: (
+                core.__setitem__("candidate", "d" * 40),
+                source.__setitem__("commit", "d" * 40),
+            ),
+            "tree": lambda core, _env, source, _plan: (
+                core.__setitem__("tree", "e" * 40),
+                source.__setitem__("tree", "e" * 40),
+            ),
+            "source-files": source_files,
+            "canonical-profile": lambda core, *_: core.__setitem__(
+                "canonical_profile_digest", replacement
+            ),
+            "raw-profile": lambda core, *_: core.__setitem__(
+                "raw_profile_artifact_digest", replacement
+            ),
+            "environment-source-archive": lambda _core, environment, *_: (
+                environment.__setitem__("source_archive_digest", replacement)
+            ),
+            "predecessor-qualification": lambda core, *_: core.__setitem__(
+                "predecessor_qualification_ledger_digest", replacement
+            ),
+            "predecessor-diagnostic-ledger": lambda core, *_: core.__setitem__(
+                "predecessor_diagnostic_ledger_digest", replacement
+            ),
+            "predecessor-diagnostic-bundle": lambda core, *_: core.__setitem__(
+                "predecessor_diagnostic_bundle_digest", replacement
+            ),
+        }
+        for name, mutation in mutations.items():
+            with self.subTest(name=name):
+                bundle, _ledger, source, goal_reference, goal_digest = self._fixture()
+                self._rewrite_contract_bundle(bundle, mutation)
+                with self.assertRaises(self.module._InvalidEvidence):
+                    self.module._verify_bundle(
+                        bundle,
+                        source_state=source,
+                        now=self.now,
+                        goal_reference=goal_reference,
+                        goal_digest=goal_digest,
+                    )
+
+    def test_package_runtime_plan_inputs_are_independently_pinned(self) -> None:
+        replacement = "sha256:" + "0" * 64
+
+        def replace_in(section: str, path: str):
+            def mutate(_core, _environment, _source, plan) -> None:
+                plan[section][path] = replacement
+
+            return mutate
+
+        mutations = {
+            "provisioning-script": lambda _core, _environment, _source, plan: (
+                plan.__setitem__("provisioning_script_digest", replacement)
+            ),
+            "package-source": replace_in(
+                "package_sources", sorted(self.module._PACKAGE_SOURCE_PATHS)[0]
+            ),
+            "runtime-config": replace_in(
+                "runtime_configs", sorted(self.module._RUNTIME_CONFIG_PATHS)[0]
+            ),
+            "runtime-tool": replace_in(
+                "runtime_tools", sorted(self.module._RUNTIME_TOOL_PATHS)[0]
+            ),
+        }
+        for name, mutation in mutations.items():
+            with self.subTest(name=name):
+                bundle, _ledger, source, goal_reference, goal_digest = self._fixture()
+                self._rewrite_contract_bundle(bundle, mutation)
+                with self.assertRaises(self.module._InvalidEvidence):
+                    self.module._verify_bundle(
+                        bundle,
+                        source_state=source,
+                        now=self.now,
+                        goal_reference=goal_reference,
+                        goal_digest=goal_digest,
+                    )
+
+    def test_embedded_ledger_removal_replacement_truncation_and_extension_fail(self) -> None:
+        for name in ("removal", "replacement", "truncation", "extension"):
+            with self.subTest(name=name):
+                bundle, ledger, source, goal_reference, goal_digest = self._fixture()
+                if name == "removal":
+                    ledger.unlink()
+                elif name == "replacement":
+                    _other_bundle, other, *_ = self._fixture(
+                        attempt=2, prior_result="BLOCKED"
+                    )
+                    os.chmod(ledger, 0o600)
+                    ledger.write_bytes(other.read_bytes())
+                    os.chmod(ledger, 0o444)
+                elif name == "truncation":
+                    os.chmod(ledger, 0o600)
+                    ledger.write_bytes(b"\n".join(ledger.read_bytes().splitlines()[:-1]) + b"\n")
+                    os.chmod(ledger, 0o444)
+                else:
+                    rows = [json.loads(line) for line in ledger.read_bytes().splitlines()]
+                    appended = deepcopy(rows[-1])
+                    appended["sequence"] += 1
+                    appended["previous_entry_digest"] = _digest_bytes(
+                        _canonical(rows[-1])
+                    )
+                    os.chmod(ledger, 0o600)
+                    ledger.write_bytes(
+                        ledger.read_bytes() + _canonical(appended) + b"\n"
+                    )
+                    os.chmod(ledger, 0o444)
+                with self.assertRaises(self.module._InvalidEvidence):
+                    self.module._verify_bundle(
+                        bundle,
+                        source_state=source,
+                        now=self.now,
+                        goal_reference=goal_reference,
+                        goal_digest=goal_digest,
+                    )
+
+    def test_extra_bundle_file_and_terminal_linkage_mutations_fail_closed(self) -> None:
+        bundle, _ledger, source, goal_reference, goal_digest = self._fixture()
+        extra = bundle / "unexpected"
+        extra.write_bytes(b"x")
+        os.chmod(extra, 0o444)
+        with self.assertRaises(self.module._InvalidEvidence):
+            self.module._verify_bundle(
+                bundle,
+                source_state=source,
+                now=self.now,
+                goal_reference=goal_reference,
+                goal_digest=goal_digest,
+            )
+        for field in ("manifest_digest", "signed_payload_bundle_digest"):
+            with self.subTest(field=field):
+                bundle, ledger, source, goal_reference, goal_digest = self._fixture()
+                rows = [json.loads(line) for line in ledger.read_bytes().splitlines()]
+                rows[-1][field] = "sha256:" + "0" * 64
+                os.chmod(ledger, 0o600)
+                ledger.write_bytes(b"".join(_canonical(row) + b"\n" for row in rows))
+                os.chmod(ledger, 0o444)
+                with self.assertRaises(self.module._InvalidEvidence):
+                    self.module._verify_bundle(
+                        bundle,
+                        source_state=source,
+                        now=self.now,
+                        goal_reference=goal_reference,
+                        goal_digest=goal_digest,
+                    )
+
+    def test_aggregate_digest_is_sensitive_to_each_exact_bundle_file(self) -> None:
+        baseline = {
+            name: _digest_bytes(name.encode("utf-8"))
+            for name in self.module._BUNDLE_FILES
+        }
+        expected = self.module._closed_file_digest(
+            baseline, self.module._BUNDLE_FILES
+        )
+        for name in sorted(self.module._BUNDLE_FILES):
+            changed = dict(baseline)
+            changed[name] = _digest_bytes((name + "-changed").encode("utf-8"))
+            with self.subTest(name=name):
+                self.assertNotEqual(
+                    self.module._closed_file_digest(
+                        changed, self.module._BUNDLE_FILES
+                    ),
+                    expected,
+                )
 
     def test_failed_first_attempt_consumes_slot_and_second_attempt_verifies(self) -> None:
         bundle, ledger, source, goal_reference, goal_digest = self._fixture(
@@ -913,7 +1371,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         )
         result = self.module._verify_bundle(
             bundle,
-            ledger=ledger,
             source_state=source,
             now=self.now,
             goal_reference=goal_reference,
@@ -931,7 +1388,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         with self.assertRaises(self.module._InvalidEvidence):
             self.module._verify_bundle(
                 bundle,
-                ledger=ledger,
                 source_state=source,
                 now=self.now,
                 goal_reference=goal_reference,
@@ -941,11 +1397,12 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
     def test_missing_terminal_attempt_record_fails_closed(self) -> None:
         bundle, ledger, source, goal_reference, goal_digest = self._fixture()
         lines = ledger.read_bytes().splitlines()
+        os.chmod(ledger, 0o600)
         ledger.write_bytes(b"\n".join(lines[:2]) + b"\n")
+        os.chmod(ledger, 0o444)
         with self.assertRaises(self.module._InvalidEvidence):
             self.module._verify_bundle(
                 bundle,
-                ledger=ledger,
                 source_state=source,
                 now=self.now,
                 goal_reference=goal_reference,
@@ -973,7 +1430,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 with self.assertRaises(self.module._InvalidEvidence):
                     self.module._verify_bundle(
                         bundle,
-                        ledger=ledger,
                         source_state=source,
                         now=self.now,
                         goal_reference=goal_reference,
@@ -993,7 +1449,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         with self.assertRaises(self.module._InvalidEvidence):
             self.module._verify_bundle(
                 bundle,
-                ledger=ledger,
                 source_state=source,
                 now=self.now,
                 goal_reference=goal_reference,
@@ -1023,11 +1478,12 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 bundle, ledger, source, goal_reference, goal_digest = self._fixture()
                 rows = [json.loads(line) for line in ledger.read_bytes().splitlines()]
                 mutate(rows[-1])
+                os.chmod(ledger, 0o600)
                 ledger.write_bytes(b"".join(_canonical(row) + b"\n" for row in rows))
+                os.chmod(ledger, 0o444)
                 with self.assertRaises(self.module._InvalidEvidence):
                     self.module._verify_bundle(
                         bundle,
-                        ledger=ledger,
                         source_state=source,
                         now=self.now,
                         goal_reference=goal_reference,
@@ -1045,7 +1501,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         with self.assertRaises(self.module._InvalidEvidence):
             self.module._verify_bundle(
                 bundle,
-                ledger=ledger,
                 source_state=source,
                 now=self.now,
                 goal_reference=goal_reference,
@@ -1079,7 +1534,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 with self.assertRaises(self.module._InvalidEvidence):
                     self.module._verify_bundle(
                         bundle,
-                        ledger=ledger,
                         source_state=source,
                         now=self.now,
                         goal_reference=goal_reference,
@@ -1107,7 +1561,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 with self.assertRaises(self.module._InvalidEvidence):
                     self.module._verify_bundle(
                         bundle,
-                        ledger=ledger,
                         source_state=source,
                         now=self.now,
                         goal_reference=goal_reference,
@@ -1126,7 +1579,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         with self.assertRaises(self.module._InvalidEvidence):
             self.module._verify_bundle(
                 bundle,
-                ledger=ledger,
                 source_state=source,
                 now=self.now,
                 goal_reference=goal_reference,
@@ -1160,7 +1612,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 with self.assertRaises(self.module._InvalidEvidence):
                     self.module._verify_bundle(
                         bundle,
-                        ledger=ledger,
                         source_state=source,
                         now=self.now,
                         goal_reference=goal_reference,
@@ -1203,7 +1654,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 with self.assertRaises(self.module._InvalidEvidence):
                     self.module._verify_bundle(
                         bundle,
-                        ledger=ledger,
                         source_state=source,
                         now=self.now,
                         goal_reference=goal_reference,
@@ -1225,7 +1675,6 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 with self.assertRaises(self.module._InvalidEvidence):
                     self.module._verify_bundle(
                         bundle,
-                        ledger=ledger,
                         source_state=source,
                         now=self.now,
                         goal_reference=goal_reference,

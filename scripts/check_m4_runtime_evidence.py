@@ -30,13 +30,15 @@ APPARMOR = ROOT / "profiles/m4-lx-a.apparmor"
 M3_APPARMOR = ROOT / "profiles/l0-lx-a.apparmor"
 VERIFIER_CODE = SRC / "harness_product/verification.py"
 LIBCRYPTO = Path("/usr/lib/x86_64-linux-gnu/libcrypto.so.3")
-LEDGER = Path("/home/a1/Загрузки/harness/harness-m4-lab/m4-attempt-ledger.jsonl")
-M4_LAB = Path("/home/a1/Загрузки/harness/harness-m4-lab")
+M4_LAB = Path("/home/a1/Загрузки/harness/harness-m4-qualification-v2")
 IMAGE_LAB = Path("/home/a1/Загрузки/harness/harness-m3-lab")
 USER_GOAL = Path(
-    "/home/a1/.codex/attachments/a1d7db13-d210-4875-b261-a086d01fca5a/goal-objective.md"
+    "/home/a1/.codex/attachments/4adf762e-32a5-45e2-bf75-3c79125ace23/pasted-text.txt"
 )
-_BUNDLE_FILES = frozenset({"manifest.json", "manifest.sig", "evidence.json"})
+_BUNDLE_FILES = frozenset({
+    "manifest.json", "manifest.sig", "evidence.json", "attempt-ledger.jsonl",
+})
+_SIGNED_PAYLOAD_FILES = frozenset({"manifest.json", "manifest.sig", "evidence.json"})
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
@@ -48,6 +50,16 @@ _IMAGE_URL = (
     "ubuntu-24.04-server-cloudimg-amd64.img"
 )
 _IMAGE_DIGEST = "sha256:6e40c07ae715f744f84af0bec76415cc1987dd115b4b8de437818561f01a3733"
+_PROFILE_DIGEST = "sha256:50947b4b4ae139effbaddd749c7175a15755675f824e0ae1ed734a85694b4682"
+_PREDECESSOR_QUALIFICATION_LEDGER_DIGEST = (
+    "sha256:719505206caf364c6c0d40983687416bcca5644f879a46254714621cb070d5f9"
+)
+_PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST = (
+    "sha256:6d5d1d00dc2fc303a061c1fc6f3456fb1e6c9fb1c1baae3f667a6521f8382d78"
+)
+_PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST = (
+    "sha256:91abc47ad6070c8b9c8cad89369780b698a696c3e90aed5e2c84cb45f0b1418d"
+)
 _SUMS_DIGEST = "sha256:0f92d5610dfc5797f9574a5a8a000021d845c70c70f6b187b2b78eb1584618cf"
 _SUMS_SIGNATURE_DIGEST = "sha256:a4466d91a9481850908ce0e8c518ebb1cf3ca414add6ba378e783c7d553618a7"
 _UBUNTU_SIGNER = "D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81"
@@ -230,6 +242,13 @@ def _digest(value: object) -> str:
     if type(value) is not str or _DIGEST.fullmatch(value) is None:
         _invalid("DIGEST_MALFORMED")
     return value
+
+
+def _closed_file_digest(file_digests: object, names: frozenset[str]) -> str:
+    rows = _closed(file_digests, names)
+    for digest in rows.values():
+        _digest(digest)
+    return _digest_bytes(_canonical({name: rows[name] for name in sorted(names)}))
 
 
 def _integer(value: object, minimum: int = 0) -> int:
@@ -457,64 +476,265 @@ def _source_state(root: Path = ROOT, *, require_clean: bool = True) -> dict[str,
     }
 
 
+def _source_archive_digest(root: Path = ROOT) -> str:
+    raw = _run([
+        "/usr/bin/git", "-C", str(root), "archive", "--format=tar.gz", "HEAD",
+    ])
+    if not raw or len(raw) > 64 << 20:
+        _invalid("SOURCE_ARCHIVE_MISMATCH")
+    return _digest_bytes(raw)
+
+
+def _validate_source_projection(value: object) -> dict[str, object]:
+    source = _closed(
+        value, frozenset({"commit", "tree", "files", "files_digest"})
+    )
+    files = source["files"]
+    if (
+        type(source["commit"]) is not str
+        or _COMMIT.fullmatch(source["commit"]) is None
+        or type(source["tree"]) is not str
+        or _COMMIT.fullmatch(source["tree"]) is None
+        or type(files) is not dict
+        or not files
+        or any(type(path) is not str or not path for path in files)
+        or any(_digest(digest) != digest for digest in files.values())
+        or source["files_digest"] != _digest_bytes(_canonical(files))
+    ):
+        _invalid("SOURCE_PROJECTION_MISMATCH")
+    return source
+
+
+_CONTRACT_CORE_FIELDS = frozenset({
+    "contract_version", "contract_kind", "user_scope_reference",
+    "user_goal_digest", "candidate", "tree", "attempt",
+    "source_files_digest", "canonical_profile_digest",
+    "raw_profile_artifact_digest", "base_image_digest",
+    "predecessor_qualification_ledger_digest",
+    "predecessor_diagnostic_ledger_digest",
+    "predecessor_diagnostic_bundle_digest", "max_attempts",
+    "success_target", "success_target_authorizing",
+})
+_ENVIRONMENT_PREIMAGE_FIELDS = frozenset({
+    "contract_core_digest", "source_archive_digest", "seed_digest",
+    "package_runtime_plan_digest", "host_provenance_digest",
+})
+_QUALIFICATION_CONTRACT_FIELDS = frozenset({
+    "contract_core", "contract_core_digest", "environment_preimage",
+    "environment_digest",
+})
+_PACKAGE_VERSIONS = {
+    "apparmor": "4.0.1really4.0.1-0ubuntu0.24.04.7",
+    "apparmor-utils": "4.0.1really4.0.1-0ubuntu0.24.04.7",
+    "bubblewrap": "0.9.0-1ubuntu0.1",
+    "libssl3t64": "3.0.13-0ubuntu3.12",
+    "openssl": "3.0.13-0ubuntu3.12",
+    "python3.12": "3.12.3-1ubuntu0.15",
+}
+_PACKAGE_NAMES = frozenset(_PACKAGE_VERSIONS)
+_PROVISIONING_SCRIPT_DIGEST = (
+    "sha256:e3e66da8b31e841910d491f3fdbf94735badce3ee36eceb9241c72003366fd2c"
+)
+_PACKAGE_SOURCE_ASSETS = {
+    "/etc/apt/apt.conf.d/99-harness-m4": "apt-harness-m3.conf",
+    "/etc/apt/sources.list.d/ubuntu.sources": "apt-ubuntu.sources",
+}
+_RUNTIME_CONFIG_ASSETS = {
+    "/etc/hosts": "guest-hosts",
+    "/etc/harness-m4/nftables-offline.conf": "nftables-offline.conf",
+    "/etc/harness-m4/nftables-provisioning.conf": "nftables-provisioning.conf",
+}
+_RUNTIME_TOOL_DIGESTS = {
+    "/usr/bin/aa-exec": "sha256:f28cbce3c8664cab5154492fdbc55ecb937a3e7ce1a9478c881a5f5965d7ce3e",
+    "/usr/bin/bwrap": "sha256:52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712",
+    "/usr/bin/openssl": "sha256:b86b739329008369aebe1f7cff6c2adb18965609d68a19456fca55232f2908f5",
+    "/usr/bin/python3.12": "sha256:1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
+    "/usr/lib/x86_64-linux-gnu/libcrypto.so.3": "sha256:1451aceec262c3338052fa77542eb971d4ba311c6bf12d9aa70d0b56aca942f9",
+    "/usr/sbin/apparmor_parser": "sha256:6bc852b37807961c14976be9a227ae96bd817f73b5189cb0e0ff5eca4448c01c",
+}
+_PACKAGE_SOURCE_PATHS = frozenset(_PACKAGE_SOURCE_ASSETS)
+_RUNTIME_CONFIG_PATHS = frozenset(_RUNTIME_CONFIG_ASSETS)
+_RUNTIME_TOOL_PATHS = frozenset(_RUNTIME_TOOL_DIGESTS)
+
+
+def _expected_package_runtime_plan() -> dict[str, object]:
+    return {
+        "plan_version": "1.0.0",
+        "packages": dict(_PACKAGE_VERSIONS),
+        "provisioning_script_digest": _PROVISIONING_SCRIPT_DIGEST,
+        "package_sources": {
+            path: _digest_file(IMAGE_LAB / asset, 1 << 20)
+            for path, asset in _PACKAGE_SOURCE_ASSETS.items()
+        },
+        "runtime_configs": {
+            path: _digest_file(IMAGE_LAB / asset, 1 << 20)
+            for path, asset in _RUNTIME_CONFIG_ASSETS.items()
+        },
+        "runtime_tools": dict(_RUNTIME_TOOL_DIGESTS),
+    }
+
+
+def _validate_package_runtime_plan(value: object) -> dict[str, object]:
+    plan = _closed(
+        value,
+        frozenset({
+            "plan_version", "packages", "provisioning_script_digest",
+            "package_sources", "runtime_configs", "runtime_tools",
+        }),
+    )
+    packages = _closed(plan["packages"], _PACKAGE_NAMES)
+    package_sources = _closed(plan["package_sources"], _PACKAGE_SOURCE_PATHS)
+    runtime_configs = _closed(plan["runtime_configs"], _RUNTIME_CONFIG_PATHS)
+    runtime_tools = _closed(plan["runtime_tools"], _RUNTIME_TOOL_PATHS)
+    if (
+        plan["plan_version"] != "1.0.0"
+        or packages != _PACKAGE_VERSIONS
+        or plan != _expected_package_runtime_plan()
+    ):
+        _invalid("PACKAGE_RUNTIME_PLAN_MISMATCH")
+    _digest(plan["provisioning_script_digest"])
+    for rows in (package_sources, runtime_configs, runtime_tools):
+        for digest in rows.values():
+            _digest(digest)
+    return plan
+
+
+def _validate_qualification_contract(
+    value: object,
+    qualification_contract_digest: object,
+    *,
+    source: dict[str, object],
+    profile_digest: str,
+    host_provenance: dict[str, object],
+    package_runtime_plan: dict[str, object],
+    goal_reference: str,
+    goal_digest: str,
+) -> tuple[dict[str, object], str, str]:
+    contract = _closed(value, _QUALIFICATION_CONTRACT_FIELDS)
+    core = _closed(contract["contract_core"], _CONTRACT_CORE_FIELDS)
+    preimage = _closed(
+        contract["environment_preimage"], _ENVIRONMENT_PREIMAGE_FIELDS
+    )
+    computed_core_digest = _digest_bytes(_canonical(core))
+    computed_environment_digest = _digest_bytes(_canonical(preimage))
+    computed_contract_digest = _digest_bytes(_canonical(contract))
+    for digest in (
+        core["user_goal_digest"], core["source_files_digest"],
+        core["canonical_profile_digest"], core["raw_profile_artifact_digest"],
+        core["base_image_digest"],
+        core["predecessor_qualification_ledger_digest"],
+        core["predecessor_diagnostic_ledger_digest"],
+        core["predecessor_diagnostic_bundle_digest"],
+        contract["contract_core_digest"], preimage["contract_core_digest"],
+        preimage["source_archive_digest"], preimage["seed_digest"],
+        preimage["package_runtime_plan_digest"],
+        preimage["host_provenance_digest"], contract["environment_digest"],
+        qualification_contract_digest,
+    ):
+        _digest(digest)
+    files = source.get("files")
+    if (
+        core["contract_version"] != "2.0.0"
+        or core["contract_kind"]
+        != "M4_EXACT_DISPOSABLE_TEST_PROFILE_QUALIFICATION_V2"
+        or core["user_scope_reference"] != goal_reference
+        or core["user_goal_digest"] != goal_digest
+        or type(core["candidate"]) is not str
+        or _COMMIT.fullmatch(core["candidate"]) is None
+        or type(core["tree"]) is not str
+        or _COMMIT.fullmatch(core["tree"]) is None
+        or _integer(core["attempt"], 1) not in {1, 2}
+        or core["candidate"] != source.get("commit")
+        or core["tree"] != source.get("tree")
+        or core["source_files_digest"] != source.get("files_digest")
+        or type(files) is not dict
+        or files.get("profiles/m4-lx-a.json") != _PROFILE_DIGEST
+        or core["canonical_profile_digest"] != profile_digest
+        or core["raw_profile_artifact_digest"] != profile_digest
+        or profile_digest != _PROFILE_DIGEST
+        or core["base_image_digest"] != _IMAGE_DIGEST
+        or core["predecessor_qualification_ledger_digest"]
+        != _PREDECESSOR_QUALIFICATION_LEDGER_DIGEST
+        or core["predecessor_diagnostic_ledger_digest"]
+        != _PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+        or core["predecessor_diagnostic_bundle_digest"]
+        != _PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST
+        or core["max_attempts"] != 2
+        or core["success_target"] != 1
+        or core["success_target_authorizing"] is not False
+        or contract["contract_core_digest"] != computed_core_digest
+        or preimage["contract_core_digest"] != computed_core_digest
+        or preimage["seed_digest"] != host_provenance["vm"]["seed_digest"]
+        or preimage["source_archive_digest"] != _source_archive_digest()
+        or preimage["package_runtime_plan_digest"]
+        != _digest_bytes(_canonical(package_runtime_plan))
+        or preimage["host_provenance_digest"]
+        != _digest_bytes(_canonical(host_provenance))
+        or contract["environment_digest"] != computed_environment_digest
+        or qualification_contract_digest != computed_contract_digest
+    ):
+        _invalid("QUALIFICATION_CONTRACT_MISMATCH")
+    return contract, computed_core_digest, computed_contract_digest
+
+
 _LEDGER_COMMON = frozenset(
     {
         "ledger_version", "sequence", "previous_entry_digest", "entry_type",
         "recorded_at", "candidate", "tree", "environment",
         "user_scope_reference", "user_goal_digest", "max_attempts",
-        "success_target", "attempt",
+        "success_target", "success_target_authorizing", "attempt",
+        "contract_core_digest", "qualification_contract_digest",
     }
 )
 _LEDGER_EXTRA = {
-    "ATTEMPT_STARTED": frozenset(),
+    "ATTEMPT_STARTED": frozenset({"qualification_contract"}),
     "KEY_ADMITTED": frozenset(
         {
-            "attempt_start_digest", "receipt_public_key_digests",
-            "supply_public_key_digest", "runtime_trust_digest",
+            "attempt_start_digest", "admitted_qualification_contract_digest",
+            "receipt_public_key_digests", "supply_public_key_digest",
+            "runtime_trust_digest",
         }
     ),
     "ATTEMPT_TERMINAL": frozenset(
         {
             "attempt_start_digest", "key_admission_digest", "result",
-            "manifest_digest", "bundle_digest", "qemu_phase_outcomes",
+            "terminal_reason", "manifest_digest",
+            "signed_payload_bundle_digest", "qemu_phase_outcomes",
         }
     ),
+}
+_TERMINAL_REASON_BY_RESULT = {
+    "BUNDLE_EXPORTED": frozenset({"SIGNED_PAYLOAD_EXPORTED"}),
+    "FAILED": frozenset({
+        "PROVISION_FAILED", "QEMU_EXITED", "SERVICE_FAILED_PRE_KEY_READY",
+        "KEY_READY_TIMEOUT", "KEY_ADMISSION_FAILED", "RUN_FAILED",
+        "RECOVERY_FAILED", "EVIDENCE_EXPORT_FAILED",
+        "EVIDENCE_VERIFICATION_FAILED", "CLEANUP_FAILED",
+    }),
+    "BLOCKED": frozenset({"HOST_PREFLIGHT_FAILED", "ATTEMPT_LIMIT_REACHED"}),
+    "QUARANTINED": frozenset({
+        "PROVISION_FAILED", "QEMU_EXITED", "SERVICE_FAILED_PRE_KEY_READY",
+        "KEY_READY_TIMEOUT", "KEY_ADMISSION_FAILED", "RUN_FAILED",
+        "RECOVERY_FAILED", "EVIDENCE_EXPORT_FAILED",
+        "EVIDENCE_VERIFICATION_FAILED", "CLEANUP_FAILED",
+    }),
 }
 
 
 def _ledger_entries(
-    path: Path,
+    raw: bytes,
     *,
     now: datetime,
     goal_reference: str,
     goal_digest: str,
 ) -> list[tuple[dict[str, object], str]]:
-    try:
-        parent_descriptor = os.open(
-            path.parent,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
-        )
-    except OSError as error:
-        raise _InvalidEvidence("LEDGER_UNAVAILABLE") from error
-    try:
-        parent = os.fstat(parent_descriptor)
-        if (
-            not stat.S_ISDIR(parent.st_mode)
-            or stat.S_IMODE(parent.st_mode) != 0o700
-            or parent.st_uid != os.getuid()
-        ):
-            _invalid("LEDGER_UNTRUSTED")
-        raw = _read_regular_at(
-            parent_descriptor, path.name, 4 << 20, mode=0o600, owner=os.getuid()
-        )
-        after_parent = os.fstat(parent_descriptor)
-        if (after_parent.st_dev, after_parent.st_ino, after_parent.st_mode) != (
-            parent.st_dev, parent.st_ino, parent.st_mode
-        ):
-            _invalid("LEDGER_UNTRUSTED")
-    finally:
-        os.close(parent_descriptor)
-    if not raw.endswith(b"\n") or b"\n\n" in raw:
+    if (
+        type(raw) is not bytes
+        or not raw
+        or len(raw) > 4 << 20
+        or not raw.endswith(b"\n")
+        or b"\n\n" in raw
+    ):
         _invalid("LEDGER_MALFORMED")
     result: list[tuple[dict[str, object], str]] = []
     previous: str | None = None
@@ -525,7 +745,7 @@ def _ledger_entries(
         expected = _LEDGER_COMMON | _LEDGER_EXTRA[str(value["entry_type"])]
         row = _closed(value, expected)
         if (
-            row["ledger_version"] != "1.0.0"
+            row["ledger_version"] != "2.0.0"
             or _integer(row["sequence"], 1) != sequence
             or row["previous_entry_digest"] != previous
             or type(row["candidate"]) is not str
@@ -537,36 +757,103 @@ def _ledger_entries(
             or row["user_goal_digest"] != goal_digest
             or row["max_attempts"] != 2
             or row["success_target"] != 1
+            or row["success_target_authorizing"] is not False
             or _integer(row["attempt"], 1) not in {1, 2}
+            or _digest(row["contract_core_digest"])
+            != row["contract_core_digest"]
+            or _digest(row["qualification_contract_digest"])
+            != row["qualification_contract_digest"]
         ):
             _invalid("LEDGER_BINDING_MISMATCH")
         _timestamp(row["recorded_at"], now)
-        if row["entry_type"] == "KEY_ADMITTED":
+        if row["entry_type"] == "ATTEMPT_STARTED":
+            contract = _closed(
+                row["qualification_contract"], _QUALIFICATION_CONTRACT_FIELDS
+            )
+            core = _closed(contract["contract_core"], _CONTRACT_CORE_FIELDS)
+            preimage = _closed(
+                contract["environment_preimage"], _ENVIRONMENT_PREIMAGE_FIELDS
+            )
+            computed_core_digest = _digest_bytes(_canonical(core))
+            computed_contract_digest = _digest_bytes(_canonical(contract))
+            if (
+                contract["contract_core_digest"] != computed_core_digest
+                or preimage["contract_core_digest"] != computed_core_digest
+                or contract["environment_digest"]
+                != _digest_bytes(_canonical(preimage))
+                or row["contract_core_digest"] != computed_core_digest
+                or row["qualification_contract_digest"]
+                != computed_contract_digest
+                or core["candidate"] != row["candidate"]
+                or core["tree"] != row["tree"]
+                or core["attempt"] != row["attempt"]
+                or contract["environment_digest"] != row["environment"]
+                or core["user_scope_reference"] != row["user_scope_reference"]
+                or core["user_goal_digest"] != row["user_goal_digest"]
+                or core["max_attempts"] != row["max_attempts"]
+                or core["success_target"] != row["success_target"]
+                or core["success_target_authorizing"]
+                is not row["success_target_authorizing"]
+                or core["contract_version"] != "2.0.0"
+                or core["contract_kind"]
+                != "M4_EXACT_DISPOSABLE_TEST_PROFILE_QUALIFICATION_V2"
+                or core["canonical_profile_digest"] != _PROFILE_DIGEST
+                or core["raw_profile_artifact_digest"] != _PROFILE_DIGEST
+                or core["base_image_digest"] != _IMAGE_DIGEST
+                or core["predecessor_qualification_ledger_digest"]
+                != _PREDECESSOR_QUALIFICATION_LEDGER_DIGEST
+                or core["predecessor_diagnostic_ledger_digest"]
+                != _PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+                or core["predecessor_diagnostic_bundle_digest"]
+                != _PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST
+            ):
+                _invalid("LEDGER_CONTRACT_MISMATCH")
+            for name in (
+                "source_files_digest", "canonical_profile_digest",
+                "raw_profile_artifact_digest", "base_image_digest",
+                "predecessor_qualification_ledger_digest",
+                "predecessor_diagnostic_ledger_digest",
+                "predecessor_diagnostic_bundle_digest",
+            ):
+                _digest(core[name])
+            for value in preimage.values():
+                _digest(value)
+        elif row["entry_type"] == "KEY_ADMITTED":
             keys = _closed(
                 row["receipt_public_key_digests"],
                 frozenset({"M4_AUTHORITY", "OBSERVER", "PUBLISHER"}),
             )
             _digest(row["attempt_start_digest"])
+            if (
+                row["admitted_qualification_contract_digest"]
+                != row["qualification_contract_digest"]
+            ):
+                _invalid("LEDGER_BINDING_MISMATCH")
             _digest(row["supply_public_key_digest"])
             _digest(row["runtime_trust_digest"])
             for value in keys.values():
                 _digest(value)
         elif row["entry_type"] == "ATTEMPT_TERMINAL":
-            if row["result"] not in {
-                "BUNDLE_EXPORTED", "FAILED", "BLOCKED", "QUARANTINED"
-            }:
+            if row["result"] not in _TERMINAL_REASON_BY_RESULT:
                 _invalid("LEDGER_TERMINAL_MISMATCH")
             _digest(row["attempt_start_digest"])
             if row["result"] == "BUNDLE_EXPORTED":
-                for key in ("key_admission_digest", "manifest_digest", "bundle_digest"):
+                if row["terminal_reason"] != "SIGNED_PAYLOAD_EXPORTED":
+                    _invalid("LEDGER_TERMINAL_MISMATCH")
+                for key in (
+                    "key_admission_digest", "manifest_digest",
+                    "signed_payload_bundle_digest",
+                ):
                     _digest(row[key])
                 _validate_qemu_phase_outcomes(row["qemu_phase_outcomes"], row["attempt"])
             else:
+                if row["terminal_reason"] not in _TERMINAL_REASON_BY_RESULT[row["result"]]:
+                    _invalid("LEDGER_TERMINAL_MISMATCH")
                 if row["key_admission_digest"] is not None:
                     _digest(row["key_admission_digest"])
                 if (
                     row["manifest_digest"] is not None
-                    or row["bundle_digest"] is not None
+                    or row["signed_payload_bundle_digest"] is not None
                     or row["qemu_phase_outcomes"] is not None
                 ):
                     _invalid("LEDGER_TERMINAL_MISMATCH")
@@ -577,6 +864,7 @@ def _ledger_entries(
         _invalid("LEDGER_EMPTY")
     qualification_keys = (
         "user_scope_reference", "user_goal_digest", "max_attempts", "success_target",
+        "success_target_authorizing",
     )
     qualification = tuple(result[0][0][name] for name in qualification_keys)
     if any(
@@ -586,7 +874,6 @@ def _ledger_entries(
         _invalid("LEDGER_LIFECYCLE_MISMATCH")
     cursor = 0
     expected_attempt = 1
-    exported = False
     candidate_environment_pairs: set[tuple[object, object]] = set()
     while cursor < len(result):
         start, start_digest = result[cursor]
@@ -595,7 +882,6 @@ def _ledger_entries(
             start["entry_type"] != "ATTEMPT_STARTED"
             or start["attempt"] != expected_attempt
             or expected_attempt > 2
-            or exported
             or pair in candidate_environment_pairs
         ):
             _invalid("ATTEMPT_CEILING_MISMATCH")
@@ -611,7 +897,10 @@ def _ledger_entries(
         terminal, _ = result[cursor]
         cursor += 1
         for row in (() if key_row is None else (key_row,)) + (terminal,):
-            for name in ("candidate", "tree", "environment", "attempt"):
+            for name in (
+                "candidate", "tree", "environment", "attempt",
+                "contract_core_digest", "qualification_contract_digest",
+            ):
                 if row[name] != start[name]:
                     _invalid("LEDGER_LIFECYCLE_MISMATCH")
         if (
@@ -630,7 +919,6 @@ def _ledger_entries(
             or (terminal["result"] == "BUNDLE_EXPORTED" and key_row is None)
         ):
             _invalid("LEDGER_LIFECYCLE_MISMATCH")
-        exported = terminal["result"] == "BUNDLE_EXPORTED"
         expected_attempt += 1
     return result
 
@@ -1023,7 +1311,11 @@ def _validate_state(state: object, profile: dict[str, object]) -> dict[str, obje
     )
     identity = _closed(
         state["identity"],
-        frozenset({"candidate", "environment", "attempt", "boot_id", "guest", "source", "host_provenance"}),
+        frozenset({
+            "candidate", "environment", "attempt", "boot_id", "guest", "source",
+            "host_provenance", "qualification_contract",
+            "qualification_contract_digest", "package_runtime_plan",
+        }),
     )
     trust = _closed(
         state["trust"],
@@ -1093,6 +1385,10 @@ def _validate_state(state: object, profile: dict[str, object]) -> dict[str, obje
         or _UUID.fullmatch(identity["boot_id"]) is None
         or type(identity["source"]) is not dict
         or identity["source"].get("commit") != identity["candidate"]
+        or type(identity["qualification_contract"]) is not dict
+        or _digest(identity["qualification_contract_digest"])
+        != identity["qualification_contract_digest"]
+        or type(identity["package_runtime_plan"]) is not dict
         or _digest(trust["profile_digest"]) != trust["profile_digest"]
         or _digest(trust["m4_apparmor_digest"]) != trust["m4_apparmor_digest"]
         or trust["m3_apparmor_digest"] != _digest_file(M3_APPARMOR, 1 << 20)
@@ -1152,6 +1448,7 @@ def _validate_recovery(
             "recovery_version", "previous_boot_id", "current_boot_id", "durable",
             "survival", "publication", "controller_facts", "source_reverified",
             "host_provenance_reverified", "trust_reverified",
+            "qualification_contract", "qualification_contract_digest",
         }),
     )
     durable = _closed(
@@ -1198,6 +1495,10 @@ def _validate_recovery(
     published = state["publication"]["published_binding"]
     if (
         recovery["recovery_version"] != "1.0.0"
+        or recovery["qualification_contract"]
+        != state["identity"]["qualification_contract"]
+        or recovery["qualification_contract_digest"]
+        != state["identity"]["qualification_contract_digest"]
         or recovery["previous_boot_id"] != state["identity"]["boot_id"]
         or type(recovery["current_boot_id"]) is not str
         or _UUID.fullmatch(recovery["current_boot_id"]) is None
@@ -1241,7 +1542,6 @@ def _validate_recovery(
 def _verify_bundle(
     bundle: Path,
     *,
-    ledger: Path = LEDGER,
     source_state: dict[str, object] | None = None,
     now: datetime | None = None,
     goal_reference: str = str(USER_GOAL),
@@ -1278,6 +1578,10 @@ def _verify_bundle(
             bundle_descriptor, "evidence.json", 8 << 20,
             mode=0o444, owner=os.getuid(),
         )
+        ledger_bytes = _read_regular_at(
+            bundle_descriptor, "attempt-ledger.jsonl", 4 << 20,
+            mode=0o444, owner=os.getuid(),
+        )
         after_directory = os.fstat(bundle_descriptor)
         if (
             frozenset(os.listdir(bundle_descriptor)) != _BUNDLE_FILES
@@ -1295,29 +1599,74 @@ def _verify_bundle(
             "bundle_version", "claim", "outcome", "status", "candidate",
             "environment", "attempt", "source", "host_provenance", "profile",
             "attempt_ledger", "durable", "attestation", "evidence",
+            "qualification_contract", "qualification_contract_digest",
+            "admission_digest", "package_runtime_plan",
         }),
     )
     evidence = _closed(
         _strict_json(evidence_bytes, 8 << 20),
         frozenset({
-            "evidence_version", "claim", "scope", "run_state", "run_state_digest",
-            "recovery", "public_keys", "residual_risk",
+            "bundle_version", "evidence_version", "claim", "scope", "run_state",
+            "run_state_digest", "recovery", "public_keys", "residual_risk",
+            "qualification_contract", "qualification_contract_digest",
+            "admission_digest", "package_runtime_plan",
         }),
     )
-    profile = _strict_json(
-        _read_regular(PROFILE, 1 << 20), 1 << 20, canonical=False
-    )
-    if type(profile) is not dict:
+    profile_bytes = _read_regular(PROFILE, 1 << 20)
+    profile = _strict_json(profile_bytes, 1 << 20)
+    profile_digest = _digest_bytes(profile_bytes)
+    if (
+        type(profile) is not dict
+        or len(profile_bytes) != 2698
+        or profile_digest != _PROFILE_DIGEST
+    ):
         _invalid("PROFILE_MALFORMED")
     state = _validate_state(evidence["run_state"], profile)
     host_provenance = _validate_host_provenance(
         state["identity"]["host_provenance"], state["identity"]["attempt"]
     )
-    if state["identity"]["environment"] != _digest_bytes(
-        _canonical({
-            "host_provenance": host_provenance,
-            "profile_digest": _digest_bytes(_canonical(profile)),
-        })
+    package_runtime_plan = _validate_package_runtime_plan(
+        state["identity"]["package_runtime_plan"]
+    )
+    if (
+        manifest["qualification_contract"]
+        != evidence["qualification_contract"]
+        or manifest["qualification_contract"]
+        != state["identity"]["qualification_contract"]
+        or manifest["qualification_contract_digest"]
+        != evidence["qualification_contract_digest"]
+        or manifest["qualification_contract_digest"]
+        != state["identity"]["qualification_contract_digest"]
+        or manifest["package_runtime_plan"] != package_runtime_plan
+        or evidence["package_runtime_plan"] != package_runtime_plan
+    ):
+        _invalid("QUALIFICATION_CONTRACT_PROJECTION_MISMATCH")
+    source = _validate_source_projection(
+        _source_state() if source_state is None else source_state
+    )
+    expected_goal_digest = (
+        goal_digest
+        if goal_digest is not None
+        else _digest_file(USER_GOAL, 1 << 20)
+    )
+    qualification_contract, contract_core_digest, qualification_contract_digest = (
+        _validate_qualification_contract(
+            manifest["qualification_contract"],
+            manifest["qualification_contract_digest"],
+            source=source,
+            profile_digest=profile_digest,
+            host_provenance=host_provenance,
+            package_runtime_plan=package_runtime_plan,
+            goal_reference=goal_reference,
+            goal_digest=expected_goal_digest,
+        )
+    )
+    core = qualification_contract["contract_core"]
+    if (
+        state["identity"]["environment"]
+        != qualification_contract["environment_digest"]
+        or state["identity"]["candidate"] != core["candidate"]
+        or state["identity"]["attempt"] != core["attempt"]
     ):
         _invalid("ENVIRONMENT_MISMATCH")
     if host_assets is not None:
@@ -1325,14 +1674,15 @@ def _verify_bundle(
     admission = _closed(
         state["trust"]["key_admission"],
         frozenset({
-            "admission_version", "mode", "candidate", "environment", "attempt",
-            "ledger_entry_digest", "receipt_public_key_digests",
+            "admission_version", "mode", "ledger_entry_digest",
+            "receipt_public_key_digests",
             "supply_public_key_digest", "runtime_trust_digest",
+            "qualification_contract", "qualification_contract_digest",
+            "contract_core_digest",
         }),
     )
-    expected_goal_digest = goal_digest if goal_digest is not None else _digest_file(USER_GOAL, 1 << 20)
     rows = _ledger_entries(
-        ledger, now=verification_time, goal_reference=goal_reference,
+        ledger_bytes, now=verification_time, goal_reference=goal_reference,
         goal_digest=expected_goal_digest,
     )
     row_by_digest = {digest: row for row, digest in rows}
@@ -1342,16 +1692,27 @@ def _verify_bundle(
     start = row_by_digest.get(selected["attempt_start_digest"])
     if type(start) is not dict or start.get("entry_type") != "ATTEMPT_STARTED":
         _invalid("LEDGER_ATTEMPT_ABSENT")
-    for key in ("candidate", "environment", "attempt"):
-        if selected[key] != admission[key] or start[key] != admission[key]:
+    for key, expected in (
+        ("candidate", core["candidate"]),
+        ("tree", core["tree"]),
+        ("environment", qualification_contract["environment_digest"]),
+        ("attempt", core["attempt"]),
+        ("contract_core_digest", contract_core_digest),
+        ("qualification_contract_digest", qualification_contract_digest),
+    ):
+        if selected[key] != expected or start[key] != expected:
             _invalid("LEDGER_ADMISSION_MISMATCH")
     if (
-        admission["admission_version"] != "1.0.0"
+        admission["admission_version"] != "2.0.0"
         or admission["mode"] != "HOST_ATTEMPT_LEDGER_PIN_BEFORE_WORKER_GATE"
-        or admission["candidate"] != state["identity"]["candidate"]
-        or admission["environment"] != state["identity"]["environment"]
-        or admission["attempt"] != state["identity"]["attempt"]
+        or admission["qualification_contract"] != qualification_contract
+        or admission["qualification_contract_digest"]
+        != qualification_contract_digest
+        or admission["contract_core_digest"] != contract_core_digest
+        or start["qualification_contract"] != qualification_contract
         or start["tree"] != state["identity"]["source"].get("tree")
+        or selected["admitted_qualification_contract_digest"]
+        != qualification_contract_digest
         or selected["receipt_public_key_digests"] != admission["receipt_public_key_digests"]
         or selected["supply_public_key_digest"] != admission["supply_public_key_digest"]
         or selected["runtime_trust_digest"] != admission["runtime_trust_digest"]
@@ -1367,18 +1728,28 @@ def _verify_bundle(
         if row["entry_type"] == "ATTEMPT_TERMINAL"
         and row["key_admission_digest"] == admission["ledger_entry_digest"]
     ]
-    expected_bundle_digest = _digest_bytes(
-        _canonical({
-            "manifest": _digest_bytes(manifest_bytes),
-            "signature": _digest_bytes(signature),
-            "evidence": _digest_bytes(evidence_bytes),
-            "ledger_entry": admission["ledger_entry_digest"],
-        })
+    file_digests = {
+        "attempt-ledger.jsonl": _digest_bytes(ledger_bytes),
+        "evidence.json": _digest_bytes(evidence_bytes),
+        "manifest.json": _digest_bytes(manifest_bytes),
+        "manifest.sig": _digest_bytes(signature),
+    }
+    signed_payload_bundle_digest = _closed_file_digest(
+        {name: file_digests[name] for name in _SIGNED_PAYLOAD_FILES},
+        _SIGNED_PAYLOAD_FILES,
     )
+    aggregate_bundle_digest = _closed_file_digest(file_digests, _BUNDLE_FILES)
     if (
         len(terminals) != 1
-        or terminals[0]["manifest_digest"] != _digest_bytes(manifest_bytes)
-        or terminals[0]["bundle_digest"] != expected_bundle_digest
+        or terminals[0] is not rows[-1][0]
+        or terminals[0]["result"] != "BUNDLE_EXPORTED"
+        or terminals[0]["terminal_reason"] != "SIGNED_PAYLOAD_EXPORTED"
+        or terminals[0]["manifest_digest"] != file_digests["manifest.json"]
+        or terminals[0]["signed_payload_bundle_digest"]
+        != signed_payload_bundle_digest
+        or terminals[0]["contract_core_digest"] != contract_core_digest
+        or terminals[0]["qualification_contract_digest"]
+        != qualification_contract_digest
     ):
         _invalid("LEDGER_TERMINAL_MISMATCH")
     supply_key = _closed(
@@ -1475,23 +1846,27 @@ def _verify_bundle(
         if final_verifier.verify(manifest_bytes, _canonical(record), attestation["issued_at"]).status is not VerificationStatus.VERIFIED:
             _invalid("MANIFEST_SIGNATURE_REJECTED")
         _validate_events(state, profile, public_paths, verification_time)
-    source = _source_state() if source_state is None else source_state
     profile_row = _closed(
         manifest["profile"],
         frozenset({"path", "digest", "apparmor_digest", "runtime_trust_digest", "verifier"}),
     )
     ledger_row = _closed(
         manifest["attempt_ledger"],
-        frozenset({"ledger_entry_digest", "max_attempts", "success_target"}),
+        frozenset({
+            "ledger_entry_digest", "max_attempts", "success_target",
+            "success_target_authorizing", "contract_core_digest",
+            "qualification_contract_digest",
+        }),
     )
     evidence_row = _closed(manifest["evidence"], frozenset({"path", "bytes", "digest"}))
     scope = _closed(evidence["scope"], frozenset({"profile_id", "assurance_scope", "environment", "data_class"}))
     if (
-        manifest["bundle_version"] != "1.0.0"
+        manifest["bundle_version"] != "2.0.0"
         or manifest["claim"] != "M4_EXACT_DISPOSABLE_TEST_PROFILE_RUNTIME_CONFORMANCE"
         or manifest["outcome"] != "VERIFIED"
         or manifest["status"] != "NOT_ATTESTED"
-        or evidence["evidence_version"] != "1.0.0"
+        or evidence["bundle_version"] != "2.0.0"
+        or evidence["evidence_version"] != "2.0.0"
         or evidence["claim"] != manifest["claim"]
         or evidence["residual_risk"] != _RESIDUAL_RISK
         or scope != {
@@ -1499,6 +1874,14 @@ def _verify_bundle(
             "environment": "DISPOSABLE_UBUNTU_24_04_QEMU_KVM", "data_class": "SYNTHETIC",
         }
         or evidence["run_state_digest"] != _digest_bytes(_canonical(state))
+        or manifest["qualification_contract"] != qualification_contract
+        or evidence["qualification_contract"] != qualification_contract
+        or manifest["qualification_contract_digest"]
+        != qualification_contract_digest
+        or evidence["qualification_contract_digest"]
+        != qualification_contract_digest
+        or manifest["admission_digest"] != admission["ledger_entry_digest"]
+        or evidence["admission_digest"] != admission["ledger_entry_digest"]
         or manifest["candidate"] != state["identity"]["candidate"]
         or manifest["environment"] != state["identity"]["environment"]
         or manifest["attempt"] != state["identity"]["attempt"]
@@ -1506,7 +1889,7 @@ def _verify_bundle(
         or manifest["source"] != source
         or manifest["host_provenance"] != state["identity"]["host_provenance"]
         or profile_row["path"] != "profiles/m4-lx-a.json"
-        or profile_row["digest"] != _digest_bytes(_canonical(profile))
+        or profile_row["digest"] != profile_digest
         or profile_row["digest"] != state["trust"]["profile_digest"]
         or profile_row["apparmor_digest"] != _digest_file(APPARMOR, 1 << 20)
         or profile_row["apparmor_digest"] != state["trust"]["m4_apparmor_digest"]
@@ -1514,7 +1897,11 @@ def _verify_bundle(
         or profile_row["verifier"] != state["trust"]["verifier"]
         or ledger_row != {
             "ledger_entry_digest": admission["ledger_entry_digest"],
-            "max_attempts": 2, "success_target": 1,
+            "max_attempts": 2,
+            "success_target": 1,
+            "success_target_authorizing": False,
+            "contract_core_digest": contract_core_digest,
+            "qualification_contract_digest": qualification_contract_digest,
         }
         or manifest["durable"] != state["durable"]["m4_recovery"]
         or evidence_row["path"] != "evidence.json"
@@ -1524,7 +1911,7 @@ def _verify_bundle(
         _invalid("CROSS_BINDING_MISMATCH")
     _validate_recovery(evidence["recovery"], state, profile)
     return {
-        "gate_version": 1,
+        "gate_version": 2,
         "claim": "M4_EXACT_DISPOSABLE_TEST_PROFILE_RUNTIME_CONFORMANCE",
         "claim_status": "M4_EXACT_DISPOSABLE_TEST_PROFILE_RUNTIME_CONFORMANCE_VERIFIED",
         "outcome": "VERIFIED",
@@ -1534,22 +1921,19 @@ def _verify_bundle(
         "tree": manifest["source"]["tree"],
         "attempt": manifest["attempt"],
         "environment": manifest["environment"],
-        "manifest_digest": _digest_bytes(manifest_bytes),
-        "evidence_bundle_digest": _digest_bytes(
-            _canonical({
-                "manifest": _digest_bytes(manifest_bytes),
-                "signature": _digest_bytes(signature),
-                "evidence": _digest_bytes(evidence_bytes),
-                "ledger_entry": admission["ledger_entry_digest"],
-            })
-        ),
+        "qualification_contract_digest": qualification_contract_digest,
+        "admission_digest": admission["ledger_entry_digest"],
+        "manifest_digest": file_digests["manifest.json"],
+        "signed_payload_bundle_digest": signed_payload_bundle_digest,
+        "aggregate_bundle_digest": aggregate_bundle_digest,
+        "bundle_file_digests": file_digests,
         "residual_risk": _RESIDUAL_RISK,
     }
 
 
 def _absent(reason: str) -> dict[str, object]:
     return {
-        "gate_version": 1,
+        "gate_version": 2,
         "claim": "M4_EXACT_DISPOSABLE_TEST_PROFILE_RUNTIME_CONFORMANCE",
         "outcome": "ABSENT",
         "reason": reason,
