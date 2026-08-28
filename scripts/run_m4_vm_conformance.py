@@ -168,6 +168,39 @@ RUNTIME_TOOL_PATHS = frozenset(
         APPARMOR_PARSER,
     }
 )
+_PACKAGE_VERSION_BINDING_IDS = {
+    "apparmor": "PACKAGE_VERSION_APPARMOR",
+    "apparmor-utils": "PACKAGE_VERSION_APPARMOR_UTILS",
+    "bubblewrap": "PACKAGE_VERSION_BUBBLEWRAP",
+    "libssl3t64": "PACKAGE_VERSION_LIBSSL3T64",
+    "openssl": "PACKAGE_VERSION_OPENSSL",
+    "python3.12": "PACKAGE_VERSION_PYTHON3_12",
+}
+_PACKAGE_FILE_BINDING_IDS = {
+    "/etc/apt/apt.conf.d/99-harness-m4": "PACKAGE_SOURCE_APT_HARNESS_M4",
+    "/etc/apt/sources.list.d/ubuntu.sources": "PACKAGE_SOURCE_UBUNTU",
+    "/etc/hosts": "RUNTIME_CONFIG_HOSTS",
+    "/etc/harness-m4/nftables-offline.conf": (
+        "RUNTIME_CONFIG_NFTABLES_OFFLINE"
+    ),
+    "/etc/harness-m4/nftables-provisioning.conf": (
+        "RUNTIME_CONFIG_NFTABLES_PROVISIONING"
+    ),
+    AA_EXEC: "RUNTIME_TOOL_AA_EXEC",
+    BWRAP: "RUNTIME_TOOL_BWRAP",
+    OPENSSL: "RUNTIME_TOOL_OPENSSL",
+    PYTHON: "RUNTIME_TOOL_PYTHON3_12",
+    LIBCRYPTO: "RUNTIME_TOOL_LIBCRYPTO",
+    APPARMOR_PARSER: "RUNTIME_TOOL_APPARMOR_PARSER",
+}
+PACKAGE_RUNTIME_PLAN_BINDING_IDS = (
+    "PROVISIONING_SCRIPT",
+    *_PACKAGE_VERSION_BINDING_IDS.values(),
+    *_PACKAGE_FILE_BINDING_IDS.values(),
+)
+PACKAGE_RUNTIME_PLAN_OUTCOMES = frozenset(
+    {"MISMATCH", "QUERY_ERROR", "DECODE_ERROR", "READ_ERROR", "RESOLVE_ERROR"}
+)
 ROLE_LABELS = {
     "CONTROLLER": "harness-l0-lx-a.controller",
     "EXECUTOR": "harness-l0-lx-a.executor",
@@ -362,6 +395,46 @@ def _diagnostic_stage(stage: str) -> None:
             _stop("M4_DIAGNOSTIC_STAGE_WRITE_FAILED")
     except OSError as error:
         raise QualificationStop("M4_DIAGNOSTIC_STAGE_WRITE_FAILED") from error
+
+
+def _emit_package_runtime_plan_observation(binding_id: str, outcome: str) -> None:
+    if (
+        type(binding_id) is not str
+        or binding_id not in PACKAGE_RUNTIME_PLAN_BINDING_IDS
+        or type(outcome) is not str
+        or outcome not in PACKAGE_RUNTIME_PLAN_OUTCOMES
+    ):
+        _stop("M4_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED")
+    raw = _canonical(
+        {
+            "binding_id": binding_id,
+            "non_authorizing": True,
+            "outcome": outcome,
+            "record_type": "M4_PACKAGE_RUNTIME_PLAN_OBSERVATION",
+        }
+    ) + b"\n"
+    try:
+        if os.write(1, raw) != len(raw):
+            _stop("M4_PACKAGE_RUNTIME_PLAN_OBSERVATION_WRITE_FAILED")
+    except OSError as error:
+        raise QualificationStop(
+            "M4_PACKAGE_RUNTIME_PLAN_OBSERVATION_WRITE_FAILED"
+        ) from error
+
+
+def _package_runtime_plan_binding_stop(
+    binding_id: str | None,
+    outcome: str,
+    diagnostic_observation: bool,
+    error: BaseException | None = None,
+) -> NoReturn:
+    if diagnostic_observation:
+        if binding_id is None:
+            _stop("PACKAGE_RUNTIME_PLAN_MISMATCH")
+        _emit_package_runtime_plan_observation(binding_id, outcome)
+    if error is None:
+        _stop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
+    raise QualificationStop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH") from error
 
 
 def _pairs(rows: list[tuple[object, object]]) -> dict[str, object]:
@@ -681,15 +754,28 @@ def _validate_package_runtime_plan(value: object) -> dict[str, object]:
     return value
 
 
-def _package_runtime_plan() -> dict[str, object]:
+def _package_runtime_plan(
+    *, diagnostic_observation: bool = False
+) -> dict[str, object]:
+    if type(diagnostic_observation) is not bool:
+        _stop("PACKAGE_RUNTIME_PLAN_MISMATCH")
     value = _validate_package_runtime_plan(
         _strict_file(PACKAGE_RUNTIME_PLAN, _PACKAGE_RUNTIME_PLAN_KEYS, 1 << 20)
     )
-    if value["provisioning_script_digest"] != _digest_file(
-        PROVISIONING_SCRIPT, 1 << 20
-    ):
-        _stop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
+    try:
+        provisioning_digest = _digest_file(PROVISIONING_SCRIPT, 1 << 20)
+    except (OSError, QualificationStop) as error:
+        if diagnostic_observation:
+            _package_runtime_plan_binding_stop(
+                "PROVISIONING_SCRIPT", "READ_ERROR", True, error
+            )
+        raise
+    if value["provisioning_script_digest"] != provisioning_digest:
+        _package_runtime_plan_binding_stop(
+            "PROVISIONING_SCRIPT", "MISMATCH", diagnostic_observation
+        )
     for name, expected in PACKAGE_VERSIONS.items():
+        binding_id = _PACKAGE_VERSION_BINDING_IDS.get(name)
         try:
             result = subprocess.run(
                 ["/usr/bin/dpkg-query", "-W", "-f=${Version}", name],
@@ -704,22 +790,50 @@ def _package_runtime_plan() -> dict[str, object]:
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
-            raise QualificationStop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH") from error
+            _package_runtime_plan_binding_stop(
+                binding_id, "QUERY_ERROR", diagnostic_observation, error
+            )
+        if result.returncode != 0:
+            _package_runtime_plan_binding_stop(
+                binding_id, "QUERY_ERROR", diagnostic_observation
+            )
         try:
             installed = result.stdout.decode("ascii", "strict")
         except UnicodeDecodeError as error:
-            raise QualificationStop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH") from error
-        if result.returncode != 0 or installed != expected:
-            _stop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
+            _package_runtime_plan_binding_stop(
+                binding_id, "DECODE_ERROR", diagnostic_observation, error
+            )
+        if installed != expected:
+            _package_runtime_plan_binding_stop(
+                binding_id, "MISMATCH", diagnostic_observation
+            )
     for bindings in (
         value["package_sources"], value["runtime_configs"], value["runtime_tools"]
     ):
         for name, expected in bindings.items():
+            binding_id = _PACKAGE_FILE_BINDING_IDS.get(name)
             path = Path(name)
             if name == LIBCRYPTO:
-                path = path.resolve(strict=True)
-            if _digest_file(path, 16 << 20) != expected:
-                _stop("PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH")
+                try:
+                    path = path.resolve(strict=True)
+                except (OSError, RuntimeError) as error:
+                    if diagnostic_observation:
+                        _package_runtime_plan_binding_stop(
+                            binding_id, "RESOLVE_ERROR", True, error
+                        )
+                    raise
+            try:
+                actual = _digest_file(path, 16 << 20)
+            except (OSError, QualificationStop) as error:
+                if diagnostic_observation:
+                    _package_runtime_plan_binding_stop(
+                        binding_id, "READ_ERROR", True, error
+                    )
+                raise
+            if actual != expected:
+                _package_runtime_plan_binding_stop(
+                    binding_id, "MISMATCH", diagnostic_observation
+                )
     return value
 
 
@@ -729,10 +843,14 @@ def _verify_bound_environment(
     host_provenance: dict[str, object],
     profile: dict[str, object],
     mismatch_reason: str,
+    *,
+    diagnostic_observation: bool = False,
 ) -> dict[str, object]:
     core = contract["contract_core"]
     environment = contract["environment_preimage"]
-    plan = _package_runtime_plan()
+    plan = _package_runtime_plan(
+        diagnostic_observation=diagnostic_observation
+    )
     image = host_provenance.get("image") if type(host_provenance) is dict else None
     vm = host_provenance.get("vm") if type(host_provenance) is dict else None
     if (
@@ -786,6 +904,7 @@ def _verify_post_v2_diagnostic_environment(
         host_provenance,
         profile,
         "M4_POST_V2_DIAGNOSTIC_ENVIRONMENT_MISMATCH",
+        diagnostic_observation=True,
     )
 
 

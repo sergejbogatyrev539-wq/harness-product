@@ -142,6 +142,32 @@ _DIAGNOSTIC_REASONS = frozenset(
         "KEY_READY_TIMEOUT", "KEY_READY_REACHED", "CLEANUP_FAILED",
     }
 )
+PACKAGE_RUNTIME_PLAN_BINDING_IDS = (
+    "PROVISIONING_SCRIPT",
+    "PACKAGE_VERSION_APPARMOR",
+    "PACKAGE_VERSION_APPARMOR_UTILS",
+    "PACKAGE_VERSION_BUBBLEWRAP",
+    "PACKAGE_VERSION_LIBSSL3T64",
+    "PACKAGE_VERSION_OPENSSL",
+    "PACKAGE_VERSION_PYTHON3_12",
+    "PACKAGE_SOURCE_APT_HARNESS_M4",
+    "PACKAGE_SOURCE_UBUNTU",
+    "RUNTIME_CONFIG_HOSTS",
+    "RUNTIME_CONFIG_NFTABLES_OFFLINE",
+    "RUNTIME_CONFIG_NFTABLES_PROVISIONING",
+    "RUNTIME_TOOL_AA_EXEC",
+    "RUNTIME_TOOL_BWRAP",
+    "RUNTIME_TOOL_OPENSSL",
+    "RUNTIME_TOOL_PYTHON3_12",
+    "RUNTIME_TOOL_LIBCRYPTO",
+    "RUNTIME_TOOL_APPARMOR_PARSER",
+)
+PACKAGE_RUNTIME_PLAN_OUTCOMES = frozenset(
+    {"MISMATCH", "QUERY_ERROR", "DECODE_ERROR", "READ_ERROR", "RESOLVE_ERROR"}
+)
+_PACKAGE_RUNTIME_PLAN_OBSERVATION_KEYS = frozenset(
+    {"record_type", "non_authorizing", "binding_id", "outcome"}
+)
 _SERVICE_PROPERTIES = (
     "ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus",
 )
@@ -2864,17 +2890,102 @@ def _stage_markers(lines: list[str]) -> list[dict[str, object]]:
     return result
 
 
+def _validate_package_runtime_plan_observation(
+    value: object,
+) -> dict[str, object]:
+    if (
+        type(value) is not dict
+        or frozenset(value) != _PACKAGE_RUNTIME_PLAN_OBSERVATION_KEYS
+        or value.get("record_type") != "M4_PACKAGE_RUNTIME_PLAN_OBSERVATION"
+        or value.get("non_authorizing") is not True
+        or type(value.get("binding_id")) is not str
+        or type(value.get("outcome")) is not str
+    ):
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED")
+    if (
+        value["binding_id"] not in PACKAGE_RUNTIME_PLAN_BINDING_IDS
+        or value["outcome"] not in PACKAGE_RUNTIME_PLAN_OUTCOMES
+    ):
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_UNKNOWN")
+    return value
+
+
+def _extract_package_runtime_plan_observation(
+    unit_raw: bytes,
+) -> dict[str, object]:
+    if type(unit_raw) is not bytes or len(unit_raw) > 1 << 20:
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED")
+    lines = unit_raw.splitlines()
+    if len(lines) > 512:
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED")
+    observation_token = b'"M4_PACKAGE_RUNTIME_PLAN_OBSERVATION"'
+    terminal_token = b'"PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH"'
+    observation_rows = [
+        (index, line)
+        for index, line in enumerate(lines)
+        if observation_token in line
+    ]
+    if not observation_rows:
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING")
+    if len(observation_rows) != 1:
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_DUPLICATE")
+    observation_index, observation_raw = observation_rows[0]
+    if not observation_raw or len(observation_raw) > 1024:
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED")
+    try:
+        observation = _validate_package_runtime_plan_observation(
+            _strict_json(observation_raw, 1024)
+        )
+    except QualificationStop as error:
+        if str(error) == "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_UNKNOWN":
+            raise
+        raise QualificationStop(
+            "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED"
+        ) from error
+
+    terminal_rows = [
+        (index, line)
+        for index, line in enumerate(lines)
+        if terminal_token in line
+    ]
+    if len(terminal_rows) != 1:
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ORDER_MISMATCH")
+    terminal_index, terminal_raw = terminal_rows[0]
+    expected_terminal = {
+        "outcome": "STOP",
+        "reason": "PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH",
+        "status": "NOT_ATTESTED",
+    }
+    try:
+        terminal = _strict_json(terminal_raw, 1024)
+    except QualificationStop as error:
+        raise QualificationStop(
+            "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ORDER_MISMATCH"
+        ) from error
+    if terminal != expected_terminal or observation_index >= terminal_index:
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ORDER_MISMATCH")
+    return observation
+
+
 def _collect_pre_key_diagnostics(
     qemu: QemuProcess,
     client_key: Path,
     known_hosts: Path,
     unit: str,
-) -> tuple[list[str], list[str], list[dict[str, object]]]:
+    *,
+    require_package_runtime_plan_observation: bool = False,
+) -> tuple[
+    list[str], list[str], list[dict[str, object]], dict[str, object] | None
+]:
+    if type(require_package_runtime_plan_observation) is not bool:
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED")
     try:
         qemu.require_alive()
     except QualificationStop:
+        if require_package_runtime_plan_observation:
+            _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING")
         unavailable = ["UNAVAILABLE:QEMU_EXITED"]
-        return unavailable, unavailable, []
+        return unavailable, unavailable, [], None
     try:
         unit_raw = _ssh(
             client_key,
@@ -2886,6 +2997,17 @@ def _collect_pre_key_diagnostics(
             timeout=20,
             maximum=1 << 20,
         )
+    except QualificationStop:
+        if require_package_runtime_plan_observation:
+            _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING")
+        unavailable = ["UNAVAILABLE:SSH_DIAGNOSTIC_COLLECTION_FAILED"]
+        return unavailable, unavailable, [], None
+    package_observation = (
+        _extract_package_runtime_plan_observation(unit_raw)
+        if require_package_runtime_plan_observation
+        else None
+    )
+    try:
         kernel_raw = _ssh(
             client_key,
             known_hosts,
@@ -2897,8 +3019,16 @@ def _collect_pre_key_diagnostics(
             maximum=1 << 20,
         )
     except QualificationStop:
+        if require_package_runtime_plan_observation:
+            unit_lines = _journal_lines(unit_raw)
+            return (
+                unit_lines,
+                ["UNAVAILABLE:SSH_DIAGNOSTIC_COLLECTION_FAILED"],
+                _stage_markers(unit_lines),
+                package_observation,
+            )
         unavailable = ["UNAVAILABLE:SSH_DIAGNOSTIC_COLLECTION_FAILED"]
-        return unavailable, unavailable, []
+        return unavailable, unavailable, [], None
     unit_lines = _journal_lines(unit_raw)
     kernel_lines = [
         line
@@ -2908,7 +3038,7 @@ def _collect_pre_key_diagnostics(
             for token in ("apparmor", "oom", "out of memory", "killed process")
         )
     ]
-    return unit_lines, kernel_lines, _stage_markers(unit_lines)
+    return unit_lines, kernel_lines, _stage_markers(unit_lines), package_observation
 
 
 def _scp_to_guest(
@@ -3381,7 +3511,7 @@ def _run_diagnostic_vm_phase(
         observation = _wait_key_ready_diagnostic(
             qemu, client_key, known_hosts, unit
         )
-        unit_lines, kernel_lines, markers = _collect_pre_key_diagnostics(
+        unit_lines, kernel_lines, markers, _ = _collect_pre_key_diagnostics(
             qemu, client_key, known_hosts, unit
         )
         if qemu.alive():
@@ -3407,7 +3537,7 @@ def _run_post_v2_diagnostic_vm_phase(
     contract: dict[str, object],
 ) -> tuple[
     dict[str, object], str, list[str], list[str], list[dict[str, object]],
-    dict[str, object] | None,
+    dict[str, object], dict[str, object] | None,
 ]:
     unit = "harness-m4-controller@run.service"
     with QemuProcess(
@@ -3423,9 +3553,20 @@ def _run_post_v2_diagnostic_vm_phase(
         observation = _wait_key_ready_diagnostic(
             qemu, client_key, known_hosts, unit
         )
-        unit_lines, kernel_lines, markers = _collect_pre_key_diagnostics(
-            qemu, client_key, known_hosts, unit
+        (
+            unit_lines,
+            kernel_lines,
+            markers,
+            package_runtime_plan_observation,
+        ) = _collect_pre_key_diagnostics(
+            qemu,
+            client_key,
+            known_hosts,
+            unit,
+            require_package_runtime_plan_observation=True,
         )
+        if package_runtime_plan_observation is None:
+            _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING")
         ready = observation["key_ready"]
         if ready is not None:
             try:
@@ -3451,6 +3592,7 @@ def _run_post_v2_diagnostic_vm_phase(
     _verify_management_port_free()
     return (
         observation, boot_id, unit_lines, kernel_lines, markers,
+        package_runtime_plan_observation,
         _diagnostic_qemu_outcome(
             qemu, "run", lab=POST_V2_DIAGNOSTIC_LAB
         ),
@@ -3751,6 +3893,11 @@ def _sanitize_post_v2_diagnostic_record(
     if type(record) is not dict:
         _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
     value = dict(record)
+    if value.get("diagnostic_version") == "2.1.0":
+        _validate_package_runtime_plan_observation_lines(
+            value.get("unit_journal"),
+            value.get("package_runtime_plan_observation"),
+        )
     for name in ("unit_journal", "kernel_events"):
         rows = value.get(name)
         if type(rows) is not list or len(rows) > 512:
@@ -3770,10 +3917,49 @@ def _sanitize_post_v2_diagnostic_record(
     return _validate_post_v2_diagnostic_record(value, lab=lab)
 
 
+def _validate_package_runtime_plan_observation_lines(
+    lines: object, observation: object
+) -> dict[str, object]:
+    package_observation = _validate_package_runtime_plan_observation(
+        observation
+    )
+    if type(lines) is not list or any(type(line) is not str for line in lines):
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    observation_line = _canonical(package_observation).decode("utf-8")
+    aggregate_line = _canonical(
+        {
+            "outcome": "STOP",
+            "reason": "PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH",
+            "status": "NOT_ATTESTED",
+        }
+    ).decode("utf-8")
+    observation_token = '"M4_PACKAGE_RUNTIME_PLAN_OBSERVATION"'
+    aggregate_token = '"PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH"'
+    observation_rows = [
+        (index, line)
+        for index, line in enumerate(lines)
+        if observation_token in line
+    ]
+    aggregate_rows = [
+        (index, line)
+        for index, line in enumerate(lines)
+        if aggregate_token in line
+    ]
+    if (
+        len(observation_rows) != 1
+        or observation_rows[0][1] != observation_line
+        or len(aggregate_rows) != 1
+        or aggregate_rows[0][1] != aggregate_line
+        or observation_rows[0][0] >= aggregate_rows[0][0]
+    ):
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    return package_observation
+
+
 def _validate_post_v2_diagnostic_record(
     value: object, *, lab: Path = POST_V2_DIAGNOSTIC_LAB
 ) -> dict[str, object]:
-    expected = {
+    historical_expected = {
         "diagnostic_version", "claim", "status", "goal_record",
         "goal_record_digest", "diagnostic_contract",
         "diagnostic_contract_digest", "contract_core_digest",
@@ -3782,7 +3968,15 @@ def _validate_post_v2_diagnostic_record(
         "stage_markers", "artifact_digests", "qemu_phase_outcomes",
         "qemu_log_captures", "key_ready_digest",
     }
-    if type(value) is not dict or frozenset(value) != expected:
+    if type(value) is not dict or type(value.get("diagnostic_version")) is not str:
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    if value["diagnostic_version"] == "2.0.0":
+        expected = historical_expected
+    elif value["diagnostic_version"] == "2.1.0":
+        expected = historical_expected | {"package_runtime_plan_observation"}
+    else:
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    if frozenset(value) != expected:
         _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
     goal = _validate_post_v2_diagnostic_goal_record(value["goal_record"])
     contract = _validate_post_v2_diagnostic_contract(
@@ -3797,8 +3991,7 @@ def _validate_post_v2_diagnostic_record(
         value["contract_core_digest"], value["diagnostic_start_digest"],
     )
     if (
-        value["diagnostic_version"] != "2.0.0"
-        or value["claim"] != "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY"
+        value["claim"] != "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY"
         or value["status"] != "NOT_ATTESTED"
         or core["goal_record"] != goal
         or value["goal_record_digest"] != _digest_bytes(_canonical(goal))
@@ -3865,6 +4058,11 @@ def _validate_post_v2_diagnostic_record(
         seen.append(marker["stage"])
     if seen != sorted(seen, key=order.index):
         _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    if value["diagnostic_version"] == "2.1.0":
+        _validate_package_runtime_plan_observation_lines(
+            value["unit_journal"],
+            value["package_runtime_plan_observation"],
+        )
     _validate_post_v2_diagnostic_phase_outcomes(
         value["qemu_phase_outcomes"], lab
     )
@@ -4432,6 +4630,7 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
     unit_lines = ["UNAVAILABLE:PROVISION_FAILED"]
     kernel_lines = ["UNAVAILABLE:PROVISION_FAILED"]
     markers: list[dict[str, object]] = []
+    package_runtime_plan_observation: dict[str, object] | None = None
     cleanup_complete = False
     removed: list[str] = []
     bundle: Path | None = None
@@ -4505,6 +4704,7 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
                         unit_lines,
                         kernel_lines,
                         markers,
+                        package_runtime_plan_observation,
                         phase_outcomes["run"],
                     ) = _run_post_v2_diagnostic_vm_phase(
                         attempt_root, client_key, known_hosts, contract
@@ -4531,9 +4731,11 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
                 else None
             )
             qemu_log_captures = _capture_post_v2_qemu_logs(attempt_root)
+            if package_runtime_plan_observation is None:
+                _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING")
             record = _sanitize_post_v2_diagnostic_record(
                 {
-                    "diagnostic_version": "2.0.0",
+                    "diagnostic_version": "2.1.0",
                     "claim": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY",
                     "status": "NOT_ATTESTED",
                     "goal_record": goal_record,
@@ -4550,6 +4752,9 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
                     "unit_journal": unit_lines,
                     "kernel_events": kernel_lines,
                     "stage_markers": markers,
+                    "package_runtime_plan_observation": (
+                        package_runtime_plan_observation
+                    ),
                     "artifact_digests": artifact_digests,
                     "qemu_phase_outcomes": phase_outcomes,
                     "qemu_log_captures": qemu_log_captures,

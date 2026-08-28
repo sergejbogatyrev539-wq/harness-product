@@ -764,6 +764,272 @@ class M4VMRunnerContractTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertNotIn('_diagnostic_stage("KEY_ADMITTED")', source)
 
+    def test_post_v2_package_runtime_plan_observation_discriminates_all_bindings(
+        self,
+    ) -> None:
+        module = _module()
+        package_ids = {
+            "apparmor": "PACKAGE_VERSION_APPARMOR",
+            "apparmor-utils": "PACKAGE_VERSION_APPARMOR_UTILS",
+            "bubblewrap": "PACKAGE_VERSION_BUBBLEWRAP",
+            "libssl3t64": "PACKAGE_VERSION_LIBSSL3T64",
+            "openssl": "PACKAGE_VERSION_OPENSSL",
+            "python3.12": "PACKAGE_VERSION_PYTHON3_12",
+        }
+        file_ids = {
+            "/etc/apt/apt.conf.d/99-harness-m4": (
+                "PACKAGE_SOURCE_APT_HARNESS_M4"
+            ),
+            "/etc/apt/sources.list.d/ubuntu.sources": "PACKAGE_SOURCE_UBUNTU",
+            "/etc/hosts": "RUNTIME_CONFIG_HOSTS",
+            "/etc/harness-m4/nftables-offline.conf": (
+                "RUNTIME_CONFIG_NFTABLES_OFFLINE"
+            ),
+            "/etc/harness-m4/nftables-provisioning.conf": (
+                "RUNTIME_CONFIG_NFTABLES_PROVISIONING"
+            ),
+            "/usr/bin/aa-exec": "RUNTIME_TOOL_AA_EXEC",
+            "/usr/bin/bwrap": "RUNTIME_TOOL_BWRAP",
+            "/usr/bin/openssl": "RUNTIME_TOOL_OPENSSL",
+            "/usr/bin/python3.12": "RUNTIME_TOOL_PYTHON3_12",
+            "/usr/lib/x86_64-linux-gnu/libcrypto.so.3": (
+                "RUNTIME_TOOL_LIBCRYPTO"
+            ),
+            "/usr/sbin/apparmor_parser": "RUNTIME_TOOL_APPARMOR_PARSER",
+        }
+        expected_ids = (
+            "PROVISIONING_SCRIPT",
+            *package_ids.values(),
+            *file_ids.values(),
+        )
+        self.assertEqual(module.PACKAGE_RUNTIME_PLAN_BINDING_IDS, expected_ids)
+        self.assertEqual(len(expected_ids), 18)
+        self.assertEqual(len(frozenset(expected_ids)), 18)
+        self.assertEqual(
+            module.PACKAGE_RUNTIME_PLAN_OUTCOMES,
+            frozenset(
+                {
+                    "MISMATCH",
+                    "QUERY_ERROR",
+                    "DECODE_ERROR",
+                    "READ_ERROR",
+                    "RESOLVE_ERROR",
+                }
+            ),
+        )
+
+        digest = "sha256:" + "a" * 64
+        other_digest = "sha256:" + "b" * 64
+        plan = {
+            "plan_version": "1.0.0",
+            "packages": dict(module.PACKAGE_VERSIONS),
+            "provisioning_script_digest": digest,
+            "package_sources": {
+                path: digest for path in module.PACKAGE_SOURCE_PATHS
+            },
+            "runtime_configs": {
+                path: digest for path in module.RUNTIME_CONFIG_PATHS
+            },
+            "runtime_tools": {
+                path: digest for path in module.RUNTIME_TOOL_PATHS
+            },
+        }
+        package_by_id = {binding_id: name for name, binding_id in package_ids.items()}
+        path_by_id = {binding_id: name for name, binding_id in file_ids.items()}
+
+        def invoke(
+            binding_id: str,
+            failure: str,
+            *,
+            diagnostic_observation: bool = True,
+        ) -> list[tuple[bytes, dict[str, object]]]:
+            writes: list[bytes] = []
+
+            def dpkg(argv, **_kwargs):
+                name = argv[-1]
+                current = package_ids[name]
+                if current == binding_id and failure == "query":
+                    raise module.subprocess.TimeoutExpired(argv, 5)
+                if current == binding_id and failure == "nonzero":
+                    return module.subprocess.CompletedProcess(
+                        argv, 1, stdout=b"", stderr=b"not retained"
+                    )
+                if current == binding_id and failure == "decode":
+                    return module.subprocess.CompletedProcess(
+                        argv, 0, stdout=b"\xff", stderr=b""
+                    )
+                installed = (
+                    "0" if current == binding_id and failure == "mismatch"
+                    else module.PACKAGE_VERSIONS[name]
+                )
+                return module.subprocess.CompletedProcess(
+                    argv, 0, stdout=installed.encode("ascii"), stderr=b""
+                )
+
+            def digest_file(path, _maximum=64 << 20):
+                text = str(path)
+                current = (
+                    "PROVISIONING_SCRIPT"
+                    if path == module.PROVISIONING_SCRIPT
+                    else file_ids[text]
+                )
+                if current == binding_id and failure == "read":
+                    raise OSError("synthetic read error")
+                if current == binding_id and failure == "mismatch":
+                    return other_digest
+                return digest
+
+            def resolve(path, strict=False):
+                del strict
+                if (
+                    file_ids.get(str(path)) == binding_id
+                    and failure == "resolve"
+                ):
+                    raise OSError("synthetic resolve error")
+                return path
+
+            with (
+                mock.patch.object(module, "_strict_file", return_value=plan),
+                mock.patch.object(module, "_digest_file", side_effect=digest_file),
+                mock.patch.object(module.subprocess, "run", side_effect=dpkg),
+                mock.patch.object(module.Path, "resolve", new=resolve),
+                mock.patch.object(
+                    module.os,
+                    "write",
+                    side_effect=lambda _fd, raw: writes.append(raw) or len(raw),
+                ),
+                self.assertRaisesRegex(
+                    module.QualificationStop,
+                    "^PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH$",
+                ),
+            ):
+                module._package_runtime_plan(
+                    diagnostic_observation=diagnostic_observation
+                )
+            return [
+                (
+                    raw,
+                    module._strict_bytes(raw.removesuffix(b"\n"), 1024),
+                )
+                for raw in writes
+            ]
+
+        for binding_id in expected_ids:
+            with self.subTest(binding_id=binding_id):
+                observed = invoke(binding_id, "mismatch")
+                self.assertEqual(len(observed), 1)
+                raw, record = observed[0]
+                self.assertEqual(
+                    record,
+                    {
+                        "binding_id": binding_id,
+                        "non_authorizing": True,
+                        "outcome": "MISMATCH",
+                        "record_type": "M4_PACKAGE_RUNTIME_PLAN_OBSERVATION",
+                    },
+                )
+                self.assertEqual(raw, module._canonical(record) + b"\n")
+
+        for binding_id, failure, outcome in (
+            (package_ids["apparmor"], "query", "QUERY_ERROR"),
+            (package_ids["apparmor"], "nonzero", "QUERY_ERROR"),
+            (package_ids["apparmor"], "decode", "DECODE_ERROR"),
+            (file_ids["/etc/hosts"], "read", "READ_ERROR"),
+            (file_ids[module.LIBCRYPTO], "resolve", "RESOLVE_ERROR"),
+        ):
+            with self.subTest(outcome=outcome):
+                observed = invoke(binding_id, failure)
+                self.assertEqual(len(observed), 1)
+                self.assertEqual(observed[0][1]["binding_id"], binding_id)
+                self.assertEqual(observed[0][1]["outcome"], outcome)
+
+        self.assertEqual(
+            invoke(
+                "PROVISIONING_SCRIPT",
+                "mismatch",
+                diagnostic_observation=False,
+            ),
+            [],
+        )
+        for binding_id, outcome in (
+            ("UNKNOWN_BINDING", "MISMATCH"),
+            ("PROVISIONING_SCRIPT", "UNKNOWN_OUTCOME"),
+        ):
+            with (
+                self.subTest(binding_id=binding_id, outcome=outcome),
+                mock.patch.object(module.os, "write") as write,
+                self.assertRaises(module.QualificationStop),
+            ):
+                module._emit_package_runtime_plan_observation(binding_id, outcome)
+            write.assert_not_called()
+
+        def successful_dpkg(argv, **_kwargs):
+            return module.subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout=module.PACKAGE_VERSIONS[argv[-1]].encode("ascii"),
+                stderr=b"",
+            )
+
+        with (
+            mock.patch.object(module, "_strict_file", return_value=plan),
+            mock.patch.object(
+                module,
+                "_digest_file",
+                side_effect=OSError("ordinary read failure"),
+            ),
+            mock.patch.object(module.subprocess, "run", side_effect=successful_dpkg),
+            mock.patch.object(module.os, "write") as write,
+            self.assertRaisesRegex(OSError, "ordinary read failure"),
+        ):
+            module._package_runtime_plan(diagnostic_observation=False)
+        write.assert_not_called()
+
+        def resolve_failure(_path, strict=False):
+            del strict
+            raise OSError("ordinary resolve failure")
+
+        with (
+            mock.patch.object(module, "_strict_file", return_value=plan),
+            mock.patch.object(module, "_digest_file", return_value=digest),
+            mock.patch.object(module.subprocess, "run", side_effect=successful_dpkg),
+            mock.patch.object(module.Path, "resolve", new=resolve_failure),
+            mock.patch.object(module.os, "write") as write,
+            self.assertRaisesRegex(OSError, "ordinary resolve failure"),
+        ):
+            module._package_runtime_plan(diagnostic_observation=False)
+        write.assert_not_called()
+
+        for name, effect in (
+            ("short-write", 0),
+            ("write-error", OSError("synthetic write error")),
+        ):
+            patcher = (
+                mock.patch.object(module.os, "write", return_value=effect)
+                if type(effect) is int
+                else mock.patch.object(module.os, "write", side_effect=effect)
+            )
+            with (
+                self.subTest(name=name),
+                patcher,
+                self.assertRaisesRegex(
+                    module.QualificationStop,
+                    "^M4_PACKAGE_RUNTIME_PLAN_OBSERVATION_WRITE_FAILED$",
+                ),
+            ):
+                module._emit_package_runtime_plan_observation(
+                    "PROVISIONING_SCRIPT", "READ_ERROR"
+                )
+
+        self.assertIn(
+            "diagnostic_observation=True",
+            inspect.getsource(module._verify_post_v2_diagnostic_environment),
+        )
+        self.assertNotIn(
+            "diagnostic_observation=True",
+            inspect.getsource(module._verify_qualification_environment),
+        )
+
     def test_launch_request_accepts_only_closed_single_attempt_diagnostic_shape(self) -> None:
         module = _module()
         digest = "sha256:" + "a" * 64

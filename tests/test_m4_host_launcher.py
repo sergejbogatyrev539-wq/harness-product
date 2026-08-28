@@ -1334,7 +1334,12 @@ class M4HostLauncherTests(unittest.TestCase):
         with mock.patch.object(
             self.launcher, "_ssh", side_effect=(service, kernel)
         ) as ssh:
-            unit_lines, kernel_lines, markers = self.launcher._collect_pre_key_diagnostics(
+            (
+                unit_lines,
+                kernel_lines,
+                markers,
+                package_observation,
+            ) = self.launcher._collect_pre_key_diagnostics(
                 FakeQemu(), Path("client"), Path("known"), unit
             )
         self.assertEqual(len(ssh.call_args_list), 2)
@@ -1345,6 +1350,236 @@ class M4HostLauncherTests(unittest.TestCase):
         self.assertIn("Traceback: apparmor_parser failed", unit_lines)
         self.assertEqual(kernel_lines, ["apparmor=DENIED profile=harness", "OOM killed process"])
         self.assertEqual([item["stage"] for item in markers], ["SERVICE_ENTERED"])
+        self.assertIsNone(package_observation)
+
+    def test_post_v2_package_runtime_plan_observation_parser_is_closed_and_ordered(
+        self,
+    ) -> None:
+        expected_ids = (
+            "PROVISIONING_SCRIPT",
+            "PACKAGE_VERSION_APPARMOR",
+            "PACKAGE_VERSION_APPARMOR_UTILS",
+            "PACKAGE_VERSION_BUBBLEWRAP",
+            "PACKAGE_VERSION_LIBSSL3T64",
+            "PACKAGE_VERSION_OPENSSL",
+            "PACKAGE_VERSION_PYTHON3_12",
+            "PACKAGE_SOURCE_APT_HARNESS_M4",
+            "PACKAGE_SOURCE_UBUNTU",
+            "RUNTIME_CONFIG_HOSTS",
+            "RUNTIME_CONFIG_NFTABLES_OFFLINE",
+            "RUNTIME_CONFIG_NFTABLES_PROVISIONING",
+            "RUNTIME_TOOL_AA_EXEC",
+            "RUNTIME_TOOL_BWRAP",
+            "RUNTIME_TOOL_OPENSSL",
+            "RUNTIME_TOOL_PYTHON3_12",
+            "RUNTIME_TOOL_LIBCRYPTO",
+            "RUNTIME_TOOL_APPARMOR_PARSER",
+        )
+        expected_outcomes = frozenset(
+            {
+                "MISMATCH",
+                "QUERY_ERROR",
+                "DECODE_ERROR",
+                "READ_ERROR",
+                "RESOLVE_ERROR",
+            }
+        )
+        self.assertEqual(
+            self.launcher.PACKAGE_RUNTIME_PLAN_BINDING_IDS, expected_ids
+        )
+        self.assertEqual(
+            self.launcher.PACKAGE_RUNTIME_PLAN_OUTCOMES, expected_outcomes
+        )
+        self.assertEqual(len(frozenset(expected_ids)), 18)
+        observation = {
+            "binding_id": "RUNTIME_TOOL_LIBCRYPTO",
+            "non_authorizing": True,
+            "outcome": "RESOLVE_ERROR",
+            "record_type": "M4_PACKAGE_RUNTIME_PLAN_OBSERVATION",
+        }
+        terminal = {
+            "outcome": "STOP",
+            "reason": "PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH",
+            "status": "NOT_ATTESTED",
+        }
+        stage = {
+            "record_type": "M4_PRE_KEY_STAGE",
+            "stage": "SERVICE_ENTERED",
+            "non_authorizing": True,
+        }
+
+        def journal(*rows: object) -> bytes:
+            return b"\n".join(self.launcher._canonical(row) for row in rows) + b"\n"
+
+        self.assertEqual(
+            self.launcher._extract_package_runtime_plan_observation(
+                journal(stage, observation, terminal)
+            ),
+            observation,
+        )
+
+        class FakeQemu:
+            def require_alive(self) -> None:
+                return None
+
+        with mock.patch.object(
+            self.launcher,
+            "_ssh",
+            side_effect=(
+                journal(stage, observation, terminal),
+                self.launcher.QualificationStop("KERNEL_JOURNAL_UNAVAILABLE"),
+            ),
+        ):
+            (
+                unit_lines,
+                kernel_lines,
+                markers,
+                collected_observation,
+            ) = self.launcher._collect_pre_key_diagnostics(
+                FakeQemu(),
+                Path("client"),
+                Path("known"),
+                "harness-m4-controller@run.service",
+                require_package_runtime_plan_observation=True,
+            )
+        self.assertEqual(collected_observation, observation)
+        self.assertIn(
+            self.launcher._canonical(observation).decode("utf-8"), unit_lines
+        )
+        self.assertEqual(
+            kernel_lines, ["UNAVAILABLE:SSH_DIAGNOSTIC_COLLECTION_FAILED"]
+        )
+        self.assertEqual([item["stage"] for item in markers], ["SERVICE_ENTERED"])
+        for binding_id in expected_ids:
+            with self.subTest(binding_id=binding_id):
+                self.assertEqual(
+                    self.launcher._extract_package_runtime_plan_observation(
+                        journal(
+                            {**observation, "binding_id": binding_id}, terminal
+                        )
+                    )["binding_id"],
+                    binding_id,
+                )
+        for outcome in expected_outcomes:
+            with self.subTest(outcome=outcome):
+                self.assertEqual(
+                    self.launcher._extract_package_runtime_plan_observation(
+                        journal({**observation, "outcome": outcome}, terminal)
+                    )["outcome"],
+                    outcome,
+                )
+        noncanonical_observation = json.dumps(
+            observation, sort_keys=True
+        ).encode("utf-8")
+        duplicate_key_observation = (
+            b'{"binding_id":"RUNTIME_TOOL_LIBCRYPTO",'
+            b'"binding_id":"RUNTIME_TOOL_LIBCRYPTO",'
+            b'"non_authorizing":true,"outcome":"RESOLVE_ERROR",'
+            b'"record_type":"M4_PACKAGE_RUNTIME_PLAN_OBSERVATION"}'
+        )
+        for name, raw, reason in (
+            (
+                "missing",
+                journal(stage, terminal),
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING",
+            ),
+            (
+                "duplicate",
+                journal(observation, observation, terminal),
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_DUPLICATE",
+            ),
+            (
+                "noncanonical-full-record",
+                noncanonical_observation
+                + b"\n"
+                + self.launcher._canonical(terminal)
+                + b"\n",
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED",
+            ),
+            (
+                "duplicate-key",
+                duplicate_key_observation
+                + b"\n"
+                + self.launcher._canonical(terminal)
+                + b"\n",
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED",
+            ),
+            (
+                "invalid-utf8",
+                self.launcher._canonical(observation)[:-1]
+                + b',"x":"\xff"}\n'
+                + self.launcher._canonical(terminal)
+                + b"\n",
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED",
+            ),
+            (
+                "unknown-field",
+                journal({**observation, "extra": True}, terminal),
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED",
+            ),
+            (
+                "unknown-binding",
+                journal({**observation, "binding_id": "UNKNOWN"}, terminal),
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_UNKNOWN",
+            ),
+            (
+                "unknown-outcome",
+                journal({**observation, "outcome": "UNKNOWN"}, terminal),
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_UNKNOWN",
+            ),
+            (
+                "wrong-order",
+                journal(terminal, observation),
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ORDER_MISMATCH",
+            ),
+            (
+                "missing-terminal",
+                journal(observation),
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ORDER_MISMATCH",
+            ),
+            (
+                "duplicate-terminal",
+                journal(observation, terminal, terminal),
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ORDER_MISMATCH",
+            ),
+            (
+                "noncanonical-terminal",
+                self.launcher._canonical(observation)
+                + b"\n"
+                + json.dumps(terminal, sort_keys=True).encode("utf-8")
+                + b"\n",
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ORDER_MISMATCH",
+            ),
+            (
+                "oversized",
+                (
+                    b'{"record_type":"M4_PACKAGE_RUNTIME_PLAN_OBSERVATION","x":"'
+                    + b"x" * 1025
+                    + b'"}\n'
+                    + self.launcher._canonical(terminal)
+                    + b"\n"
+                ),
+                "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED",
+            ),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                self.launcher.QualificationStop, reason
+            ):
+                self.launcher._extract_package_runtime_plan_observation(raw)
+
+        post_v2_source = inspect.getsource(
+            self.launcher._run_post_v2_diagnostic_vm_phase
+        )
+        self.assertIn("require_package_runtime_plan_observation=True", post_v2_source)
+        for ordinary in (
+            self.launcher._run_vm_phase,
+            self.launcher._run_diagnostic_vm_phase,
+            self.launcher._key_ready_diagnostic,
+        ):
+            self.assertNotIn(
+                "package_runtime_plan_observation",
+                inspect.getsource(ordinary),
+            )
 
     def test_diagnostic_mode_has_only_provision_run_and_never_admits_or_recovers(self) -> None:
         lifecycle = self.launcher._qemu_lifecycle(
@@ -1593,9 +1828,20 @@ class M4HostLauncherTests(unittest.TestCase):
                     ("service", "8"), ("profile", "9"),
                 )
             }
+            package_observation = {
+                "binding_id": "RUNTIME_TOOL_LIBCRYPTO",
+                "non_authorizing": True,
+                "outcome": "MISMATCH",
+                "record_type": "M4_PACKAGE_RUNTIME_PLAN_OBSERVATION",
+            }
+            aggregate_stop = {
+                "outcome": "STOP",
+                "reason": "PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH",
+                "status": "NOT_ATTESTED",
+            }
             record = self.launcher._sanitize_post_v2_diagnostic_record(
                 {
-                    "diagnostic_version": "2.0.0",
+                    "diagnostic_version": "2.1.0",
                     "claim": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY",
                     "status": "NOT_ATTESTED",
                     "goal_record": goal,
@@ -1609,9 +1855,13 @@ class M4HostLauncherTests(unittest.TestCase):
                     "boot_id": "UNAVAILABLE",
                     "observed_terminal_reason": "SERVICE_FAILED_PRE_KEY_READY",
                     "systemd_properties": unavailable,
-                    "unit_journal": ["unit failed"],
+                    "unit_journal": [
+                        self.launcher._canonical(package_observation).decode("utf-8"),
+                        self.launcher._canonical(aggregate_stop).decode("utf-8"),
+                    ],
                     "kernel_events": ["apparmor=DENIED"],
                     "stage_markers": [],
+                    "package_runtime_plan_observation": package_observation,
                     "artifact_digests": artifact_digests,
                     "qemu_phase_outcomes": outcomes,
                     "qemu_log_captures": captured,
@@ -1636,6 +1886,120 @@ class M4HostLauncherTests(unittest.TestCase):
             )
             self.assertNotIn("terminal_reason", retained)
             self.assertNotIn(b"key-admission.json", bundle.read_bytes())
+            historical = dict(record)
+            historical["diagnostic_version"] = "2.0.0"
+            historical.pop("package_runtime_plan_observation")
+            historical["unit_journal"] = ["historical unit failure"]
+            self.assertIs(
+                self.launcher._validate_post_v2_diagnostic_record(
+                    historical, lab=lab
+                ),
+                historical,
+            )
+            historical_with_projection = dict(historical)
+            historical_with_projection[
+                "package_runtime_plan_observation"
+            ] = package_observation
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop,
+                "POST_V2_DIAGNOSTIC_RECORD_MALFORMED",
+            ):
+                self.launcher._validate_post_v2_diagnostic_record(
+                    historical_with_projection, lab=lab
+                )
+            missing = dict(record)
+            missing.pop("package_runtime_plan_observation")
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop,
+                "POST_V2_DIAGNOSTIC_RECORD_MALFORMED",
+            ):
+                self.launcher._validate_post_v2_diagnostic_record(
+                    missing, lab=lab
+                )
+            observation_line = self.launcher._canonical(
+                package_observation
+            ).decode("utf-8")
+            aggregate_line = self.launcher._canonical(
+                aggregate_stop
+            ).decode("utf-8")
+            for name, mutation in (
+                (
+                    "typed-projection-mismatch",
+                    {
+                        "package_runtime_plan_observation": {
+                            **package_observation,
+                            "binding_id": "PROVISIONING_SCRIPT",
+                        }
+                    },
+                ),
+                ("journal-observation-missing", {"unit_journal": [aggregate_line]}),
+                (
+                    "journal-observation-duplicate",
+                    {
+                        "unit_journal": [
+                            observation_line,
+                            observation_line,
+                            aggregate_line,
+                        ]
+                    },
+                ),
+                (
+                    "journal-observation-noncanonical-extra",
+                    {
+                        "unit_journal": [
+                            observation_line,
+                            json.dumps(package_observation, sort_keys=True),
+                            aggregate_line,
+                        ]
+                    },
+                ),
+                (
+                    "journal-order-reversed",
+                    {"unit_journal": [aggregate_line, observation_line]},
+                ),
+                (
+                    "journal-aggregate-missing",
+                    {"unit_journal": [observation_line]},
+                ),
+                (
+                    "journal-aggregate-duplicate",
+                    {
+                        "unit_journal": [
+                            observation_line,
+                            aggregate_line,
+                            aggregate_line,
+                        ]
+                    },
+                ),
+                (
+                    "journal-aggregate-noncanonical-extra",
+                    {
+                        "unit_journal": [
+                            observation_line,
+                            aggregate_line,
+                            json.dumps(aggregate_stop, sort_keys=True),
+                        ]
+                    },
+                ),
+                (
+                    "journal-aggregate-noncanonical",
+                    {
+                        "unit_journal": [
+                            observation_line,
+                            json.dumps(aggregate_stop, sort_keys=True),
+                        ]
+                    },
+                ),
+            ):
+                changed = dict(record)
+                changed.update(mutation)
+                with self.subTest(name=name), self.assertRaisesRegex(
+                    self.launcher.QualificationStop,
+                    "POST_V2_DIAGNOSTIC_RECORD_MALFORMED",
+                ):
+                    self.launcher._validate_post_v2_diagnostic_record(
+                        changed, lab=lab
+                    )
             ledger.terminalize(
                 started,
                 "SERVICE_FAILED_PRE_KEY_READY",
@@ -1804,6 +2168,17 @@ class M4HostLauncherTests(unittest.TestCase):
                 "ExecMainCode": "1",
                 "ExecMainStatus": "1",
             }
+            package_observation = {
+                "binding_id": "RUNTIME_TOOL_LIBCRYPTO",
+                "non_authorizing": True,
+                "outcome": "RESOLVE_ERROR",
+                "record_type": "M4_PACKAGE_RUNTIME_PLAN_OBSERVATION",
+            }
+            aggregate_stop = {
+                "outcome": "STOP",
+                "reason": "PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH",
+                "status": "NOT_ATTESTED",
+            }
             return (
                 {
                     "terminal_reason": "SERVICE_FAILED_PRE_KEY_READY",
@@ -1812,9 +2187,13 @@ class M4HostLauncherTests(unittest.TestCase):
                     "qemu_return_code": None,
                 },
                 "12345678-1234-1234-1234-123456789abc",
-                ["unit failed"],
+                [
+                    self.launcher._canonical(package_observation).decode("utf-8"),
+                    self.launcher._canonical(aggregate_stop).decode("utf-8"),
+                ],
                 ["apparmor=DENIED"],
                 [],
+                package_observation,
                 phase_outcome("run"),
             )
 
