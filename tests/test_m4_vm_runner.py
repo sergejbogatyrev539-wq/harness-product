@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+from enum import Enum
 from io import BytesIO, StringIO
 import json
 from copy import deepcopy
@@ -22,12 +23,24 @@ L0_SECCOMP = ROOT / "profiles/l0-lx-a-seccomp.json"
 L0_BROKER_SECCOMP = ROOT / "profiles/l0-lx-a-broker-seccomp.json"
 L0_EXECUTOR_SECCOMP = ROOT / "profiles/l0-lx-a-executor-seccomp.json"
 M3_RUNNER = ROOT / "scripts/run_m3_vm_conformance.py"
+HOST_LAUNCHER = ROOT / "scripts/run_m4_host_qualification.py"
 
 
 def _module():
     specification = importlib.util.spec_from_file_location("harness_m4_vm_runner", RUNNER)
     if specification is None or specification.loader is None:
         raise AssertionError("runner module unavailable")
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+def _host_module():
+    specification = importlib.util.spec_from_file_location(
+        "harness_m4_host_launcher_reason_boundary", HOST_LAUNCHER
+    )
+    if specification is None or specification.loader is None:
+        raise AssertionError("host launcher module unavailable")
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module
@@ -3004,10 +3017,11 @@ class M4VMRunnerContractTests(unittest.TestCase):
         effects.assert_not_called()
         evidence.assert_not_called()
 
-    def test_main_sanitizes_unhandled_exception_without_catching_base_exception(
+    def test_guest_stop_reason_boundary_is_total_closed_and_host_parseable(
         self,
     ) -> None:
         module = _module()
+        host = _host_module()
         arguments = mock.Mock(internal_role=None, phase="run")
 
         def invoke(error: BaseException) -> tuple[int, bytes, str]:
@@ -3041,22 +3055,63 @@ class M4VMRunnerContractTests(unittest.TestCase):
         self.assertNotIn(b"private-value", raw)
         self.assertNotIn(b"Traceback", raw)
 
-        result, raw, stderr = invoke(
-            module.QualificationStop("PUBLISHER_TOPOLOGY_MISMATCH")
+        for reason in (
+            "PUBLISHER_TOPOLOGY_MISMATCH",
+            "ROLE_ENVELOPE_MISMATCH_PUBLISHER",
+        ):
+            result, raw, stderr = invoke(module.QualificationStop(reason))
+            with self.subTest(valid_reason=reason):
+                self.assertEqual(result, 2)
+                self.assertEqual(
+                    raw,
+                    module._canonical(
+                        {
+                            "outcome": "STOP",
+                            "reason": reason,
+                            "status": "NOT_ATTESTED",
+                        }
+                    )
+                    + b"\n",
+                )
+                self.assertEqual(stderr, "")
+                self.assertEqual(module._sanitize_stop_reason(reason), reason)
+                self.assertTrue(host._is_post_key_run_failure_reason(reason))
+
+        invalid_reasons = (
+            None,
+            7,
+            "",
+            "lowercase",
+            "ROLE_ENVELOPE_MISMATCH:PUBLISHER",
+            "/private/path",
+            "CONTROL\nVALUE",
+            "UNICODE_Я",
+            "A" * 129,
         )
-        self.assertEqual(result, 2)
-        self.assertEqual(
-            raw,
-            module._canonical(
-                {
-                    "outcome": "STOP",
-                    "reason": "PUBLISHER_TOPOLOGY_MISMATCH",
-                    "status": "NOT_ATTESTED",
-                }
+        for reason in invalid_reasons:
+            with (
+                self.subTest(invalid_reason=repr(reason)),
+                self.assertRaisesRegex(
+                    module.QualificationStop, "^M4_RUNTIME_FAILURE$"
+                ),
+            ):
+                module._stop(reason)
+            result, raw, stderr = invoke(module.QualificationStop(reason))
+            self.assertEqual(result, 2)
+            self.assertEqual(
+                raw,
+                module._canonical(
+                    {
+                        "outcome": "STOP",
+                        "reason": "M4_RUNTIME_FAILURE",
+                        "status": "NOT_ATTESTED",
+                    }
+                )
+                + b"\n",
             )
-            + b"\n",
-        )
-        self.assertEqual(stderr, "")
+            self.assertEqual(stderr, "")
+            if type(reason) is str and reason:
+                self.assertNotIn(reason.encode("utf-8"), raw)
 
         for error in (SystemExit(7), KeyboardInterrupt()):
             stdout = mock.Mock(buffer=BytesIO())
@@ -3069,6 +3124,91 @@ class M4VMRunnerContractTests(unittest.TestCase):
             ):
                 module.main([])
             self.assertEqual(stdout.buffer.getvalue(), b"")
+
+    def test_dynamic_role_and_l0_stop_reasons_are_host_parseable(self) -> None:
+        module = _module()
+        host = _host_module()
+
+        with (
+            mock.patch.object(module.time, "monotonic", side_effect=(0.0, 4.0)),
+            self.assertRaises(module.QualificationStop) as role_stop,
+        ):
+            module._observe_role(1234, "PUBLISHER", Path("/unused"), [])
+        self.assertEqual(
+            str(role_stop.exception), "ROLE_ENVELOPE_MISMATCH_PUBLISHER"
+        )
+        self.assertTrue(
+            host._is_post_key_run_failure_reason(str(role_stop.exception))
+        )
+
+        class FakeL0Reason(str, Enum):
+            HOST_FAILURE = "HOST_FAILURE"
+
+        compiled_outcome = object()
+        ready_outcome = object()
+        failed_outcome = object()
+        preflight_reason: object = FakeL0Reason.HOST_FAILURE
+        l0 = SimpleNamespace(
+            L0Outcome=SimpleNamespace(
+                COMPILED_DRAFT=compiled_outcome, READY=ready_outcome
+            ),
+            L0Reason=FakeL0Reason,
+            compile_profile=lambda value: SimpleNamespace(
+                outcome=compiled_outcome, profile=value
+            ),
+            host_preflight=lambda _value: SimpleNamespace(
+                outcome=failed_outcome,
+                measurement=None,
+                reason=preflight_reason,
+            ),
+        )
+        supply = {
+            "directory": "/tmp/attestor",
+            "private_key": "/tmp/private.pem",
+            "public_key": "/tmp/public.pem",
+            "state": "/tmp/state.json",
+            "public_key_digest": "sha256:" + "1" * 64,
+            "trust_root_id": "test-root",
+            "signer_id": "test-signer",
+            "key_id": "test-key",
+        }
+        profile = {
+            "measurement_bindings": {
+                "verifier_public_key_digest": "sha256:" + "0" * 64
+            }
+        }
+
+        def configure() -> None:
+            with (
+                mock.patch.object(module, "_read_regular", return_value=b"{}"),
+                mock.patch.object(module, "_strict_bytes", return_value=profile),
+                mock.patch.object(
+                    module, "_digest_file", return_value="sha256:" + "2" * 64
+                ),
+                mock.patch.object(
+                    module,
+                    "_load_project",
+                    return_value=(None, l0, None, None, None),
+                ),
+            ):
+                module._configure_m3_supply_trust(SimpleNamespace(), supply)
+
+        with self.assertRaises(module.QualificationStop) as l0_stop:
+            configure()
+        self.assertEqual(
+            str(l0_stop.exception),
+            "L0_DYNAMIC_HOST_PREFLIGHT_FAILED_HOST_FAILURE",
+        )
+        self.assertTrue(
+            host._is_post_key_run_failure_reason(str(l0_stop.exception))
+        )
+
+        preflight_reason = SimpleNamespace(value="ARBITRARY_BUT_GRAMMAR_SAFE")
+        with self.assertRaises(module.QualificationStop) as untrusted_stop:
+            configure()
+        self.assertEqual(
+            str(untrusted_stop.exception), "M4_RUNTIME_FAILURE"
+        )
 
 
 if __name__ == "__main__":

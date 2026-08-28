@@ -456,10 +456,17 @@ class QualificationStop(Exception):
     """One structured fail-closed qualification outcome."""
 
 
-def _stop(reason: str) -> NoReturn:
-    if type(reason) is not str or not reason or len(reason) > 1024:
-        reason = "M4_RUNTIME_FAILURE"
-    raise QualificationStop(reason)
+_STOP_REASON = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+
+
+def _sanitize_stop_reason(reason: object) -> str:
+    if type(reason) is str and _STOP_REASON.fullmatch(reason) is not None:
+        return reason
+    return "M4_RUNTIME_FAILURE"
+
+
+def _stop(reason: object) -> NoReturn:
+    raise QualificationStop(_sanitize_stop_reason(reason))
 
 
 def _canonical(value: object) -> bytes:
@@ -3576,7 +3583,7 @@ def _observe_role(pid: int, role: str, cgroup: Path, expected_fds: list[int]) ->
         except (FileNotFoundError, ProcessLookupError, OSError, KeyError, ValueError):
             pass
         time.sleep(0.01)
-    _stop("ROLE_ENVELOPE_MISMATCH:" + role)
+    _stop("ROLE_ENVELOPE_MISMATCH_" + role)
 
 
 class M4GuestRuntime:
@@ -4248,7 +4255,9 @@ def _configure_m3_supply_trust(
         _stop("L0_DYNAMIC_PROFILE_COMPILE_FAILED")
     preflight = l0.host_preflight(raw)
     if preflight.outcome is not l0.L0Outcome.READY or preflight.measurement is None:
-        _stop("L0_DYNAMIC_HOST_PREFLIGHT_FAILED:" + preflight.reason.value)
+        if not isinstance(preflight.reason, l0.L0Reason):
+            _stop(None)
+        _stop("L0_DYNAMIC_HOST_PREFLIGHT_FAILED_" + preflight.reason.value)
     seccomp_raw = _strict_bytes(_read_regular(SOURCE / "profiles/l0-lx-a-seccomp.json", 1 << 20))
     if type(seccomp_raw) is not dict:
         _stop("L0_SECCOMP_PROFILE_MALFORMED")
@@ -6382,7 +6391,9 @@ def main(argv: list[str] | None = None) -> int:
     except QualificationStop as error:
         record = {
             "outcome": "STOP",
-            "reason": str(error),
+            "reason": _sanitize_stop_reason(
+                error.args[0] if len(error.args) == 1 else None
+            ),
             "status": "NOT_ATTESTED",
         }
         sys.stdout.buffer.write(_canonical(record) + b"\n")
