@@ -33,6 +33,12 @@ PACKAGE_PLAN_DISCRIMINATOR_LAB = Path(
 )
 IMAGE_LAB = Path("/home/a1/Загрузки/harness/harness-m3-lab")
 EVIDENCE_ROOT = Path("/home/a1/Загрузки/harness/harness-m4-evidence-v2")
+ONE_USE_QUALIFICATION_ROOT = Path(
+    "/home/a1/Загрузки/harness/harness-m4-one-use-qualification"
+)
+ONE_USE_EVIDENCE_ROOT = Path(
+    "/home/a1/Загрузки/harness/harness-m4-one-use-evidence"
+)
 USER_GOAL = Path(
     "/home/a1/.codex/attachments/4adf762e-32a5-45e2-bf75-3c79125ace23/"
     "pasted-text.txt"
@@ -43,6 +49,18 @@ DIAGNOSTIC_LEDGER_NAME = "m4-key-ready-diagnostic-ledger.jsonl"
 POST_V2_DIAGNOSTIC_LEDGER_NAME = "m4-post-v2-diagnostic-ledger.jsonl"
 PACKAGE_PLAN_DISCRIMINATOR_LEDGER_NAME = (
     "m4-package-plan-discriminator-ledger.jsonl"
+)
+PACKAGE_PLAN_DISCRIMINATOR_LEDGER = (
+    PACKAGE_PLAN_DISCRIMINATOR_LAB / PACKAGE_PLAN_DISCRIMINATOR_LEDGER_NAME
+)
+PACKAGE_PLAN_DISCRIMINATOR_LEDGER_DIGEST = (
+    "sha256:f6a93ebc7f06447ed2be71f1e43c2c65d488bd9a5cb9a26cc3f03b7252f77cc3"
+)
+PACKAGE_PLAN_DISCRIMINATOR_BUNDLE = (
+    PACKAGE_PLAN_DISCRIMINATOR_LAB / "diagnostics/attempt-1/diagnostic.json"
+)
+PACKAGE_PLAN_DISCRIMINATOR_BUNDLE_DIGEST = (
+    "sha256:e42fbd54170edcabe49814366ccf8fa7452eb6b167d50c2c799d2d611d95b623"
 )
 OLD_LEDGER = OLD_QUALIFICATION_LAB / LEDGER_NAME
 OLD_LEDGER_DIGEST = "sha256:719505206caf364c6c0d40983687416bcca5644f879a46254714621cb070d5f9"
@@ -122,6 +140,20 @@ _SOURCE_FIXED = (
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+ONE_USE_SCOPE_PROJECTION_KIND = "M4_ONE_USE_QUALIFICATION_SCOPE_PROJECTION"
+ONE_USE_QUALIFICATION_CONTRACT_KIND = (
+    "M4_REQUEST_BOUND_ONE_USE_QUALIFICATION"
+)
+_ONE_USE_SCOPE_PROJECTION_KEYS = frozenset(
+    {
+        "record_version", "record_kind", "authority",
+        "user_scope_reference", "candidate", "tree", "max_attempts",
+        "success_target", "success_target_authorizing",
+        "predecessor_qualification_ledger_digest",
+        "predecessor_diagnostic_ledger_digest",
+        "predecessor_diagnostic_bundle_digest",
+    }
+)
 _LEDGER_COMMON = frozenset(
     {
         "ledger_version", "sequence", "previous_entry_digest", "entry_type",
@@ -298,6 +330,87 @@ def _digest_bytes(raw: bytes) -> str:
     return "sha256:" + sha256(raw).hexdigest()
 
 
+class OneUsePaths(NamedTuple):
+    lab: Path
+    evidence: Path
+
+
+def _validate_one_use_scope_projection(value: object) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != _ONE_USE_SCOPE_PROJECTION_KEYS:
+        _stop("ONE_USE_SCOPE_PROJECTION_MALFORMED")
+    reference = value["user_scope_reference"]
+    if type(reference) is not str or not reference:
+        _stop("ONE_USE_SCOPE_PROJECTION_BINDING_MISMATCH")
+    try:
+        reference_bytes = reference.encode("utf-8")
+    except UnicodeEncodeError:
+        _stop("ONE_USE_SCOPE_PROJECTION_BINDING_MISMATCH")
+    if (
+        value["record_version"] != "1.0.0"
+        or value["record_kind"] != ONE_USE_SCOPE_PROJECTION_KIND
+        or value["authority"] != "NONE"
+        or len(reference_bytes) > 512
+        or type(value["candidate"]) is not str
+        or _COMMIT.fullmatch(value["candidate"]) is None
+        or type(value["tree"]) is not str
+        or _COMMIT.fullmatch(value["tree"]) is None
+        or type(value["max_attempts"]) is not int
+        or isinstance(value["max_attempts"], bool)
+        or value["max_attempts"] != 1
+        or type(value["success_target"]) is not int
+        or isinstance(value["success_target"], bool)
+        or value["success_target"] != 1
+        or value["success_target_authorizing"] is not False
+        or value["predecessor_qualification_ledger_digest"]
+        != FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        or value["predecessor_diagnostic_ledger_digest"]
+        != PACKAGE_PLAN_DISCRIMINATOR_LEDGER_DIGEST
+        or value["predecessor_diagnostic_bundle_digest"]
+        != PACKAGE_PLAN_DISCRIMINATOR_BUNDLE_DIGEST
+    ):
+        _stop("ONE_USE_SCOPE_PROJECTION_BINDING_MISMATCH")
+    return value
+
+
+def _one_use_scope_projection_digest(value: object) -> str:
+    projection = _validate_one_use_scope_projection(value)
+    try:
+        return _digest_bytes(_canonical(projection))
+    except UnicodeEncodeError:
+        _stop("ONE_USE_SCOPE_PROJECTION_BINDING_MISMATCH")
+
+
+def _read_one_use_scope_projection(path: Path) -> tuple[dict[str, object], str]:
+    try:
+        value = _strict_json(_read_regular(path, 4096), 4096)
+    except UnicodeEncodeError:
+        _stop("ONE_USE_SCOPE_PROJECTION_MALFORMED")
+    projection = _validate_one_use_scope_projection(value)
+    return projection, _one_use_scope_projection_digest(projection)
+
+
+def _one_use_run_id(projection_digest: str) -> str:
+    if type(projection_digest) is not str or _DIGEST.fullmatch(projection_digest) is None:
+        _stop("ONE_USE_SCOPE_PROJECTION_DIGEST_MISMATCH")
+    return "scope-" + projection_digest.removeprefix("sha256:")
+
+
+def _one_use_paths(
+    projection_digest: str,
+    *,
+    qualification_root: Path | None = None,
+    evidence_root: Path | None = None,
+) -> OneUsePaths:
+    run_id = _one_use_run_id(projection_digest)
+    qualification_base = (
+        ONE_USE_QUALIFICATION_ROOT
+        if qualification_root is None
+        else qualification_root
+    )
+    evidence_base = ONE_USE_EVIDENCE_ROOT if evidence_root is None else evidence_root
+    return OneUsePaths(qualification_base / run_id, evidence_base / run_id)
+
+
 def _read_regular(path: Path, maximum: int) -> bytes:
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -378,10 +491,10 @@ def _qualification_contract(
         "environment_preimage": environment_preimage,
         "environment_digest": _digest_bytes(_canonical(environment_preimage)),
     }
-    return _validate_qualification_contract(contract)
+    return _validate_v2_qualification_contract(contract)
 
 
-def _validate_qualification_contract(value: object) -> dict[str, object]:
+def _validate_v2_qualification_contract(value: object) -> dict[str, object]:
     if type(value) is not dict or frozenset(value) != {
         "contract_core", "contract_core_digest", "environment_preimage",
         "environment_digest",
@@ -457,6 +570,161 @@ def _validate_qualification_contract(value: object) -> dict[str, object]:
     ):
         _stop("QUALIFICATION_CONTRACT_DIGEST_MISMATCH")
     return value
+
+
+def _one_use_qualification_contract(
+    *,
+    projection: object,
+    projection_digest: str,
+    source_files_digest: str,
+    source_archive_digest: str,
+    seed_digest: str,
+    package_runtime_plan_digest: str,
+    host_provenance_digest: str,
+) -> dict[str, object]:
+    scope = _strict_json(
+        _canonical(_validate_one_use_scope_projection(projection)), 4096
+    )
+    if projection_digest != _one_use_scope_projection_digest(scope):
+        _stop("ONE_USE_SCOPE_PROJECTION_DIGEST_MISMATCH")
+    core = {
+        "contract_version": "3.0.0",
+        "contract_kind": ONE_USE_QUALIFICATION_CONTRACT_KIND,
+        "scope_projection": scope,
+        "user_scope_reference": scope["user_scope_reference"],
+        "user_goal_digest": projection_digest,
+        "candidate": scope["candidate"],
+        "tree": scope["tree"],
+        "attempt": 1,
+        "source_files_digest": source_files_digest,
+        "canonical_profile_digest": _M4_PROFILE_DIGEST,
+        "raw_profile_artifact_digest": _M4_PROFILE_DIGEST,
+        "base_image_digest": _IMAGE_DIGEST,
+        "predecessor_qualification_ledger_digest": scope[
+            "predecessor_qualification_ledger_digest"
+        ],
+        "predecessor_diagnostic_ledger_digest": scope[
+            "predecessor_diagnostic_ledger_digest"
+        ],
+        "predecessor_diagnostic_bundle_digest": scope[
+            "predecessor_diagnostic_bundle_digest"
+        ],
+        "max_attempts": 1,
+        "success_target": 1,
+        "success_target_authorizing": False,
+    }
+    core_digest = _digest_bytes(_canonical(core))
+    environment = {
+        "contract_core_digest": core_digest,
+        "source_archive_digest": source_archive_digest,
+        "seed_digest": seed_digest,
+        "package_runtime_plan_digest": package_runtime_plan_digest,
+        "host_provenance_digest": host_provenance_digest,
+    }
+    return _validate_one_use_qualification_contract(
+        {
+            "contract_core": core,
+            "contract_core_digest": core_digest,
+            "environment_preimage": environment,
+            "environment_digest": _digest_bytes(_canonical(environment)),
+        }
+    )
+
+
+def _validate_one_use_qualification_contract(
+    value: object,
+) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != {
+        "contract_core", "contract_core_digest", "environment_preimage",
+        "environment_digest",
+    }:
+        _stop("ONE_USE_QUALIFICATION_CONTRACT_MALFORMED")
+    core = value["contract_core"]
+    environment = value["environment_preimage"]
+    core_keys = {
+        "contract_version", "contract_kind", "scope_projection",
+        "user_scope_reference", "user_goal_digest", "candidate", "tree",
+        "attempt", "source_files_digest", "canonical_profile_digest",
+        "raw_profile_artifact_digest", "base_image_digest",
+        "predecessor_qualification_ledger_digest",
+        "predecessor_diagnostic_ledger_digest",
+        "predecessor_diagnostic_bundle_digest", "max_attempts",
+        "success_target", "success_target_authorizing",
+    }
+    if (
+        type(core) is not dict
+        or frozenset(core) != core_keys
+        or type(environment) is not dict
+        or frozenset(environment) != {
+            "contract_core_digest", "source_archive_digest", "seed_digest",
+            "package_runtime_plan_digest", "host_provenance_digest",
+        }
+    ):
+        _stop("ONE_USE_QUALIFICATION_CONTRACT_MALFORMED")
+    scope = _validate_one_use_scope_projection(core["scope_projection"])
+    scope_digest = _one_use_scope_projection_digest(scope)
+    if (
+        core["contract_version"] != "3.0.0"
+        or core["contract_kind"] != ONE_USE_QUALIFICATION_CONTRACT_KIND
+        or core["user_scope_reference"] != scope["user_scope_reference"]
+        or core["user_goal_digest"] != scope_digest
+        or core["candidate"] != scope["candidate"]
+        or core["tree"] != scope["tree"]
+        or type(core["attempt"]) is not int
+        or isinstance(core["attempt"], bool)
+        or core["attempt"] != 1
+        or type(core["source_files_digest"]) is not str
+        or _DIGEST.fullmatch(core["source_files_digest"]) is None
+        or core["canonical_profile_digest"] != _M4_PROFILE_DIGEST
+        or core["raw_profile_artifact_digest"] != _M4_PROFILE_DIGEST
+        or core["base_image_digest"] != _IMAGE_DIGEST
+        or core["predecessor_qualification_ledger_digest"]
+        != scope["predecessor_qualification_ledger_digest"]
+        or core["predecessor_diagnostic_ledger_digest"]
+        != scope["predecessor_diagnostic_ledger_digest"]
+        or core["predecessor_diagnostic_bundle_digest"]
+        != scope["predecessor_diagnostic_bundle_digest"]
+        or type(core["max_attempts"]) is not int
+        or isinstance(core["max_attempts"], bool)
+        or core["max_attempts"] != 1
+        or type(core["success_target"]) is not int
+        or isinstance(core["success_target"], bool)
+        or core["success_target"] != 1
+        or core["success_target_authorizing"] is not False
+        or any(
+            type(environment[name]) is not str
+            or _DIGEST.fullmatch(environment[name]) is None
+            for name in (
+                "contract_core_digest", "source_archive_digest", "seed_digest",
+                "package_runtime_plan_digest", "host_provenance_digest",
+            )
+        )
+    ):
+        _stop("ONE_USE_QUALIFICATION_CONTRACT_BINDING_MISMATCH")
+    core_digest = _digest_bytes(_canonical(core))
+    if (
+        value["contract_core_digest"] != core_digest
+        or environment["contract_core_digest"] != core_digest
+        or value["environment_digest"] != _digest_bytes(_canonical(environment))
+    ):
+        _stop("ONE_USE_QUALIFICATION_CONTRACT_DIGEST_MISMATCH")
+    return value
+
+
+def _validate_qualification_contract(value: object) -> dict[str, object]:
+    core = value.get("contract_core") if type(value) is dict else None
+    selector = (
+        (core.get("contract_version"), core.get("contract_kind"))
+        if type(core) is dict
+        else (None, None)
+    )
+    if selector == (
+        "2.0.0", "M4_EXACT_DISPOSABLE_TEST_PROFILE_QUALIFICATION_V2"
+    ):
+        return _validate_v2_qualification_contract(value)
+    if selector == ("3.0.0", ONE_USE_QUALIFICATION_CONTRACT_KIND):
+        return _validate_one_use_qualification_contract(value)
+    _stop("QUALIFICATION_CONTRACT_BINDING_MISMATCH")
 
 
 def _qualification_contract_digest(contract: object) -> str:
@@ -871,7 +1139,9 @@ def _qemu_lifecycle(
     return {phase: _qemu_argv(attempt, phase, lab=lab) for phase in phases}
 
 
-def _validate_qemu_phase_outcomes(value: object, attempt: int) -> dict[str, object]:
+def _validate_qemu_phase_outcomes(
+    value: object, attempt: int, *, lab: Path = LAB
+) -> dict[str, object]:
     if type(value) is not dict or frozenset(value) != {"provision", "run", "recover"}:
         _stop("QEMU_PHASE_OUTCOME_MISMATCH")
     for phase in ("provision", "run", "recover"):
@@ -879,7 +1149,8 @@ def _validate_qemu_phase_outcomes(value: object, attempt: int) -> dict[str, obje
         if (
             type(row) is not dict
             or frozenset(row) != {"argv_digest", "return_code"}
-            or row["argv_digest"] != _digest_bytes(_canonical(_qemu_argv(attempt, phase)))
+            or row["argv_digest"]
+            != _digest_bytes(_canonical(_qemu_argv(attempt, phase, lab=lab)))
             or type(row["return_code"]) is not int
             or isinstance(row["return_code"], bool)
             or row["return_code"] != 0
@@ -908,11 +1179,20 @@ class AttemptLedger:
         *,
         goal_reference: str,
         goal_digest: str,
+        one_use: bool = False,
+        require_fresh: bool = False,
+        evidence_root: Path | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.lab = lab
         self.goal_reference = goal_reference
         self.goal_digest = goal_digest
+        self.one_use = one_use
+        self.require_fresh = require_fresh
+        self.ledger_version = "3.0.0" if one_use else "2.0.0"
+        self.max_attempts = 1 if one_use else 2
+        self.ready_version = "3.0.0" if one_use else "2.0.0"
+        self.evidence_root = EVIDENCE_ROOT if evidence_root is None else evidence_root
         self.clock = (lambda: datetime.now(UTC)) if clock is None else clock
         self._directory_descriptor = -1
         self._descriptor = -1
@@ -930,6 +1210,8 @@ class AttemptLedger:
         except OSError as error:
             raise QualificationStop("LEDGER_UNTRUSTED") from error
         try:
+            if self.require_fresh and not lab_created:
+                _stop("QUALIFICATION_LAB_REUSE_FORBIDDEN")
             self._directory_descriptor = os.open(
                 self.lab,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
@@ -1029,7 +1311,7 @@ class AttemptLedger:
             if frozenset(row) != _LEDGER_COMMON | _LEDGER_EXTRA[str(row["entry_type"])]:
                 _stop("LEDGER_MALFORMED")
             if (
-                row["ledger_version"] != "2.0.0"
+                row["ledger_version"] != self.ledger_version
                 or type(row["sequence"]) is not int
                 or isinstance(row["sequence"], bool)
                 or row["sequence"] != sequence
@@ -1042,12 +1324,16 @@ class AttemptLedger:
                 or _DIGEST.fullmatch(row["environment"]) is None
                 or row["user_scope_reference"] != self.goal_reference
                 or row["user_goal_digest"] != self.goal_digest
-                or row["max_attempts"] != 2
+                or type(row["max_attempts"]) is not int
+                or isinstance(row["max_attempts"], bool)
+                or row["max_attempts"] != self.max_attempts
+                or type(row["success_target"]) is not int
+                or isinstance(row["success_target"], bool)
                 or row["success_target"] != 1
                 or row["success_target_authorizing"] is not False
                 or type(row["attempt"]) is not int
                 or isinstance(row["attempt"], bool)
-                or row["attempt"] not in {1, 2}
+                or row["attempt"] not in set(range(1, self.max_attempts + 1))
                 or type(row["contract_core_digest"]) is not str
                 or _DIGEST.fullmatch(row["contract_core_digest"]) is None
                 or type(row["qualification_contract_digest"]) is not str
@@ -1059,20 +1345,30 @@ class AttemptLedger:
             recorded = datetime.strptime(row["recorded_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
             if recorded > now:
                 _stop("LEDGER_BINDING_MISMATCH")
-            self._validate_row(row)
+            self._validate_row(
+                row,
+                one_use=self.one_use,
+                lab=self.lab if self.one_use else LAB,
+            )
             digest = _digest_bytes(line)
             result.append((row, digest))
             previous = digest
-        self._validate_lifecycle(result)
+        self._validate_lifecycle(result, max_attempts=self.max_attempts)
         return result
 
     @staticmethod
-    def _validate_row(row: dict[str, object]) -> None:
+    def _validate_row(
+        row: dict[str, object], *, one_use: bool = False, lab: Path = LAB
+    ) -> None:
         if row["entry_type"] == "ATTEMPT_STARTED":
             contract = _validate_qualification_contract(row["qualification_contract"])
             core = contract["contract_core"]
             if (
                 type(core) is not dict
+                or (
+                    core.get("contract_kind")
+                    == ONE_USE_QUALIFICATION_CONTRACT_KIND
+                ) is not one_use
                 or row["candidate"] != core["candidate"]
                 or row["tree"] != core["tree"]
                 or row["environment"] != contract["environment_digest"]
@@ -1122,7 +1418,9 @@ class AttemptLedger:
                 ]
                 if any(type(value) is not str or _DIGEST.fullmatch(value) is None for value in values):
                     _stop("LEDGER_BINDING_MISMATCH")
-                _validate_qemu_phase_outcomes(row["qemu_phase_outcomes"], row["attempt"])
+                _validate_qemu_phase_outcomes(
+                    row["qemu_phase_outcomes"], row["attempt"], lab=lab
+                )
             elif (
                 row["manifest_digest"] is not None
                 or row["signed_payload_bundle_digest"] is not None
@@ -1138,7 +1436,9 @@ class AttemptLedger:
                 _stop("LEDGER_BINDING_MISMATCH")
 
     @staticmethod
-    def _validate_lifecycle(rows: list[tuple[dict[str, object], str]]) -> None:
+    def _validate_lifecycle(
+        rows: list[tuple[dict[str, object], str]], *, max_attempts: int = 2
+    ) -> None:
         cursor = 0
         attempt = 1
         pairs: set[tuple[object, object]] = set()
@@ -1186,6 +1486,8 @@ class AttemptLedger:
             if terminal["result"] == "BUNDLE_EXPORTED" and admission is None:
                 _stop("LEDGER_LIFECYCLE_MISMATCH")
             attempt += 1
+        if attempt - 1 > max_attempts:
+            _stop("LEDGER_LIFECYCLE_MISMATCH")
 
     def _recorded_at(self) -> str:
         return self.clock().astimezone(UTC).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1193,7 +1495,7 @@ class AttemptLedger:
     def _append(self, entry_type: str, start: AttemptStart, extra: dict[str, object]) -> str:
         previous = None if not self._rows else self._rows[-1][1]
         row = {
-            "ledger_version": "2.0.0",
+            "ledger_version": self.ledger_version,
             "sequence": len(self._rows) + 1,
             "previous_entry_digest": previous,
             "entry_type": entry_type,
@@ -1203,7 +1505,7 @@ class AttemptLedger:
             "environment": start.environment,
             "user_scope_reference": self.goal_reference,
             "user_goal_digest": self.goal_digest,
-            "max_attempts": 2,
+            "max_attempts": self.max_attempts,
             "success_target": 1,
             "success_target_authorizing": False,
             "attempt": start.attempt,
@@ -1235,6 +1537,10 @@ class AttemptLedger:
         core = contract["contract_core"]
         if type(core) is not dict:
             _stop("QUALIFICATION_CONTRACT_MALFORMED")
+        if (
+            core.get("contract_kind") == ONE_USE_QUALIFICATION_CONTRACT_KIND
+        ) is not self.one_use:
+            _stop("ATTEMPT_BINDING_MISMATCH")
         attempt = self.next_attempt()
         starts = [row for row, _ in self._rows if row["entry_type"] == "ATTEMPT_STARTED"]
         if (
@@ -1275,7 +1581,7 @@ class AttemptLedger:
             )
             _stop("QUALIFICATION_ALREADY_VERIFIED")
         starts = [row for row, _ in self._rows if row["entry_type"] == "ATTEMPT_STARTED"]
-        if len(starts) >= 2:
+        if len(starts) >= self.max_attempts:
             _stop("ATTEMPT_LIMIT_REACHED")
         return len(starts) + 1
 
@@ -1295,7 +1601,7 @@ class AttemptLedger:
         )
         keys = ready["receipt_public_key_digests"]
         if (
-            ready["ready_version"] != "2.0.0"
+            ready["ready_version"] != self.ready_version
             or ready["candidate"] != start.candidate
             or ready["environment"] != start.environment
             or ready["attempt"] != start.attempt
@@ -1364,7 +1670,11 @@ class AttemptLedger:
                 or _DIGEST.fullmatch(signed_payload_bundle_digest) is None
             ):
                 _stop("ATTEMPT_TERMINAL_MALFORMED")
-            _validate_qemu_phase_outcomes(qemu_phase_outcomes, start.attempt)
+            _validate_qemu_phase_outcomes(
+                qemu_phase_outcomes,
+                start.attempt,
+                lab=self.lab if self.one_use else LAB,
+            )
         elif (
             manifest_digest is not None
             or signed_payload_bundle_digest is not None
@@ -1503,6 +1813,73 @@ def _verify_package_plan_discriminator_predecessors() -> dict[str, str]:
         "failed_qualification_v2_ledger_digest": failed,
         "post_v2_diagnostic_ledger_digest": POST_V2_DIAGNOSTIC_LEDGER_DIGEST,
         "post_v2_diagnostic_bundle_digest": POST_V2_DIAGNOSTIC_BUNDLE_DIGEST,
+    }
+
+
+def _verify_one_use_predecessors(
+    projection: object,
+) -> dict[str, str]:
+    scope = _validate_one_use_scope_projection(projection)
+    lineage = _verify_package_plan_discriminator_predecessors()
+    ledger_raw = _read_regular(PACKAGE_PLAN_DISCRIMINATOR_LEDGER, 4 << 20)
+    if _digest_bytes(ledger_raw) != PACKAGE_PLAN_DISCRIMINATOR_LEDGER_DIGEST:
+        _stop("ONE_USE_PREDECESSOR_DIGEST_MISMATCH")
+    if not ledger_raw.endswith(b"\n") or b"\n\n" in ledger_raw:
+        _stop("ONE_USE_PREDECESSOR_MALFORMED")
+    lines = ledger_raw[:-1].split(b"\n")
+    if len(lines) != 2:
+        _stop("ONE_USE_PREDECESSOR_MALFORMED")
+    validator = PostV2DiagnosticLedger(
+        PACKAGE_PLAN_DISCRIMINATOR_LAB,
+        goal_record=_package_plan_discriminator_goal_record(),
+    )
+    rows: list[tuple[dict[str, object], str]] = []
+    previous: str | None = None
+    for sequence, line in enumerate(lines, 1):
+        row = _strict_json(line, 1 << 20)
+        validator._validate_row(row, sequence, previous)
+        digest = _digest_bytes(line)
+        rows.append((row, digest))
+        previous = digest
+    start, terminal = rows
+    if (
+        terminal[0]["previous_entry_digest"] != start[1]
+        or terminal[0]["diagnostic_start_digest"] != start[1]
+        or terminal[0]["diagnostic_bundle_digest"]
+        != PACKAGE_PLAN_DISCRIMINATOR_BUNDLE_DIGEST
+    ):
+        _stop("ONE_USE_PREDECESSOR_MALFORMED")
+    bundle_raw = _read_regular(PACKAGE_PLAN_DISCRIMINATOR_BUNDLE, 2 << 20)
+    if _digest_bytes(bundle_raw) != PACKAGE_PLAN_DISCRIMINATOR_BUNDLE_DIGEST:
+        _stop("ONE_USE_PREDECESSOR_DIGEST_MISMATCH")
+    bundle = _validate_post_v2_diagnostic_record(
+        _strict_json(bundle_raw, 2 << 20), lab=PACKAGE_PLAN_DISCRIMINATOR_LAB
+    )
+    if (
+        bundle["diagnostic_start_digest"] != start[1]
+        or bundle["diagnostic_contract"] != start[0]["diagnostic_contract"]
+        or bundle["diagnostic_contract_digest"]
+        != start[0]["diagnostic_contract_digest"]
+        or bundle["contract_core_digest"] != start[0]["contract_core_digest"]
+        or scope["predecessor_qualification_ledger_digest"]
+        != FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        or scope["predecessor_diagnostic_ledger_digest"]
+        != PACKAGE_PLAN_DISCRIMINATOR_LEDGER_DIGEST
+        or scope["predecessor_diagnostic_bundle_digest"]
+        != PACKAGE_PLAN_DISCRIMINATOR_BUNDLE_DIGEST
+    ):
+        _stop("ONE_USE_PREDECESSOR_MALFORMED")
+    return {
+        **lineage,
+        "predecessor_qualification_ledger_digest": (
+            FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        ),
+        "predecessor_diagnostic_ledger_digest": (
+            PACKAGE_PLAN_DISCRIMINATOR_LEDGER_DIGEST
+        ),
+        "predecessor_diagnostic_bundle_digest": (
+            PACKAGE_PLAN_DISCRIMINATOR_BUNDLE_DIGEST
+        ),
     }
 
 
@@ -2544,6 +2921,52 @@ def _mkdir_exact(path: Path, mode: int) -> None:
         _stop("UNTRUSTED_DIRECTORY")
 
 
+def _mkdir_fresh_exact(path: Path, mode: int, collision_reason: str) -> None:
+    try:
+        path.mkdir(mode=mode)
+    except FileExistsError:
+        _stop(collision_reason)
+    except OSError as error:
+        raise QualificationStop("UNTRUSTED_DIRECTORY") from error
+    info = os.lstat(path)
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != mode
+    ):
+        _stop("UNTRUSTED_DIRECTORY")
+    _fsync_directory(path.parent)
+
+
+def _prepare_one_use_paths(
+    projection_digest: str,
+    *,
+    qualification_root: Path | None = None,
+    evidence_root: Path | None = None,
+) -> OneUsePaths:
+    qualification_base = (
+        ONE_USE_QUALIFICATION_ROOT
+        if qualification_root is None
+        else qualification_root
+    )
+    evidence_base = ONE_USE_EVIDENCE_ROOT if evidence_root is None else evidence_root
+    paths = _one_use_paths(
+        projection_digest,
+        qualification_root=qualification_base,
+        evidence_root=evidence_base,
+    )
+    _mkdir_exact(qualification_base, 0o700)
+    _mkdir_exact(evidence_base, 0o700)
+    _fsync_directory(qualification_base.parent)
+    _fsync_directory(evidence_base.parent)
+    for path in paths:
+        if path.exists() or path.is_symlink():
+            _stop("ONE_USE_RUN_ID_COLLISION")
+    _fsync_directory(qualification_base)
+    _fsync_directory(evidence_base)
+    return paths
+
+
 def _write_exact(path: Path, raw: bytes, mode: int) -> None:
     try:
         descriptor = os.open(
@@ -2571,8 +2994,11 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _independent_bundle_file_digests(attempt: int) -> dict[str, str]:
-    bundle = EVIDENCE_ROOT / f"attempt-{attempt}" / "bundle"
+def _independent_bundle_file_digests(
+    attempt: int, *, evidence_root: Path | None = None
+) -> dict[str, str]:
+    root = EVIDENCE_ROOT if evidence_root is None else evidence_root
+    bundle = root / f"attempt-{attempt}" / "bundle"
     expected = {
         "attempt-ledger.jsonl", "evidence.json", "manifest.json", "manifest.sig"
     }
@@ -2623,7 +3049,8 @@ def _validate_independent_verification(
         != _digest_file(ROOT / "scripts/check_m4_runtime_evidence.py", 16 << 20)
         or type(value["attempt"]) is not int
         or isinstance(value["attempt"], bool)
-        or value["attempt"] not in {1, 2}
+        or value["attempt"]
+        not in set(range(1, ledger.max_attempts + 1))
         or type(value["candidate"]) is not str
         or _COMMIT.fullmatch(value["candidate"]) is None
         or type(value["tree"]) is not str
@@ -2649,7 +3076,10 @@ def _validate_independent_verification(
             if name != "attempt-ledger.jsonl"
         }))
         or value["aggregate_bundle_digest"] != _digest_bytes(_canonical(files))
-        or files != _independent_bundle_file_digests(value["attempt"])
+        or files
+        != _independent_bundle_file_digests(
+            value["attempt"], evidence_root=ledger.evidence_root
+        )
         or files["attempt-ledger.jsonl"]
         != _digest_file(ledger.lab / LEDGER_NAME, 4 << 20)
     ):
@@ -3915,7 +4345,9 @@ def _key_admission(
     ):
         _stop("KEY_ADMISSION_BINDING_MISMATCH")
     return {
-        "admission_version": "2.0.0",
+        "admission_version": start.qualification_contract["contract_core"][
+            "contract_version"
+        ],
         "mode": "HOST_ATTEMPT_LEDGER_PIN_BEFORE_WORKER_GATE",
         "qualification_contract": start.qualification_contract,
         "qualification_contract_digest": start.qualification_contract_digest,
@@ -3936,11 +4368,13 @@ def _run_vm_phase(
     *,
     ledger: AttemptLedger,
     start: AttemptStart,
+    lab: Path = LAB,
+    evidence_root: Path | None = None,
 ) -> tuple[dict[str, object], str | None, list[Path], dict[str, object]]:
     unit = f"harness-m4-controller@{phase}.service"
     created: list[Path] = []
     admission_digest: str | None = None
-    with QemuProcess(attempt_root, attempt, phase) as qemu:
+    with QemuProcess(attempt_root, attempt, phase, lab=lab) as qemu:
         _wait_for_ssh(qemu, client_key, known_hosts)
         _ssh(
             client_key,
@@ -3975,7 +4409,14 @@ def _run_vm_phase(
                 ],
             )
         if phase == "recover":
-            bundle = _export_bundle(attempt_root, attempt, client_key, known_hosts)
+            bundle = _export_bundle(
+                attempt_root,
+                attempt,
+                client_key,
+                known_hosts,
+                evidence_root=evidence_root,
+                require_fresh_root=ledger.one_use,
+            )
             result = {**result, "bundle": str(bundle)}
         _poweroff(qemu, client_key, known_hosts)
     outcome = qemu.successful_outcome()
@@ -4177,6 +4618,9 @@ def _export_bundle(
     attempt: int,
     client_key: Path,
     known_hosts: Path,
+    *,
+    evidence_root: Path | None = None,
+    require_fresh_root: bool = False,
 ) -> Path:
     raw = _ssh(
         client_key,
@@ -4202,8 +4646,14 @@ def _export_bundle(
         for member in members
     ):
         _stop("EVIDENCE_EXPORT_MALFORMED")
-    _mkdir_exact(EVIDENCE_ROOT, 0o700)
-    attempt_evidence = EVIDENCE_ROOT / f"attempt-{attempt}"
+    root = EVIDENCE_ROOT if evidence_root is None else evidence_root
+    if require_fresh_root:
+        _mkdir_fresh_exact(
+            root, 0o700, "EVIDENCE_DESTINATION_REUSE_FORBIDDEN"
+        )
+    else:
+        _mkdir_exact(root, 0o700)
+    attempt_evidence = root / f"attempt-{attempt}"
     if attempt_evidence.exists() or attempt_evidence.is_symlink():
         _stop("EVIDENCE_DESTINATION_REUSE_FORBIDDEN")
     attempt_evidence.mkdir(mode=0o700)
@@ -4220,7 +4670,7 @@ def _export_bundle(
     archive.close()
     _fsync_directory(bundle)
     _fsync_directory(attempt_evidence)
-    _fsync_directory(EVIDENCE_ROOT)
+    _fsync_directory(root)
     return bundle
 
 
@@ -4280,7 +4730,13 @@ def _signed_payload_digests(
     return digests["manifest.json"], _digest_bytes(_canonical(digests))
 
 
-def _assemble_terminal_bundle(bundle: Path, ledger_path: Path) -> Path:
+def _assemble_terminal_bundle(
+    bundle: Path,
+    ledger_path: Path,
+    *,
+    one_use: bool = False,
+    lab: Path = LAB,
+) -> Path:
     ledger_raw = _read_regular(ledger_path, 4 << 20)
     if not ledger_raw.endswith(b"\n") or b"\n\n" in ledger_raw:
         _stop("LEDGER_MALFORMED")
@@ -4294,18 +4750,18 @@ def _assemble_terminal_bundle(bundle: Path, ledger_path: Path) -> Path:
             or row.get("entry_type") not in _LEDGER_EXTRA
             or frozenset(row)
             != _LEDGER_COMMON | _LEDGER_EXTRA[str(row["entry_type"])]
-            or row.get("ledger_version") != "2.0.0"
+            or row.get("ledger_version") != ("3.0.0" if one_use else "2.0.0")
             or row.get("sequence") != sequence
             or row.get("previous_entry_digest") != previous
         ):
             _stop("LEDGER_MALFORMED")
-        AttemptLedger._validate_row(row)
+        AttemptLedger._validate_row(row, one_use=one_use, lab=lab)
         digest = _digest_bytes(line)
         rows.append((row, digest))
         previous = digest
     if not rows or rows[-1][0]["entry_type"] != "ATTEMPT_TERMINAL":
         _stop("LEDGER_NOT_TERMINAL")
-    AttemptLedger._validate_lifecycle(rows)
+    AttemptLedger._validate_lifecycle(rows, max_attempts=1 if one_use else 2)
     terminal = rows[-1][0]
     starts = [row for row, _ in rows if row["entry_type"] == "ATTEMPT_STARTED"]
     start = starts[-1]
@@ -4918,8 +5374,15 @@ def _cleanup_diagnostic_attempt(attempt_root: Path, *, lab: Path = DIAGNOSTIC_LA
     return removed
 
 
-def _cleanup_attempt(attempt_root: Path, *, require_complete: bool) -> list[str]:
-    if attempt_root.parent != LAB / "runs" or not re.fullmatch(r"attempt-[12]", attempt_root.name):
+def _cleanup_attempt(
+    attempt_root: Path,
+    *,
+    require_complete: bool,
+    lab: Path = LAB,
+    max_attempts: int = 2,
+) -> list[str]:
+    allowed = {f"attempt-{attempt}" for attempt in range(1, max_attempts + 1)}
+    if attempt_root.parent != lab / "runs" or attempt_root.name not in allowed:
         _stop("CLEANUP_TARGET_MISMATCH")
     names = (
         "overlay.qcow2", "seed.iso", "ssh-client", "ssh-client.pub", "ssh-host",
@@ -4951,14 +5414,18 @@ def _cleanup_attempt(attempt_root: Path, *, require_complete: bool) -> list[str]
     return removed
 
 
-def _verify_bundle(bundle: Path) -> dict[str, object]:
+def _verify_bundle(
+    bundle: Path, *, one_use_scope: Path | None = None
+) -> dict[str, object]:
+    arguments = [
+        sys.executable,
+        str(ROOT / "scripts/check_m4_runtime_evidence.py"),
+    ]
+    if one_use_scope is not None:
+        arguments.extend(["--one-use-scope", str(one_use_scope)])
+    arguments.extend(["--evidence", str(bundle)])
     result = _run(
-        [
-            sys.executable,
-            str(ROOT / "scripts/check_m4_runtime_evidence.py"),
-            "--evidence",
-            str(bundle),
-        ],
+        arguments,
         timeout=60,
     )
     value = _strict_json(result.stdout.rstrip(b"\n"), 1 << 20)
@@ -4975,6 +5442,7 @@ def _finalize_exported_attempt(
     bundle: Path,
     phase_outcomes: dict[str, object],
     attempt_root: Path,
+    one_use_scope: Path | None = None,
 ) -> tuple[dict[str, object], list[str]]:
     """Finish the non-cyclic export before deleting disposable inputs."""
 
@@ -4994,15 +5462,25 @@ def _finalize_exported_attempt(
             signed_payload_bundle_digest=signed_payload_digest,
             qemu_phase_outcomes=phase_outcomes,
         )
-        _assemble_terminal_bundle(bundle, ledger.lab / LEDGER_NAME)
+        _assemble_terminal_bundle(
+            bundle,
+            ledger.lab / LEDGER_NAME,
+            one_use=ledger.one_use,
+            lab=ledger.lab,
+        )
     except (OSError, ValueError, QualificationStop) as error:
         raise QualificationStop("EVIDENCE_EXPORT_FAILED:" + str(error)) from error
     try:
-        verified = _verify_bundle(bundle)
+        verified = _verify_bundle(bundle, one_use_scope=one_use_scope)
     except (OSError, ValueError, QualificationStop) as error:
         raise QualificationStop("EVIDENCE_VERIFICATION_FAILED:" + str(error)) from error
     try:
-        removed = _cleanup_attempt(attempt_root, require_complete=True)
+        removed = _cleanup_attempt(
+            attempt_root,
+            require_complete=True,
+            lab=ledger.lab,
+            max_attempts=ledger.max_attempts,
+        )
     except (OSError, ValueError, QualificationStop) as error:
         raise QualificationStop("CLEANUP_FAILED:" + str(error)) from error
     try:
@@ -5592,10 +6070,27 @@ def _qualification_terminal_reason(error: BaseException, fallback: str) -> str:
     return fallback
 
 
-def _qualification() -> dict[str, object]:
-    goal_digest = _digest_file(USER_GOAL, 1 << 20)
-    _verify_qualification_predecessors()
+def _qualification_lifecycle(
+    one_use_scope: Path | None = None,
+) -> dict[str, object]:
+    one_use = one_use_scope is not None
+    projection: dict[str, object] | None = None
+    if one_use:
+        if not one_use_scope.is_absolute():
+            one_use_scope = Path.cwd() / one_use_scope
+        projection, goal_digest = _read_one_use_scope_projection(one_use_scope)
+        goal_reference = str(projection["user_scope_reference"])
+        _verify_one_use_predecessors(projection)
+    else:
+        goal_digest = _digest_file(USER_GOAL, 1 << 20)
+        goal_reference = str(USER_GOAL)
+        _verify_qualification_predecessors()
     source = _source_state()
+    if one_use and (
+        source["commit"] != projection["candidate"]
+        or source["tree"] != projection["tree"]
+    ):
+        _stop("ONE_USE_SOURCE_IDENTITY_MISMATCH")
     _profile()
     image, qemu_version = _verify_host_assets()
     tools = _verify_host_tools()
@@ -5604,19 +6099,29 @@ def _qualification() -> dict[str, object]:
     _verify_kvm()
     _verify_management_port_free()
     remaining = _verify_disk_budget(IMAGE_LAB.parent)
+    paths = (
+        _prepare_one_use_paths(goal_digest)
+        if one_use
+        else OneUsePaths(LAB, EVIDENCE_ROOT)
+    )
+    lab = paths.lab
+    evidence_root = paths.evidence
     start: AttemptStart | None = None
     admission_digest: str | None = None
     bundle: Path | None = None
     phase_outcomes: dict[str, object] = {}
     failure_reason = "PROVISION_FAILED"
     with AttemptLedger(
-        LAB,
-        goal_reference=str(USER_GOAL),
+        lab,
+        goal_reference=goal_reference,
         goal_digest=goal_digest,
+        one_use=one_use,
+        require_fresh=one_use,
+        evidence_root=evidence_root,
     ) as ledger:
         attempt = ledger.next_attempt()
-        _mkdir_exact(LAB / "runs", 0o700)
-        attempt_root = LAB / "runs" / f"attempt-{attempt}"
+        _mkdir_exact(lab / "runs", 0o700)
+        attempt_root = lab / "runs" / f"attempt-{attempt}"
         if attempt_root.exists() or attempt_root.is_symlink():
             _stop("ATTEMPT_ROOT_REUSE_FORBIDDEN")
         attempt_root.mkdir(mode=0o700)
@@ -5635,23 +6140,35 @@ def _qualification() -> dict[str, object]:
                 qemu_version=qemu_version,
                 seed_digest=seed_digest,
                 attempt=attempt,
+                lab=lab,
             )
-            contract = _qualification_contract(
-                goal_reference=str(USER_GOAL),
-                goal_digest=goal_digest,
-                candidate=str(source["commit"]),
-                tree=str(source["tree"]),
-                attempt=attempt,
-                source_files_digest=str(source["files_digest"]),
-                source_archive_digest=_digest_file(
+            common_contract = {
+                "source_files_digest": str(source["files_digest"]),
+                "source_archive_digest": _digest_file(
                     attempt_root / "source.tgz", 16 << 20
                 ),
-                seed_digest=seed_digest,
-                package_runtime_plan_digest=package_runtime_plan_digest,
-                host_provenance_digest=_digest_bytes(_canonical(provenance)),
+                "seed_digest": seed_digest,
+                "package_runtime_plan_digest": package_runtime_plan_digest,
+                "host_provenance_digest": _digest_bytes(_canonical(provenance)),
+            }
+            contract = (
+                _one_use_qualification_contract(
+                    projection=projection,
+                    projection_digest=goal_digest,
+                    **common_contract,
+                )
+                if one_use
+                else _qualification_contract(
+                    goal_reference=goal_reference,
+                    goal_digest=goal_digest,
+                    candidate=str(source["commit"]),
+                    tree=str(source["tree"]),
+                    attempt=attempt,
+                    **common_contract,
+                )
             )
             request = {
-                "request_version": "2.0.0",
+                "request_version": "3.0.0" if one_use else "2.0.0",
                 "qualification_contract": contract,
                 "qualification_contract_digest": _qualification_contract_digest(
                     contract
@@ -5666,6 +6183,7 @@ def _qualification() -> dict[str, object]:
                 known_hosts,
                 host_provenance=provenance,
                 request=request,
+                lab=lab,
             )
             failure_reason = "RUN_FAILED"
             run_result, admission_digest, _, phase_outcomes["run"] = _run_vm_phase(
@@ -5676,6 +6194,8 @@ def _qualification() -> dict[str, object]:
                 known_hosts,
                 ledger=ledger,
                 start=start,
+                lab=lab,
+                evidence_root=evidence_root,
             )
             if admission_digest is None:
                 _stop("KEY_ADMISSION_ABSENT")
@@ -5688,6 +6208,8 @@ def _qualification() -> dict[str, object]:
                 known_hosts,
                 ledger=ledger,
                 start=start,
+                lab=lab,
+                evidence_root=evidence_root,
             )
             bundle_value = recover_result.get("bundle")
             if type(bundle_value) is not str:
@@ -5701,6 +6223,7 @@ def _qualification() -> dict[str, object]:
                 bundle=bundle,
                 phase_outcomes=phase_outcomes,
                 attempt_root=attempt_root,
+                one_use_scope=one_use_scope,
             )
             return {
                 "outcome": "VERIFIED",
@@ -5724,7 +6247,12 @@ def _qualification() -> dict[str, object]:
         except BaseException as error:
             terminal_reason = _qualification_terminal_reason(error, failure_reason)
             try:
-                _cleanup_attempt(attempt_root, require_complete=False)
+                _cleanup_attempt(
+                    attempt_root,
+                    require_complete=False,
+                    lab=lab,
+                    max_attempts=ledger.max_attempts,
+                )
             except QualificationStop:
                 terminal_reason = "CLEANUP_FAILED"
             if start is not None and ledger.active_start is not None:
@@ -5735,6 +6263,14 @@ def _qualification() -> dict[str, object]:
                     terminal_reason=terminal_reason,
                 )
             raise
+
+
+def _qualification() -> dict[str, object]:
+    return _qualification_lifecycle()
+
+
+def _one_use_qualification(scope_path: Path) -> dict[str, object]:
+    return _qualification_lifecycle(scope_path)
 
 
 def _absent(reason: str) -> dict[str, object]:
@@ -5773,6 +6309,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not arguments:
             result = _qualification()
+        elif len(arguments) == 2 and arguments[0] == "--one-use-scope":
+            result = _one_use_qualification(Path(arguments[1]))
         elif len(arguments) == 2 and arguments[0] == "--key-ready-diagnostic":
             result = _key_ready_diagnostic(Path(arguments[1]))
         elif arguments == ["--post-v2-pre-admission-diagnostic"]:

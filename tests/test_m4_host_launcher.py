@@ -2982,6 +2982,338 @@ class M4HostLauncherTests(unittest.TestCase):
             failure["claim"], "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR_ONLY"
         )
 
+    def test_one_use_scope_projection_is_closed_and_derives_unique_contract(
+        self,
+    ) -> None:
+        launcher = self.launcher
+        projection = {
+            "record_version": "1.0.0",
+            "record_kind": "M4_ONE_USE_QUALIFICATION_SCOPE_PROJECTION",
+            "authority": "NONE",
+            "user_scope_reference": (
+                "thread:/goal/m4-one-use-qualification-contract/2026-08-28"
+            ),
+            "candidate": "a" * 40,
+            "tree": "b" * 40,
+            "max_attempts": 1,
+            "success_target": 1,
+            "success_target_authorizing": False,
+            "predecessor_qualification_ledger_digest": (
+                "sha256:c80f4eb33b811b59a4f80aee5fdf781964b441d20e1620ca4b1f2b63f30c479a"
+            ),
+            "predecessor_diagnostic_ledger_digest": (
+                "sha256:f6a93ebc7f06447ed2be71f1e43c2c65d488bd9a5cb9a26cc3f03b7252f77cc3"
+            ),
+            "predecessor_diagnostic_bundle_digest": (
+                "sha256:e42fbd54170edcabe49814366ccf8fa7452eb6b167d50c2c799d2d611d95b623"
+            ),
+        }
+        path = self.root / "scope.json"
+        path.write_bytes(launcher._canonical(projection))
+        os.chmod(path, 0o444)
+        value, digest = launcher._read_one_use_scope_projection(path)
+        self.assertEqual(value, projection)
+        self.assertEqual(digest, launcher._digest_bytes(launcher._canonical(projection)))
+        self.assertEqual(
+            launcher._one_use_run_id(digest),
+            "scope-" + digest.removeprefix("sha256:"),
+        )
+        changed_identity = {
+            **projection,
+            "candidate": "c" * 40,
+            "tree": "d" * 40,
+        }
+        changed_digest = launcher._one_use_scope_projection_digest(
+            changed_identity
+        )
+        self.assertNotEqual(changed_digest, digest)
+        self.assertNotEqual(
+            launcher._one_use_paths(changed_digest),
+            launcher._one_use_paths(digest),
+        )
+
+        contract = launcher._one_use_qualification_contract(
+            projection=projection,
+            projection_digest=digest,
+            source_files_digest="sha256:" + "1" * 64,
+            source_archive_digest="sha256:" + "2" * 64,
+            seed_digest="sha256:" + "3" * 64,
+            package_runtime_plan_digest="sha256:" + "4" * 64,
+            host_provenance_digest="sha256:" + "5" * 64,
+        )
+        core = contract["contract_core"]
+        self.assertEqual(
+            (core["contract_version"], core["contract_kind"], core["attempt"]),
+            ("3.0.0", "M4_REQUEST_BOUND_ONE_USE_QUALIFICATION", 1),
+        )
+        self.assertEqual(core["scope_projection"], projection)
+        self.assertEqual(core["user_goal_digest"], digest)
+        self.assertEqual((core["max_attempts"], core["success_target"]), (1, 1))
+        self.assertIs(core["success_target_authorizing"], False)
+        self.assertEqual(launcher._validate_qualification_contract(contract), contract)
+
+        bound_projection = json.loads(json.dumps(projection))
+        projection["user_scope_reference"] = "thread:/mutated-after-binding"
+        self.assertEqual(
+            contract["contract_core"]["scope_projection"], bound_projection
+        )
+        with self.assertRaises(launcher.QualificationStop):
+            launcher._one_use_qualification_contract(
+                projection=projection,
+                projection_digest=digest,
+                source_files_digest="sha256:" + "1" * 64,
+                source_archive_digest="sha256:" + "2" * 64,
+                seed_digest="sha256:" + "3" * 64,
+                package_runtime_plan_digest="sha256:" + "4" * 64,
+                host_provenance_digest="sha256:" + "5" * 64,
+            )
+        projection = bound_projection
+
+        malformed = [
+            ("extra", {**projection, "unknown": True}),
+            ("bool-max", {**projection, "max_attempts": True}),
+            ("authority", {**projection, "authority": "QUALIFICATION"}),
+            ("candidate", {**projection, "candidate": "A" * 40}),
+            ("tree", {**projection, "tree": "not-a-tree"}),
+            ("surrogate", {**projection, "user_scope_reference": "\ud800"}),
+            (
+                "old-predecessor",
+                {
+                    **projection,
+                    "predecessor_diagnostic_ledger_digest": (
+                        launcher.PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+                    ),
+                },
+            ),
+        ]
+        for field in projection:
+            value = dict(projection)
+            value.pop(field)
+            malformed.append(("missing-" + field, value))
+        for name, mutation in malformed:
+            with self.subTest(name=name), self.assertRaises(
+                launcher.QualificationStop
+            ):
+                launcher._validate_one_use_scope_projection(mutation)
+        os.chmod(path, 0o600)
+        path.write_bytes(launcher._canonical(projection) + b"\n")
+        os.chmod(path, 0o444)
+        with self.assertRaises(launcher.QualificationStop):
+            launcher._read_one_use_scope_projection(path)
+
+        symlink = self.root / "scope-link.json"
+        symlink.symlink_to(path)
+        with self.assertRaises(launcher.QualificationStop):
+            launcher._read_one_use_scope_projection(symlink)
+
+        source_mismatch = {"commit": "0" * 40, "tree": "1" * 40}
+        with (
+            mock.patch.object(
+                launcher,
+                "_read_one_use_scope_projection",
+                return_value=(projection, digest),
+            ),
+            mock.patch.object(launcher, "_verify_one_use_predecessors"),
+            mock.patch.object(launcher, "_source_state", return_value=source_mismatch),
+            mock.patch.object(launcher, "_profile") as profile,
+            mock.patch.object(launcher, "QemuProcess") as qemu,
+            self.assertRaisesRegex(
+                launcher.QualificationStop, "ONE_USE_SOURCE_IDENTITY_MISMATCH"
+            ),
+        ):
+            launcher._one_use_qualification(path)
+        profile.assert_not_called()
+        qemu.assert_not_called()
+
+        with (
+            mock.patch.object(launcher.Path, "cwd", return_value=self.root),
+            mock.patch.object(
+                launcher,
+                "_read_one_use_scope_projection",
+                return_value=(projection, digest),
+            ) as read_scope,
+            mock.patch.object(launcher, "_verify_one_use_predecessors"),
+            mock.patch.object(launcher, "_source_state", return_value=source_mismatch),
+            self.assertRaisesRegex(
+                launcher.QualificationStop, "ONE_USE_SOURCE_IDENTITY_MISMATCH"
+            ),
+        ):
+            launcher._one_use_qualification(Path("scope.json"))
+        read_scope.assert_called_once_with(self.root / "scope.json")
+
+        qualification_root = self.root / "qualification-root"
+        evidence_root = self.root / "evidence-root"
+        occupied_paths = launcher._one_use_paths(
+            digest,
+            qualification_root=qualification_root,
+            evidence_root=evidence_root,
+        )
+        qualification_root.mkdir(mode=0o700)
+        evidence_root.mkdir(mode=0o700)
+        os.chmod(evidence_root, 0o755)
+        with self.assertRaisesRegex(
+            launcher.QualificationStop, "UNTRUSTED_DIRECTORY"
+        ):
+            launcher._prepare_one_use_paths(
+                digest,
+                qualification_root=qualification_root,
+                evidence_root=evidence_root,
+            )
+        os.chmod(evidence_root, 0o700)
+        occupied_paths.lab.mkdir(mode=0o700)
+        with self.assertRaisesRegex(
+            launcher.QualificationStop, "ONE_USE_RUN_ID_COLLISION"
+        ):
+            launcher._prepare_one_use_paths(
+                digest,
+                qualification_root=qualification_root,
+                evidence_root=evidence_root,
+            )
+
+        fresh_collision = evidence_root / "fresh-collision"
+        fresh_collision.mkdir(mode=0o700)
+        with self.assertRaisesRegex(
+            launcher.QualificationStop,
+            "EVIDENCE_DESTINATION_REUSE_FORBIDDEN",
+        ):
+            launcher._mkdir_fresh_exact(
+                fresh_collision,
+                0o700,
+                "EVIDENCE_DESTINATION_REUSE_FORBIDDEN",
+            )
+        second_digest = "sha256:" + "6" * 64
+        second_paths = launcher._one_use_paths(
+            second_digest,
+            qualification_root=qualification_root,
+            evidence_root=evidence_root,
+        )
+        second_paths.evidence.symlink_to(self.root / "outside")
+        with self.assertRaisesRegex(
+            launcher.QualificationStop, "ONE_USE_RUN_ID_COLLISION"
+        ):
+            launcher._prepare_one_use_paths(
+                second_digest,
+                qualification_root=qualification_root,
+                evidence_root=evidence_root,
+            )
+
+        with tempfile.TemporaryDirectory(prefix="m4-one-use-ledger-") as directory:
+            lab = Path(directory) / "lab"
+            with launcher.AttemptLedger(
+                lab,
+                goal_reference=projection["user_scope_reference"],
+                goal_digest=digest,
+                one_use=True,
+            ) as ledger:
+                start = ledger.begin(contract)
+                ledger.terminalize(
+                    start,
+                    None,
+                    "FAILED",
+                    terminal_reason="PROVISION_FAILED",
+                )
+            with launcher.AttemptLedger(
+                lab,
+                goal_reference=projection["user_scope_reference"],
+                goal_digest=digest,
+                one_use=True,
+            ) as ledger:
+                with self.assertRaisesRegex(
+                    launcher.QualificationStop, "ATTEMPT_LIMIT_REACHED"
+                ):
+                    ledger.next_attempt()
+
+            v2_contract = self._contract()
+            with launcher.AttemptLedger(
+                Path(directory) / "cross-v3",
+                goal_reference=projection["user_scope_reference"],
+                goal_digest=digest,
+                one_use=True,
+            ) as ledger:
+                with self.assertRaises(launcher.QualificationStop):
+                    ledger.begin(v2_contract)
+            with launcher.AttemptLedger(
+                Path(directory) / "cross-v2",
+                goal_reference=str(self.goal),
+                goal_digest=launcher._digest_file(self.goal, 1 << 20),
+            ) as ledger:
+                with self.assertRaises(launcher.QualificationStop):
+                    ledger.begin(contract)
+
+            success_lab = Path(directory) / "success-v3"
+            ready = self._ready(contract)
+            ready["ready_version"] = "3.0.0"
+            outcomes = {
+                phase: {
+                    "argv_digest": launcher._digest_bytes(
+                        launcher._canonical(
+                            launcher._qemu_argv(1, phase, lab=success_lab)
+                        )
+                    ),
+                    "return_code": 0,
+                }
+                for phase in ("provision", "run", "recover")
+            }
+            with launcher.AttemptLedger(
+                success_lab,
+                goal_reference=projection["user_scope_reference"],
+                goal_digest=digest,
+                one_use=True,
+            ) as ledger:
+                start = ledger.begin(contract)
+                admission_digest = ledger.admit(start, ready)
+                admission = launcher._key_admission(
+                    start, ready, admission_digest
+                )
+                self.assertEqual(admission["admission_version"], "3.0.0")
+                ledger.terminalize(
+                    start,
+                    admission_digest,
+                    "BUNDLE_EXPORTED",
+                    terminal_reason="SIGNED_PAYLOAD_EXPORTED",
+                    manifest_digest="sha256:" + "7" * 64,
+                    signed_payload_bundle_digest="sha256:" + "8" * 64,
+                    qemu_phase_outcomes=outcomes,
+                )
+            with launcher.AttemptLedger(
+                success_lab,
+                goal_reference=projection["user_scope_reference"],
+                goal_digest=digest,
+                one_use=True,
+            ) as ledger:
+                with self.assertRaisesRegex(
+                    launcher.QualificationStop, "ATTEMPT_LIMIT_REACHED"
+                ):
+                    ledger.next_attempt()
+
+        changed_contract = json.loads(json.dumps(contract))
+        changed_contract["contract_core"]["attempt"] = 2
+        changed_contract["contract_core_digest"] = launcher._digest_bytes(
+            launcher._canonical(changed_contract["contract_core"])
+        )
+        changed_contract["environment_preimage"]["contract_core_digest"] = (
+            changed_contract["contract_core_digest"]
+        )
+        changed_contract["environment_digest"] = launcher._digest_bytes(
+            launcher._canonical(changed_contract["environment_preimage"])
+        )
+        with self.assertRaises(launcher.QualificationStop):
+            launcher._validate_one_use_qualification_contract(changed_contract)
+
+        output = tempfile.TemporaryFile(mode="w+b")
+        stdout = mock.Mock(buffer=output)
+        with (
+            mock.patch.object(launcher.sys, "stdout", stdout),
+            mock.patch.object(
+                launcher,
+                "_one_use_qualification",
+                side_effect=launcher.QualificationStop("EXPECTED_STOP"),
+            ) as run,
+        ):
+            self.assertEqual(launcher.main(["--one-use-scope", str(path)]), 1)
+        run.assert_called_once_with(path)
+        output.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -80,6 +80,196 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             Path("/home/a1/Загрузки/harness/harness-m4-qualification-v2"),
         )
 
+    def test_one_use_bundle_requires_external_scope_and_single_attempt_ledger(self) -> None:
+        def load(name: str, path: Path):
+            specification = importlib.util.spec_from_file_location(name, path)
+            self.assertIsNotNone(specification)
+            self.assertIsNotNone(specification.loader)
+            value = importlib.util.module_from_spec(specification)
+            specification.loader.exec_module(value)
+            return value
+
+        host = load(
+            "harness_m4_one_use_host",
+            ROOT / "scripts/run_m4_host_qualification.py",
+        )
+        guest = load(
+            "harness_m4_one_use_guest",
+            ROOT / "scripts/run_m4_vm_conformance.py",
+        )
+        source = self._source()
+        projection = {
+            "record_version": "1.0.0",
+            "record_kind": "M4_ONE_USE_QUALIFICATION_SCOPE_PROJECTION",
+            "authority": "NONE",
+            "user_scope_reference": (
+                "thread:/goal/m4-one-use-qualification-contract/2026-08-28"
+            ),
+            "candidate": source["commit"],
+            "tree": source["tree"],
+            "max_attempts": 1,
+            "success_target": 1,
+            "success_target_authorizing": False,
+            "predecessor_qualification_ledger_digest": (
+                self.module._ONE_USE_PREDECESSOR_QUALIFICATION_LEDGER_DIGEST
+            ),
+            "predecessor_diagnostic_ledger_digest": (
+                self.module._ONE_USE_PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+            ),
+            "predecessor_diagnostic_bundle_digest": (
+                self.module._ONE_USE_PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST
+            ),
+        }
+        scope_path = self.root / "one-use-scope.json"
+        scope_path.write_bytes(_canonical(projection))
+        os.chmod(scope_path, 0o444)
+        checked_scope, scope_digest = self.module._read_one_use_scope_projection(
+            scope_path
+        )
+        self.assertEqual(checked_scope, projection)
+        self.module.ONE_USE_QUALIFICATION_ROOT = self.root / "one-use-labs"
+        self.module.ONE_USE_EVIDENCE_ROOT = self.root / "one-use-evidence"
+        lab, evidence_root = self.module._one_use_paths(scope_digest)
+        self.module.M4_LAB = lab
+
+        bundle, _ledger, fixture_source, _goal_reference, _goal_digest = (
+            self._fixture()
+        )
+        manifest = json.loads(
+            (bundle / "manifest.json").read_text(encoding="utf-8")
+        )
+        old_contract = manifest["qualification_contract"]
+        old_environment = old_contract["environment_preimage"]
+        contract = host._one_use_qualification_contract(
+            projection=projection,
+            projection_digest=scope_digest,
+            source_files_digest=fixture_source["files_digest"],
+            source_archive_digest=old_environment["source_archive_digest"],
+            seed_digest=old_environment["seed_digest"],
+            package_runtime_plan_digest=old_environment[
+                "package_runtime_plan_digest"
+            ],
+            host_provenance_digest=old_environment["host_provenance_digest"],
+        )
+        request = {
+            "request_version": "3.0.0",
+            "qualification_contract": contract,
+            "qualification_contract_digest": _digest_bytes(_canonical(contract)),
+        }
+        self.assertEqual(
+            guest._one_use_qualification_request_contract(request),
+            (contract, request["qualification_contract_digest"]),
+        )
+
+        def install_one_use(core, environment, _source, _plan):
+            core.clear()
+            core.update(deepcopy(contract["contract_core"]))
+            environment.clear()
+            environment.update(deepcopy(contract["environment_preimage"]))
+
+        self._rewrite_contract_bundle(
+            bundle,
+            install_one_use,
+            ledger_version="3.0.0",
+            admission_version="3.0.0",
+        )
+        expected_bundle = evidence_root / "attempt-1" / "bundle"
+        expected_bundle.parent.mkdir(parents=True, mode=0o700)
+        bundle.rename(expected_bundle)
+        result = self.module._verify_bundle(
+            expected_bundle,
+            source_state=fixture_source,
+            now=self.now,
+            mode=self.module._ONE_USE_MODE,
+            one_use_scope=scope_path,
+        )
+        self.assertEqual((result["outcome"], result["attempt"]), ("VERIFIED", 1))
+
+        wrong_bundle = self.root / "wrong-bundle"
+        expected_bundle.rename(wrong_bundle)
+        with self.assertRaises(self.module._InvalidEvidence):
+            self.module._verify_bundle(
+                wrong_bundle,
+                source_state=fixture_source,
+                now=self.now,
+                mode=self.module._ONE_USE_MODE,
+                one_use_scope=scope_path,
+            )
+        wrong_bundle.rename(expected_bundle)
+
+        with self.assertRaises(self.module._InvalidEvidence):
+            self.module._verify_bundle(
+                expected_bundle,
+                source_state=fixture_source,
+                now=self.now,
+            )
+        changed_scope = self.root / "changed-scope.json"
+        changed = {**projection, "user_scope_reference": "thread:/different"}
+        changed_scope.write_bytes(_canonical(changed))
+        os.chmod(changed_scope, 0o444)
+        with self.assertRaises(self.module._InvalidEvidence):
+            self.module._verify_bundle(
+                expected_bundle,
+                source_state=fixture_source,
+                now=self.now,
+                mode=self.module._ONE_USE_MODE,
+                one_use_scope=changed_scope,
+            )
+        ledger = expected_bundle / "attempt-ledger.jsonl"
+        original_ledger = ledger.read_bytes()
+        rows = original_ledger.splitlines()
+        mutations = {
+            "extension": original_ledger + b"{}\n",
+            "truncation": b"\n".join(rows[:-1]) + b"\n",
+            "replacement": rows[0] + b"\n{}\n" + rows[2] + b"\n",
+        }
+        changed_terminal = json.loads(rows[-1])
+        changed_terminal["qemu_phase_outcomes"]["run"]["argv_digest"] = (
+            "sha256:" + "0" * 64
+        )
+        mutations["qemu-argv"] = (
+            b"\n".join(rows[:-1]) + b"\n" + _canonical(changed_terminal) + b"\n"
+        )
+        for name, raw in mutations.items():
+            os.chmod(ledger, 0o600)
+            ledger.write_bytes(raw)
+            os.chmod(ledger, 0o444)
+            with self.subTest(name=name), self.assertRaises(
+                self.module._InvalidEvidence
+            ):
+                self.module._verify_bundle(
+                    expected_bundle,
+                    source_state=fixture_source,
+                    now=self.now,
+                    mode=self.module._ONE_USE_MODE,
+                    one_use_scope=scope_path,
+                )
+        os.chmod(ledger, 0o600)
+        ledger.write_bytes(original_ledger)
+        os.chmod(ledger, 0o444)
+
+        v2_bundle, _v2_ledger, v2_source, _, _ = self._fixture()
+        second_scope = self.root / "second-scope.json"
+        second_projection = {
+            **projection,
+            "user_scope_reference": "thread:/goal/second-one-use-scope",
+        }
+        second_scope.write_bytes(_canonical(second_projection))
+        os.chmod(second_scope, 0o444)
+        _, second_digest = self.module._read_one_use_scope_projection(second_scope)
+        _, second_evidence = self.module._one_use_paths(second_digest)
+        second_expected = second_evidence / "attempt-1" / "bundle"
+        second_expected.parent.mkdir(parents=True, mode=0o700)
+        v2_bundle.rename(second_expected)
+        with self.assertRaises(self.module._InvalidEvidence):
+            self.module._verify_bundle(
+                second_expected,
+                source_state=v2_source,
+                now=self.now,
+                mode=self.module._ONE_USE_MODE,
+                one_use_scope=second_scope,
+            )
+
     def _key(self, name: str) -> dict[str, object]:
         directory = self.root / name
         directory.mkdir(mode=0o700)
@@ -144,7 +334,14 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             "files_digest": _digest_bytes(_canonical(files)),
         }
 
-    def _host_provenance(self, digest: str, attempt: int) -> dict[str, object]:
+    def _host_provenance(
+        self,
+        digest: str,
+        attempt: int,
+        *,
+        lab: Path | None = None,
+        max_attempts: int = 2,
+    ) -> dict[str, object]:
         return {
             "image": {
                 "source_url": self.module._IMAGE_URL,
@@ -170,7 +367,13 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
                 "management_address": "127.0.0.1:22227",
                 "shared_host_mounts": 0,
                 "qemu_argv_digest": _digest_bytes(
-                    _canonical(self.module._qemu_lifecycle(attempt))
+                    _canonical(
+                        self.module._qemu_lifecycle(
+                            attempt,
+                            lab=self.module.M4_LAB if lab is None else lab,
+                            max_attempts=max_attempts,
+                        )
+                    )
                 ),
             },
         }
@@ -238,9 +441,11 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         contract_core_digest: str,
         qualification_contract_digest: str,
         extra: dict[str, object] | None = None,
+        ledger_version: str = "2.0.0",
+        max_attempts: int = 2,
     ) -> dict[str, object]:
         return {
-            "ledger_version": "2.0.0",
+            "ledger_version": ledger_version,
             "sequence": sequence,
             "previous_entry_digest": previous,
             "entry_type": entry_type,
@@ -250,7 +455,7 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
             "environment": environment,
             "user_scope_reference": goal_reference,
             "user_goal_digest": goal_digest,
-            "max_attempts": 2,
+            "max_attempts": max_attempts,
             "success_target": 1,
             "success_target_authorizing": False,
             "attempt": attempt,
@@ -1021,11 +1226,16 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         self,
         bundle: Path,
         change: object,
+        *,
+        ledger_version: str = "2.0.0",
+        admission_version: str = "2.0.0",
     ) -> None:
         manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
         evidence = json.loads((bundle / "evidence.json").read_text(encoding="utf-8"))
         ledger = bundle / "attempt-ledger.jsonl"
         rows = [json.loads(line) for line in ledger.read_bytes().splitlines()]
+        for row in rows[-3:]:
+            row["ledger_version"] = ledger_version
         contract = deepcopy(manifest["qualification_contract"])
         source = deepcopy(manifest["source"])
         plan = deepcopy(manifest["package_runtime_plan"])
@@ -1060,6 +1270,7 @@ class M4RuntimeEvidenceTests(unittest.TestCase):
         evidence["recovery"]["qualification_contract"] = contract
         evidence["recovery"]["qualification_contract_digest"] = contract_digest
         admission.update(
+            admission_version=admission_version,
             qualification_contract=contract,
             qualification_contract_digest=contract_digest,
             contract_core_digest=core_digest,

@@ -103,6 +103,106 @@ class M4VMRunnerContractTests(unittest.TestCase):
         }
 
     @staticmethod
+    def _one_use_scope_projection(
+        *,
+        candidate: str = "b" * 40,
+        tree: str = "c" * 40,
+        user_scope_reference: str = (
+            "thread:/goal/m4-one-use-qualification-contract/2026-08-28"
+        ),
+    ):
+        return {
+            "record_version": "1.0.0",
+            "record_kind": "M4_ONE_USE_QUALIFICATION_SCOPE_PROJECTION",
+            "authority": "NONE",
+            "user_scope_reference": user_scope_reference,
+            "candidate": candidate,
+            "tree": tree,
+            "max_attempts": 1,
+            "success_target": 1,
+            "success_target_authorizing": False,
+            "predecessor_qualification_ledger_digest": (
+                "sha256:c80f4eb33b811b59a4f80aee5fdf781964b441d20e1620ca4b1f2b63f30c479a"
+            ),
+            "predecessor_diagnostic_ledger_digest": (
+                "sha256:f6a93ebc7f06447ed2be71f1e43c2c65d488bd9a5cb9a26cc3f03b7252f77cc3"
+            ),
+            "predecessor_diagnostic_bundle_digest": (
+                "sha256:e42fbd54170edcabe49814366ccf8fa7452eb6b167d50c2c799d2d611d95b623"
+            ),
+        }
+
+    @staticmethod
+    def _one_use_qualification_contract(
+        module,
+        *,
+        candidate: str = "b" * 40,
+        tree: str = "c" * 40,
+        source_files_digest: str = "sha256:" + "d" * 64,
+        seed_digest: str = "sha256:" + "e" * 64,
+        host_provenance_digest: str = "sha256:" + "f" * 64,
+    ):
+        projection = M4VMRunnerContractTests._one_use_scope_projection(
+            candidate=candidate, tree=tree
+        )
+        core = {
+            "contract_version": "3.0.0",
+            "contract_kind": "M4_REQUEST_BOUND_ONE_USE_QUALIFICATION",
+            "scope_projection": projection,
+            "user_scope_reference": projection["user_scope_reference"],
+            "user_goal_digest": module._digest_bytes(module._canonical(projection)),
+            "candidate": candidate,
+            "tree": tree,
+            "attempt": 1,
+            "source_files_digest": source_files_digest,
+            "canonical_profile_digest": module.CANONICAL_PROFILE_DIGEST,
+            "raw_profile_artifact_digest": module.CANONICAL_PROFILE_DIGEST,
+            "base_image_digest": module.BASE_IMAGE_DIGEST,
+            "predecessor_qualification_ledger_digest": projection[
+                "predecessor_qualification_ledger_digest"
+            ],
+            "predecessor_diagnostic_ledger_digest": projection[
+                "predecessor_diagnostic_ledger_digest"
+            ],
+            "predecessor_diagnostic_bundle_digest": projection[
+                "predecessor_diagnostic_bundle_digest"
+            ],
+            "max_attempts": 1,
+            "success_target": 1,
+            "success_target_authorizing": False,
+        }
+        core_digest = module._digest_bytes(module._canonical(core))
+        environment_preimage = {
+            "contract_core_digest": core_digest,
+            "source_archive_digest": "sha256:" + "2" * 64,
+            "seed_digest": seed_digest,
+            "package_runtime_plan_digest": "sha256:" + "3" * 64,
+            "host_provenance_digest": host_provenance_digest,
+        }
+        contract = {
+            "contract_core": core,
+            "contract_core_digest": core_digest,
+            "environment_preimage": environment_preimage,
+            "environment_digest": module._digest_bytes(
+                module._canonical(environment_preimage)
+            ),
+        }
+        return contract, module._digest_bytes(module._canonical(contract))
+
+    @staticmethod
+    def _one_use_qualification_request(module, **changes):
+        contract, contract_digest = (
+            M4VMRunnerContractTests._one_use_qualification_contract(
+                module, **changes
+            )
+        )
+        return {
+            "request_version": "3.0.0",
+            "qualification_contract": contract,
+            "qualification_contract_digest": contract_digest,
+        }
+
+    @staticmethod
     def _post_v2_diagnostic_request(
         module,
         *,
@@ -180,7 +280,7 @@ class M4VMRunnerContractTests(unittest.TestCase):
         }
 
     @staticmethod
-    def _run_state(module):
+    def _run_state(module, *, one_use: bool = False):
         digest = "sha256:" + "a" * 64
         candidate = "b" * 40
         tree = "c" * 40
@@ -198,7 +298,12 @@ class M4VMRunnerContractTests(unittest.TestCase):
             },
             "vm": {"seed_digest": "sha256:" + "e" * 64},
         }
-        contract, contract_digest = M4VMRunnerContractTests._qualification_contract(
+        contract_builder = (
+            M4VMRunnerContractTests._one_use_qualification_contract
+            if one_use
+            else M4VMRunnerContractTests._qualification_contract
+        )
+        contract, contract_digest = contract_builder(
             module,
             candidate=candidate,
             tree=tree,
@@ -240,7 +345,7 @@ class M4VMRunnerContractTests(unittest.TestCase):
             "PUBLISHER": digest,
         }
         admission = {
-            "admission_version": "2.0.0",
+            "admission_version": "3.0.0" if one_use else "2.0.0",
             "mode": module.KEY_ADMISSION_MODE,
             "qualification_contract": contract,
             "qualification_contract_digest": contract_digest,
@@ -1697,6 +1802,475 @@ class M4VMRunnerContractTests(unittest.TestCase):
         for name, mutation in mutations:
             with self.subTest(name=name), self.assertRaises(module.QualificationStop):
                 module._validate_launch_request(mutation)
+
+    def test_one_use_qualification_contract_is_closed_single_attempt_and_cross_mode_safe(
+        self,
+    ) -> None:
+        module = _module()
+        request = self._one_use_qualification_request(module)
+        contract = request["qualification_contract"]
+        core = contract["contract_core"]
+        projection = core["scope_projection"]
+        validated, digest = module._one_use_qualification_request_contract(request)
+        self.assertIs(validated, contract)
+        self.assertEqual(digest, request["qualification_contract_digest"])
+        self.assertEqual(
+            module._validate_launch_request(request),
+            "M4_REQUEST_BOUND_ONE_USE_QUALIFICATION",
+        )
+        self.assertEqual(
+            frozenset(projection),
+            {
+                "record_version",
+                "record_kind",
+                "authority",
+                "user_scope_reference",
+                "candidate",
+                "tree",
+                "max_attempts",
+                "success_target",
+                "success_target_authorizing",
+                "predecessor_qualification_ledger_digest",
+                "predecessor_diagnostic_ledger_digest",
+                "predecessor_diagnostic_bundle_digest",
+            },
+        )
+        self.assertEqual(
+            (projection["record_version"], projection["record_kind"]),
+            ("1.0.0", "M4_ONE_USE_QUALIFICATION_SCOPE_PROJECTION"),
+        )
+        self.assertEqual(projection["authority"], "NONE")
+        self.assertEqual(core["user_goal_digest"], module._digest_bytes(
+            module._canonical(projection)
+        ))
+        self.assertEqual(
+            (core["attempt"], core["max_attempts"], core["success_target"]),
+            (1, 1, 1),
+        )
+        self.assertIs(core["success_target_authorizing"], False)
+        for field in (
+            "user_scope_reference",
+            "candidate",
+            "tree",
+            "max_attempts",
+            "success_target",
+            "success_target_authorizing",
+            "predecessor_qualification_ledger_digest",
+            "predecessor_diagnostic_ledger_digest",
+            "predecessor_diagnostic_bundle_digest",
+        ):
+            self.assertEqual(core[field], projection[field])
+
+        def reseal(
+            value,
+            *,
+            bind_projection: bool = True,
+            sync_environment_core: bool = True,
+        ):
+            changed_contract = value["qualification_contract"]
+            changed_core = changed_contract["contract_core"]
+            changed_projection = changed_core.get("scope_projection")
+            if bind_projection and type(changed_projection) is dict:
+                changed_core["user_goal_digest"] = module._digest_bytes(
+                    module._canonical(changed_projection)
+                )
+            changed_contract["contract_core_digest"] = module._digest_bytes(
+                module._canonical(changed_core)
+            )
+            environment = changed_contract["environment_preimage"]
+            if sync_environment_core:
+                environment["contract_core_digest"] = changed_contract[
+                    "contract_core_digest"
+                ]
+            changed_contract["environment_digest"] = module._digest_bytes(
+                module._canonical(environment)
+            )
+            value["qualification_contract_digest"] = module._digest_bytes(
+                module._canonical(changed_contract)
+            )
+            return value
+
+        mutations = []
+        for field in request:
+            value = deepcopy(request)
+            value.pop(field)
+            mutations.append(("missing-request-" + field, value))
+        mutations.extend(
+            [
+                ("extra-request", {**request, "unknown": True}),
+                ("request-version-v2", {**request, "request_version": "2.0.0"}),
+                (
+                    "request-digest",
+                    {
+                        **request,
+                        "qualification_contract_digest": "sha256:" + "0" * 64,
+                    },
+                ),
+            ]
+        )
+        v2_request = self._qualification_request(module)
+        mutations.extend(
+            [
+                (
+                    "v3-request-v2-contract",
+                    {
+                        "request_version": "3.0.0",
+                        "qualification_contract": v2_request[
+                            "qualification_contract"
+                        ],
+                        "qualification_contract_digest": v2_request[
+                            "qualification_contract_digest"
+                        ],
+                    },
+                ),
+                (
+                    "v2-request-v3-contract",
+                    {**request, "request_version": "2.0.0"},
+                ),
+            ]
+        )
+        for field in contract:
+            value = deepcopy(request)
+            value["qualification_contract"].pop(field)
+            value["qualification_contract_digest"] = module._digest_bytes(
+                module._canonical(value["qualification_contract"])
+            )
+            mutations.append(("missing-contract-" + field, value))
+        value = deepcopy(request)
+        value["qualification_contract"]["unknown"] = True
+        value["qualification_contract_digest"] = module._digest_bytes(
+            module._canonical(value["qualification_contract"])
+        )
+        mutations.append(("extra-contract", value))
+
+        core_replacements = {
+            "contract_version": "2.0.0",
+            "contract_kind": "M4_EXACT_DISPOSABLE_TEST_PROFILE_QUALIFICATION_V2",
+            "scope_projection": {},
+            "user_scope_reference": "thread:/different-goal",
+            "user_goal_digest": module.QUALIFICATION_GOAL_DIGEST,
+            "candidate": "0" * 40,
+            "tree": "1" * 40,
+            "attempt": 2,
+            "source_files_digest": "sha256:" + "0" * 64,
+            "canonical_profile_digest": "sha256:" + "0" * 64,
+            "raw_profile_artifact_digest": "sha256:" + "0" * 64,
+            "base_image_digest": "sha256:" + "0" * 64,
+            "predecessor_qualification_ledger_digest": (
+                module.PREDECESSOR_QUALIFICATION_LEDGER_DIGEST
+            ),
+            "predecessor_diagnostic_ledger_digest": (
+                module.PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+            ),
+            "predecessor_diagnostic_bundle_digest": (
+                module.PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST
+            ),
+            "max_attempts": 2,
+            "success_target": 2,
+            "success_target_authorizing": True,
+        }
+        for field in core:
+            value = deepcopy(request)
+            value["qualification_contract"]["contract_core"].pop(field)
+            mutations.append(
+                (
+                    "missing-core-" + field,
+                    reseal(
+                        value,
+                        bind_projection=field
+                        not in {"scope_projection", "user_goal_digest"},
+                    ),
+                )
+            )
+            if field != "source_files_digest":
+                value = deepcopy(request)
+                value["qualification_contract"]["contract_core"][field] = (
+                    core_replacements[field]
+                )
+                mutations.append(
+                    (
+                        "core-" + field,
+                        reseal(value, bind_projection=field != "user_goal_digest"),
+                    )
+                )
+            else:
+                value = deepcopy(request)
+                value["qualification_contract"]["contract_core"][field] = (
+                    "sha256:" + "0" * 64
+                )
+                mutations.append(("core-" + field, value))
+        value = deepcopy(request)
+        value["qualification_contract"]["contract_core"]["unknown"] = True
+        mutations.append(("extra-core", reseal(value)))
+
+        projection_replacements = {
+            "record_version": "2.0.0",
+            "record_kind": "M4_DIFFERENT_SCOPE_PROJECTION",
+            "authority": "QUALIFICATION",
+            "user_scope_reference": "",
+            "candidate": "0" * 40,
+            "tree": "1" * 40,
+            "max_attempts": 2,
+            "success_target": 2,
+            "success_target_authorizing": True,
+            "predecessor_qualification_ledger_digest": (
+                module.PREDECESSOR_QUALIFICATION_LEDGER_DIGEST
+            ),
+            "predecessor_diagnostic_ledger_digest": (
+                module.PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+            ),
+            "predecessor_diagnostic_bundle_digest": (
+                module.PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST
+            ),
+        }
+        for field in projection:
+            value = deepcopy(request)
+            value["qualification_contract"]["contract_core"][
+                "scope_projection"
+            ].pop(field)
+            mutations.append(("missing-projection-" + field, reseal(value)))
+            value = deepcopy(request)
+            value["qualification_contract"]["contract_core"][
+                "scope_projection"
+            ][field] = projection_replacements[field]
+            mutations.append(("projection-" + field, reseal(value)))
+        value = deepcopy(request)
+        value["qualification_contract"]["contract_core"]["scope_projection"][
+            "unknown"
+        ] = True
+        mutations.append(("extra-projection", reseal(value)))
+        value = deepcopy(request)
+        value["qualification_contract"]["contract_core"]["scope_projection"][
+            "user_scope_reference"
+        ] = "\ud800"
+        mutations.append(("projection-user-scope-invalid-utf8", value))
+        value = deepcopy(request)
+        value["qualification_contract"]["contract_core"]["scope_projection"][
+            "user_scope_reference"
+        ] = "x" * 513
+        mutations.append(("projection-user-scope-unbounded", reseal(value)))
+
+        for field in contract["environment_preimage"]:
+            value = deepcopy(request)
+            value["qualification_contract"]["environment_preimage"].pop(field)
+            changed_contract = value["qualification_contract"]
+            changed_contract["environment_digest"] = module._digest_bytes(
+                module._canonical(changed_contract["environment_preimage"])
+            )
+            value["qualification_contract_digest"] = module._digest_bytes(
+                module._canonical(changed_contract)
+            )
+            mutations.append(("missing-environment-" + field, value))
+            if field == "contract_core_digest":
+                value = deepcopy(request)
+                value["qualification_contract"]["environment_preimage"][field] = (
+                    "sha256:" + "9" * 64
+                )
+                mutations.append(
+                    (
+                        "environment-" + field,
+                        reseal(value, sync_environment_core=False),
+                    )
+                )
+            else:
+                value = deepcopy(request)
+                value["qualification_contract"]["environment_preimage"][field] = (
+                    "sha256:" + "9" * 64
+                )
+                mutations.append(("environment-" + field, value))
+        value = deepcopy(request)
+        value["qualification_contract"]["environment_preimage"]["unknown"] = (
+            "sha256:" + "8" * 64
+        )
+        mutations.append(("extra-environment", reseal(value)))
+        for field, replacement in (
+            ("attempt", True),
+            ("max_attempts", True),
+            ("success_target", True),
+        ):
+            value = deepcopy(request)
+            value["qualification_contract"]["contract_core"][field] = replacement
+            mutations.append(
+                ("bool-as-int-core-" + field, reseal(value))
+            )
+        for field in ("max_attempts", "success_target"):
+            value = deepcopy(request)
+            value["qualification_contract"]["contract_core"][
+                "scope_projection"
+            ][field] = True
+            mutations.append(("bool-as-int-projection-" + field, reseal(value)))
+
+        for name, mutation in mutations:
+            with self.subTest(name=name), self.assertRaises(
+                module.QualificationStop
+            ):
+                module._one_use_qualification_request_contract(mutation)
+            with self.subTest(dispatch=name), self.assertRaises(
+                module.QualificationStop
+            ):
+                module._validate_launch_request(mutation)
+
+        profile = module._strict_bytes(PROFILE.read_bytes())
+        source = {
+            "commit": core["candidate"],
+            "tree": core["tree"],
+            "files_digest": core["source_files_digest"],
+        }
+        host_provenance = {
+            "image": {"sha256": module.BASE_IMAGE_DIGEST},
+            "vm": {"seed_digest": contract["environment_preimage"]["seed_digest"]},
+        }
+        live_request = self._one_use_qualification_request(
+            module,
+            host_provenance_digest=module._digest_bytes(
+                module._canonical(host_provenance)
+            ),
+        )
+        live_contract = live_request["qualification_contract"]
+        observed_digests = {
+            module.PROFILE_PATH: module.CANONICAL_PROFILE_DIGEST,
+            module.SOURCE_ARCHIVE: live_contract["environment_preimage"][
+                "source_archive_digest"
+            ],
+            module.PACKAGE_RUNTIME_PLAN: live_contract["environment_preimage"][
+                "package_runtime_plan_digest"
+            ],
+        }
+
+        live_mutations = []
+        value = deepcopy(live_request)
+        value["qualification_contract"]["contract_core"][
+            "source_files_digest"
+        ] = "sha256:" + "9" * 64
+        live_mutations.append(("live-core-source_files_digest", reseal(value)))
+        for field in (
+            "source_archive_digest",
+            "seed_digest",
+            "package_runtime_plan_digest",
+            "host_provenance_digest",
+        ):
+            value = deepcopy(live_request)
+            value["qualification_contract"]["environment_preimage"][field] = (
+                "sha256:" + "9" * 64
+            )
+            live_mutations.append(("live-environment-" + field, reseal(value)))
+        with (
+            mock.patch.object(module, "_package_runtime_plan", return_value={}),
+            mock.patch.object(
+                module,
+                "_digest_file",
+                side_effect=lambda path, _maximum: observed_digests[path],
+            ),
+        ):
+            for name, mutation in live_mutations:
+                with self.subTest(name=name), self.assertRaises(
+                    module.QualificationStop
+                ):
+                    module._verify_qualification_environment(
+                        mutation,
+                        source,
+                        host_provenance,
+                        profile,
+                    )
+
+        digest_value = "sha256:" + "a" * 64
+        keys = {
+            name: type("Key", (), {"public_key_digest": digest_value})()
+            for name in ("M4_AUTHORITY", "OBSERVER", "PUBLISHER")
+        }
+        supply = {"public_key_digest": digest_value}
+        runtime_trust = {"trust_version": "1.0.0"}
+        admission = {
+            "admission_version": "3.0.0",
+            "mode": module.KEY_ADMISSION_MODE,
+            "qualification_contract": contract,
+            "qualification_contract_digest": request[
+                "qualification_contract_digest"
+            ],
+            "contract_core_digest": contract["contract_core_digest"],
+            "ledger_entry_digest": digest_value,
+            "receipt_public_key_digests": {
+                name: key.public_key_digest for name, key in keys.items()
+            },
+            "supply_public_key_digest": digest_value,
+            "runtime_trust_digest": module._digest_bytes(
+                module._canonical(runtime_trust)
+            ),
+        }
+        with tempfile.TemporaryDirectory(prefix="m4-one-use-admission-") as directory:
+            root = Path(directory)
+            admission_path = root / "key-admission.json"
+            admission_path.write_bytes(module._canonical(admission))
+            ready_payloads = []
+            with (
+                mock.patch.object(module, "RUNTIME", root),
+                mock.patch.object(module, "KEY_ADMISSION", admission_path),
+                mock.patch.object(
+                    module,
+                    "_write_exact",
+                    side_effect=lambda _path, raw, _mode: ready_payloads.append(raw),
+                ),
+                mock.patch.object(module, "_diagnostic_stage"),
+            ):
+                self.assertEqual(
+                    module._await_key_admission(
+                        request, keys, supply, runtime_trust
+                    ),
+                    admission,
+                )
+            self.assertEqual(len(ready_payloads), 1)
+            ready = module._strict_bytes(ready_payloads[0])
+            self.assertEqual(ready["ready_version"], "3.0.0")
+            self.assertEqual((ready["attempt"], core["max_attempts"]), (1, 1))
+            admission_path.write_bytes(
+                module._canonical({**admission, "admission_version": "2.0.0"})
+            )
+            with mock.patch.object(module, "KEY_ADMISSION", admission_path), self.assertRaises(
+                module.QualificationStop
+            ):
+                module._key_admission(
+                    request,
+                    keys,
+                    digest_value,
+                    admission["runtime_trust_digest"],
+                )
+
+        write = mock.Mock()
+        with (
+            mock.patch.object(module, "_write_exact", write),
+            self.assertRaises(module.QualificationStop),
+        ):
+            module._await_key_admission(projection, keys, supply, runtime_trust)
+        write.assert_not_called()
+        for forbidden in (
+            "_write_exact",
+            "_key_admission",
+            "_prepare_keys",
+            "_configure_m3_supply_trust",
+            "_export_m4_evidence",
+        ):
+            self.assertNotIn(
+                forbidden,
+                inspect.getsource(module._one_use_qualification_request_contract),
+            )
+
+        state = self._run_state(module, one_use=True)
+        self.assertIs(module._validate_run_state(state), state)
+        evidence_projection = module._qualification_evidence_projection(state)
+        evidence_core = evidence_projection["qualification_contract"][
+            "contract_core"
+        ]
+        self.assertEqual(
+            (state["identity"]["attempt"], evidence_core["max_attempts"]),
+            (1, 1),
+        )
+        self.assertEqual(
+            state["trust"]["key_admission"]["admission_version"], "3.0.0"
+        )
+        self.assertIn(
+            '"max_attempts": contract["contract_core"]["max_attempts"]',
+            inspect.getsource(module._export_m4_evidence),
+        )
 
     def test_key_ready_and_admission_bind_the_full_exact_contract(self) -> None:
         module = _module()

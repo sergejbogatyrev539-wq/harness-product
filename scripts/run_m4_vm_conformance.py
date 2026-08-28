@@ -100,6 +100,12 @@ PUBLISHER_BEFORE_REPLACE = "publisher_before_replace"
 EXPECTED_SCOPE = "DEPLOYMENT_ATTESTED"
 KEY_ADMISSION_MODE = "HOST_ATTEMPT_LEDGER_PIN_BEFORE_WORKER_GATE"
 QUALIFICATION_CONTRACT_KIND = "M4_EXACT_DISPOSABLE_TEST_PROFILE_QUALIFICATION_V2"
+ONE_USE_QUALIFICATION_CONTRACT_KIND = (
+    "M4_REQUEST_BOUND_ONE_USE_QUALIFICATION"
+)
+ONE_USE_SCOPE_PROJECTION_KIND = (
+    "M4_ONE_USE_QUALIFICATION_SCOPE_PROJECTION"
+)
 QUALIFICATION_GOAL_REFERENCE = (
     "/home/a1/.codex/attachments/"
     "4adf762e-32a5-45e2-bf75-3c79125ace23/pasted-text.txt"
@@ -121,6 +127,15 @@ PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST = (
 )
 PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST = (
     "sha256:91abc47ad6070c8b9c8cad89369780b698a696c3e90aed5e2c84cb45f0b1418d"
+)
+ONE_USE_PREDECESSOR_QUALIFICATION_LEDGER_DIGEST = (
+    "sha256:c80f4eb33b811b59a4f80aee5fdf781964b441d20e1620ca4b1f2b63f30c479a"
+)
+ONE_USE_PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST = (
+    "sha256:f6a93ebc7f06447ed2be71f1e43c2c65d488bd9a5cb9a26cc3f03b7252f77cc3"
+)
+ONE_USE_PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST = (
+    "sha256:e42fbd54170edcabe49814366ccf8fa7452eb6b167d50c2c799d2d611d95b623"
 )
 FAILED_QUALIFICATION_V2_LEDGER_DIGEST = (
     "sha256:c80f4eb33b811b59a4f80aee5fdf781964b441d20e1620ca4b1f2b63f30c479a"
@@ -346,6 +361,19 @@ _QUALIFICATION_CORE_KEYS = frozenset(
         "predecessor_diagnostic_ledger_digest",
         "predecessor_diagnostic_bundle_digest", "max_attempts",
         "success_target", "success_target_authorizing",
+    }
+)
+_ONE_USE_QUALIFICATION_CORE_KEYS = _QUALIFICATION_CORE_KEYS | {
+    "scope_projection"
+}
+_ONE_USE_SCOPE_PROJECTION_KEYS = frozenset(
+    {
+        "record_version", "record_kind", "authority",
+        "user_scope_reference", "candidate", "tree", "max_attempts",
+        "success_target", "success_target_authorizing",
+        "predecessor_qualification_ledger_digest",
+        "predecessor_diagnostic_ledger_digest",
+        "predecessor_diagnostic_bundle_digest",
     }
 )
 _QUALIFICATION_ENVIRONMENT_KEYS = frozenset(
@@ -623,7 +651,7 @@ def _is_digest(value: object) -> bool:
     return type(value) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
 
 
-def _validate_qualification_contract(value: object) -> dict[str, object]:
+def _validate_v2_qualification_contract(value: object) -> dict[str, object]:
     if type(value) is not dict or frozenset(value) != _QUALIFICATION_CONTRACT_KEYS:
         _stop("M4_QUALIFICATION_CONTRACT_MISMATCH")
     core = value["contract_core"]
@@ -672,7 +700,115 @@ def _validate_qualification_contract(value: object) -> dict[str, object]:
     return value
 
 
-def _qualification_request_contract(
+def _validate_one_use_scope_projection(value: object) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != _ONE_USE_SCOPE_PROJECTION_KEYS:
+        _stop("M4_ONE_USE_SCOPE_PROJECTION_MISMATCH")
+    reference = value["user_scope_reference"]
+    if type(reference) is not str or not reference:
+        _stop("M4_ONE_USE_SCOPE_PROJECTION_MISMATCH")
+    try:
+        reference_bytes = reference.encode("utf-8")
+    except UnicodeEncodeError:
+        _stop("M4_ONE_USE_SCOPE_PROJECTION_MISMATCH")
+    if (
+        value["record_version"] != "1.0.0"
+        or value["record_kind"] != ONE_USE_SCOPE_PROJECTION_KIND
+        or value["authority"] != "NONE"
+        or len(reference_bytes) > 512
+        or type(value["candidate"]) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", value["candidate"]) is None
+        or type(value["tree"]) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", value["tree"]) is None
+        or type(value["max_attempts"]) is not int
+        or isinstance(value["max_attempts"], bool)
+        or value["max_attempts"] != 1
+        or type(value["success_target"]) is not int
+        or isinstance(value["success_target"], bool)
+        or value["success_target"] != 1
+        or value["success_target_authorizing"] is not False
+        or value["predecessor_qualification_ledger_digest"]
+        != ONE_USE_PREDECESSOR_QUALIFICATION_LEDGER_DIGEST
+        or value["predecessor_diagnostic_ledger_digest"]
+        != ONE_USE_PREDECESSOR_DIAGNOSTIC_LEDGER_DIGEST
+        or value["predecessor_diagnostic_bundle_digest"]
+        != ONE_USE_PREDECESSOR_DIAGNOSTIC_BUNDLE_DIGEST
+    ):
+        _stop("M4_ONE_USE_SCOPE_PROJECTION_MISMATCH")
+    return value
+
+
+def _validate_one_use_qualification_contract(
+    value: object,
+) -> dict[str, object]:
+    if type(value) is not dict or frozenset(value) != _QUALIFICATION_CONTRACT_KEYS:
+        _stop("M4_ONE_USE_QUALIFICATION_CONTRACT_MISMATCH")
+    core = value["contract_core"]
+    environment = value["environment_preimage"]
+    if (
+        type(core) is not dict
+        or frozenset(core) != _ONE_USE_QUALIFICATION_CORE_KEYS
+        or type(environment) is not dict
+        or frozenset(environment) != _QUALIFICATION_ENVIRONMENT_KEYS
+    ):
+        _stop("M4_ONE_USE_QUALIFICATION_CONTRACT_MISMATCH")
+    projection = _validate_one_use_scope_projection(core["scope_projection"])
+    projection_digest = _digest_bytes(_canonical(projection))
+    if (
+        core["contract_version"] != "3.0.0"
+        or core["contract_kind"] != ONE_USE_QUALIFICATION_CONTRACT_KIND
+        or core["user_scope_reference"] != projection["user_scope_reference"]
+        or core["user_goal_digest"] != projection_digest
+        or core["candidate"] != projection["candidate"]
+        or core["tree"] != projection["tree"]
+        or type(core["attempt"]) is not int
+        or isinstance(core["attempt"], bool)
+        or core["attempt"] != 1
+        or core["canonical_profile_digest"] != CANONICAL_PROFILE_DIGEST
+        or core["raw_profile_artifact_digest"] != CANONICAL_PROFILE_DIGEST
+        or core["base_image_digest"] != BASE_IMAGE_DIGEST
+        or core["predecessor_qualification_ledger_digest"]
+        != projection["predecessor_qualification_ledger_digest"]
+        or core["predecessor_diagnostic_ledger_digest"]
+        != projection["predecessor_diagnostic_ledger_digest"]
+        or core["predecessor_diagnostic_bundle_digest"]
+        != projection["predecessor_diagnostic_bundle_digest"]
+        or type(core["max_attempts"]) is not int
+        or isinstance(core["max_attempts"], bool)
+        or core["max_attempts"] != projection["max_attempts"]
+        or type(core["success_target"]) is not int
+        or isinstance(core["success_target"], bool)
+        or core["success_target"] != projection["success_target"]
+        or core["success_target_authorizing"]
+        is not projection["success_target_authorizing"]
+        or not _is_digest(core["source_files_digest"])
+        or not all(_is_digest(item) for item in environment.values())
+    ):
+        _stop("M4_ONE_USE_QUALIFICATION_CONTRACT_MISMATCH")
+    core_digest = _digest_bytes(_canonical(core))
+    if (
+        value["contract_core_digest"] != core_digest
+        or environment["contract_core_digest"] != core_digest
+        or value["environment_digest"] != _digest_bytes(_canonical(environment))
+    ):
+        _stop("M4_ONE_USE_QUALIFICATION_CONTRACT_DIGEST_MISMATCH")
+    return value
+
+
+def _validate_qualification_contract(value: object) -> dict[str, object]:
+    core = value.get("contract_core") if type(value) is dict else None
+    selector = (
+        (core.get("contract_version"), core.get("contract_kind"))
+        if type(core) is dict
+        else (None, None)
+    )
+    if selector == ("2.0.0", QUALIFICATION_CONTRACT_KIND):
+        return _validate_v2_qualification_contract(value)
+    if selector == ("3.0.0", ONE_USE_QUALIFICATION_CONTRACT_KIND):
+        return _validate_one_use_qualification_contract(value)
+    _stop("M4_QUALIFICATION_CONTRACT_MISMATCH")
+
+
+def _v2_qualification_request_contract(
     request: dict[str, object],
 ) -> tuple[dict[str, object], str]:
     if (
@@ -681,11 +817,42 @@ def _qualification_request_contract(
         or request.get("request_version") != "2.0.0"
     ):
         _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
-    contract = _validate_qualification_contract(request["qualification_contract"])
+    contract = _validate_v2_qualification_contract(
+        request["qualification_contract"]
+    )
     digest = _digest_bytes(_canonical(contract))
     if request["qualification_contract_digest"] != digest:
         _stop("M4_QUALIFICATION_CONTRACT_DIGEST_MISMATCH")
     return contract, digest
+
+
+def _one_use_qualification_request_contract(
+    request: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    if (
+        type(request) is not dict
+        or frozenset(request) != _QUALIFICATION_REQUEST_KEYS
+        or request.get("request_version") != "3.0.0"
+    ):
+        _stop("M4_ONE_USE_QUALIFICATION_REQUEST_MISMATCH")
+    contract = _validate_one_use_qualification_contract(
+        request["qualification_contract"]
+    )
+    digest = _digest_bytes(_canonical(contract))
+    if request["qualification_contract_digest"] != digest:
+        _stop("M4_ONE_USE_QUALIFICATION_CONTRACT_DIGEST_MISMATCH")
+    return contract, digest
+
+
+def _qualification_request_contract(
+    request: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    version = request.get("request_version") if type(request) is dict else None
+    if version == "2.0.0":
+        return _v2_qualification_request_contract(request)
+    if version == "3.0.0":
+        return _one_use_qualification_request_contract(request)
+    _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
 
 
 def _post_v2_diagnostic_request_contract(
@@ -883,7 +1050,11 @@ def _validate_launch_request(request: object) -> str:
         _stop("M4_QUALIFICATION_REQUEST_MISMATCH")
     if frozenset(request) == _QUALIFICATION_REQUEST_KEYS:
         _qualification_request_contract(request)
-        return "QUALIFICATION"
+        return (
+            ONE_USE_QUALIFICATION_CONTRACT_KIND
+            if request.get("request_version") == "3.0.0"
+            else "QUALIFICATION"
+        )
     if frozenset(request) == _POST_V2_DIAGNOSTIC_REQUEST_KEYS:
         selector = (request.get("request_version"), request.get("mode"))
         if selector == ("2.1.0", POST_V2_DIAGNOSTIC_MODE):
@@ -1223,6 +1394,7 @@ def _validate_run_state(value: object) -> dict[str, object]:
     contract = _validate_qualification_contract(identity["qualification_contract"])
     contract_digest = _digest_bytes(_canonical(contract))
     core = contract["contract_core"]
+    expected_admission_version = core["contract_version"]
     package_runtime_plan = _validate_package_runtime_plan(
         identity["package_runtime_plan"]
     )
@@ -1282,7 +1454,7 @@ def _validate_run_state(value: object) -> dict[str, object]:
         or trust["fencing_epoch"] != 1
         or type(admission) is not dict
         or frozenset(admission) != _KEY_ADMISSION_KEYS
-        or admission.get("admission_version") != "2.0.0"
+        or admission.get("admission_version") != expected_admission_version
         or admission.get("mode") != KEY_ADMISSION_MODE
         or admission.get("qualification_contract") != contract
         or admission.get("qualification_contract_digest") != contract_digest
@@ -1479,7 +1651,8 @@ def _key_admission(
     )
     expected_keys = {name: key.public_key_digest for name, key in keys.items()}
     if (
-        value["admission_version"] != "2.0.0"
+        value["admission_version"]
+        != contract["contract_core"]["contract_version"]
         or value["mode"] != KEY_ADMISSION_MODE
         or value["qualification_contract"] != contract
         or value["qualification_contract_digest"] != contract_digest
@@ -3955,11 +4128,12 @@ def _await_key_admission(
 ) -> dict[str, object]:
     key_digests = {name: key.public_key_digest for name, key in keys.items()}
     runtime_trust_digest = _digest_bytes(_canonical(runtime_trust))
-    if _validate_launch_request(request) == "QUALIFICATION":
+    request_mode = _validate_launch_request(request)
+    if request_mode in {"QUALIFICATION", ONE_USE_QUALIFICATION_CONTRACT_KIND}:
         contract, contract_digest = _qualification_request_contract(request)
         core = contract["contract_core"]
         ready = {
-            "ready_version": "2.0.0",
+            "ready_version": core["contract_version"],
             "candidate": core["candidate"],
             "environment": contract["environment_digest"],
             "attempt": core["attempt"],
@@ -5468,7 +5642,7 @@ def _export_m4_evidence(
         },
         "attempt_ledger": {
             "ledger_entry_digest": admission_digest,
-            "max_attempts": 2,
+            "max_attempts": contract["contract_core"]["max_attempts"],
             "success_target": 1,
             "success_target_authorizing": False,
             "contract_core_digest": contract["contract_core_digest"],
@@ -5606,7 +5780,7 @@ def _run_phase() -> None:
     qualification_contract: dict[str, object] | None = None
     qualification_contract_digest: str | None = None
     package_runtime_plan: dict[str, object] | None = None
-    if request_mode == "QUALIFICATION":
+    if request_mode in {"QUALIFICATION", ONE_USE_QUALIFICATION_CONTRACT_KIND}:
         qualification_contract, qualification_contract_digest = (
             _qualification_request_contract(request)
         )
@@ -6008,7 +6182,8 @@ def _recover_phase() -> None:
     request = _strict_bytes(
         _read_regular(QUALIFICATION_REQUEST, 1 << 20), 1 << 20
     )
-    if _validate_launch_request(request) != "QUALIFICATION":
+    request_mode = _validate_launch_request(request)
+    if request_mode not in {"QUALIFICATION", ONE_USE_QUALIFICATION_CONTRACT_KIND}:
         _stop("M4_RECOVERY_QUALIFICATION_CONTRACT_MISMATCH")
     profile = _profile()
     m3 = _load_m3()
