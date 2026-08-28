@@ -41,6 +41,7 @@ _IMAGE_URL = (
     "ubuntu-24.04-server-cloudimg-amd64.img"
 )
 _IMAGE_DIGEST = "sha256:6e40c07ae715f744f84af0bec76415cc1987dd115b4b8de437818561f01a3733"
+_M4_PROFILE_DIGEST = "sha256:50947b4b4ae139effbaddd749c7175a15755675f824e0ae1ed734a85694b4682"
 _SUMS_DIGEST = "sha256:0f92d5610dfc5797f9574a5a8a000021d845c70c70f6b187b2b78eb1584618cf"
 _SUMS_SIGNATURE_DIGEST = "sha256:a4466d91a9481850908ce0e8c518ebb1cf3ca414add6ba378e783c7d553618a7"
 _UBUNTU_SIGNER = "D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81"
@@ -1063,13 +1064,11 @@ def _source_state() -> dict[str, object]:
 
 
 def _profile() -> tuple[dict[str, object], str]:
-    try:
-        value = json.loads((ROOT / "profiles/m4-lx-a.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise QualificationStop("PROFILE_MALFORMED") from error
-    if type(value) is not dict:
+    raw = _read_regular(ROOT / "profiles/m4-lx-a.json", 1 << 20)
+    value = _strict_json(raw, 1 << 20)
+    if type(value) is not dict or _digest_bytes(raw) != _M4_PROFILE_DIGEST:
         _stop("PROFILE_MALFORMED")
-    return value, _digest_bytes(_canonical(value))
+    return value, _M4_PROFILE_DIGEST
 
 
 def _verify_host_assets() -> tuple[dict[str, object], str]:

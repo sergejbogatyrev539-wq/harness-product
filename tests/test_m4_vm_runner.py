@@ -189,6 +189,35 @@ class M4VMRunnerContractTests(unittest.TestCase):
             },
         )
 
+    def test_repository_profile_is_exact_canonical_bytes(self) -> None:
+        module = _module()
+        raw = PROFILE.read_bytes()
+        value = json.loads(raw)
+        self.assertEqual(raw, module._canonical(value))
+        self.assertEqual(len(raw), 2698)
+        self.assertEqual(
+            module._digest_bytes(raw),
+            "sha256:50947b4b4ae139effbaddd749c7175a15755675f824e0ae1ed734a85694b4682",
+        )
+        self.assertFalse(raw.endswith(b"\n"))
+
+    def test_guest_profile_accepts_only_exact_repository_bytes(self) -> None:
+        module = _module()
+        canonical = module._canonical(json.loads(PROFILE.read_bytes()))
+        with tempfile.TemporaryDirectory(prefix="harness-m4-profile-") as directory:
+            path = Path(directory) / "m4-lx-a.json"
+            path.write_bytes(canonical)
+            with mock.patch.object(module, "PROFILE_PATH", path):
+                self.assertEqual(module._profile()["profile_id"], "M4-LX-A")
+            for suffix in (b"\n", b" "):
+                path.write_bytes(canonical + suffix)
+                with self.subTest(suffix=suffix), mock.patch.object(
+                    module, "PROFILE_PATH", path
+                ), self.assertRaisesRegex(
+                    module.QualificationStop, "NONCANONICAL_JSON"
+                ):
+                    module._profile()
+
     def test_apparmor_has_exact_observer_and_publisher_domains(self) -> None:
         policy = POLICY.read_text(encoding="utf-8")
         self.assertIn("profile harness-m4-lx-a.observer", policy)

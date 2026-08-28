@@ -106,6 +106,119 @@ class M4HostLauncherTests(unittest.TestCase):
             '      - "ssh-ed25519 AAAATEST harness-m4-client-attempt-2"\n', raw
         )
 
+    def test_host_profile_preflight_requires_exact_canonical_bytes(self) -> None:
+        canonical = self.launcher._canonical(
+            json.loads((ROOT / "profiles/m4-lx-a.json").read_bytes())
+        )
+        profile_root = self.root / "source"
+        profile = profile_root / "profiles/m4-lx-a.json"
+        profile.parent.mkdir(parents=True)
+        profile.write_bytes(canonical)
+        with mock.patch.object(self.launcher, "ROOT", profile_root):
+            value, digest = self.launcher._profile()
+            self.assertEqual(value["profile_id"], "M4-LX-A")
+            self.assertEqual(len(canonical), 2698)
+            self.assertEqual(
+                digest,
+                "sha256:50947b4b4ae139effbaddd749c7175a15755675f824e0ae1ed734a85694b4682",
+            )
+            for suffix in (b"\n", b" "):
+                profile.write_bytes(canonical + suffix)
+                with self.subTest(suffix=suffix), self.assertRaisesRegex(
+                    self.launcher.QualificationStop, "NONCANONICAL_JSON"
+                ):
+                    self.launcher._profile()
+            for raw, reason in (
+                (b'{"a":1,"a":2}', "DUPLICATE_JSON_KEY"),
+                (b'{"a":NaN}', "NONFINITE_JSON"),
+                (
+                    self.launcher._canonical(
+                        {**json.loads(canonical), "unknown_profile_field": True}
+                    ),
+                    "PROFILE_MALFORMED",
+                ),
+            ):
+                profile.write_bytes(raw)
+                with self.subTest(reason=reason), self.assertRaisesRegex(
+                    self.launcher.QualificationStop, reason
+                ):
+                    self.launcher._profile()
+
+    def test_noncanonical_profile_stops_before_qualification_side_effects(self) -> None:
+        lab = self.root / "qualification-v2"
+        source = {
+            "commit": "a" * 40,
+            "tree": "b" * 40,
+            "files": {},
+            "files_digest": "sha256:" + "c" * 64,
+        }
+        with mock.patch.object(self.launcher, "USER_GOAL", self.goal), mock.patch.object(
+            self.launcher, "LAB", lab
+        ), mock.patch.object(
+            self.launcher, "_source_state", return_value=source
+        ), mock.patch.object(
+            self.launcher,
+            "_profile",
+            side_effect=self.launcher.QualificationStop("NONCANONICAL_JSON"),
+        ), mock.patch.object(
+            self.launcher, "AttemptLedger"
+        ) as ledger, mock.patch.object(
+            self.launcher, "_create_seed"
+        ) as seed, mock.patch.object(
+            self.launcher, "_create_overlay"
+        ) as overlay, mock.patch.object(
+            self.launcher, "_provision_vm"
+        ) as vm:
+            with self.assertRaisesRegex(
+                self.launcher.QualificationStop, "NONCANONICAL_JSON"
+            ):
+                self.launcher._qualification()
+        ledger.assert_not_called()
+        seed.assert_not_called()
+        overlay.assert_not_called()
+        vm.assert_not_called()
+        self.assertFalse(lab.exists())
+
+    def test_raw_profile_bytes_are_part_of_the_source_file_map_binding(self) -> None:
+        current = "sha256:50947b4b4ae139effbaddd749c7175a15755675f824e0ae1ed734a85694b4682"
+        previous = "sha256:5832e7261a2bf881877ef833056eaa6c0247309db468b9952a9203b503cd88f3"
+
+        def run(argv, **_kwargs):
+            if argv[-1] == "HEAD":
+                stdout = b"a" * 40 + b"\n"
+            elif argv[-1] == "HEAD^{tree}":
+                stdout = b"b" * 40 + b"\n"
+            elif "status" in argv:
+                stdout = b""
+            elif "ls-files" in argv:
+                stdout = b""
+            else:
+                raise AssertionError(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr=b"")
+
+        def source(profile_digest):
+            def digest(path, _maximum):
+                if path.name == "m4-lx-a.json":
+                    return profile_digest
+                return self.launcher._digest_bytes(str(path).encode("utf-8"))
+
+            with mock.patch.object(self.launcher, "_run", side_effect=run), mock.patch.object(
+                self.launcher, "_digest_file", side_effect=digest
+            ):
+                return self.launcher._source_state()
+
+        current_source = source(current)
+        previous_source = source(previous)
+        self.assertEqual(
+            current_source["files"]["profiles/m4-lx-a.json"], current
+        )
+        self.assertEqual(
+            previous_source["files"]["profiles/m4-lx-a.json"], previous
+        )
+        self.assertNotEqual(
+            current_source["files_digest"], previous_source["files_digest"]
+        )
+
     def test_ledger_consumes_failed_slot_and_rejects_third_attempt(self) -> None:
         lab = self.root / "lab"
         goal_digest = self.launcher._digest_file(self.goal, 1 << 20)
