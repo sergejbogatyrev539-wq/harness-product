@@ -28,6 +28,9 @@ DIAGNOSTIC_LAB = Path("/home/a1/Загрузки/harness/harness-m4-diagnostic-l
 POST_V2_DIAGNOSTIC_LAB = Path(
     "/home/a1/Загрузки/harness/harness-m4-post-v2-diagnostic"
 )
+PACKAGE_PLAN_DISCRIMINATOR_LAB = Path(
+    "/home/a1/Загрузки/harness/harness-m4-package-plan-discriminator"
+)
 IMAGE_LAB = Path("/home/a1/Загрузки/harness/harness-m3-lab")
 EVIDENCE_ROOT = Path("/home/a1/Загрузки/harness/harness-m4-evidence-v2")
 USER_GOAL = Path(
@@ -38,6 +41,9 @@ LEDGER_NAME = "m4-attempt-ledger.jsonl"
 INDEPENDENT_VERIFICATION_NAME = "independent-verification.json"
 DIAGNOSTIC_LEDGER_NAME = "m4-key-ready-diagnostic-ledger.jsonl"
 POST_V2_DIAGNOSTIC_LEDGER_NAME = "m4-post-v2-diagnostic-ledger.jsonl"
+PACKAGE_PLAN_DISCRIMINATOR_LEDGER_NAME = (
+    "m4-package-plan-discriminator-ledger.jsonl"
+)
 OLD_LEDGER = OLD_QUALIFICATION_LAB / LEDGER_NAME
 OLD_LEDGER_DIGEST = "sha256:719505206caf364c6c0d40983687416bcca5644f879a46254714621cb070d5f9"
 PREDECESSOR_DIAGNOSTIC_LEDGER = DIAGNOSTIC_LAB / DIAGNOSTIC_LEDGER_NAME
@@ -61,6 +67,24 @@ POST_V2_DIAGNOSTIC_GOAL_REFERENCE = (
 )
 POST_V2_DIAGNOSTIC_GOAL_DIGEST = (
     "sha256:7e171d5a592859fc7a49e91ec1dca61d11ec326bbe1083ee5511f70163b9bc70"
+)
+POST_V2_DIAGNOSTIC_LEDGER = (
+    POST_V2_DIAGNOSTIC_LAB / POST_V2_DIAGNOSTIC_LEDGER_NAME
+)
+POST_V2_DIAGNOSTIC_LEDGER_DIGEST = (
+    "sha256:e8cfa1b9117268bf2298ba1936a99a79114e8f83aea2188e998fce6becdf97dc"
+)
+POST_V2_DIAGNOSTIC_BUNDLE = (
+    POST_V2_DIAGNOSTIC_LAB / "diagnostics/attempt-1/diagnostic.json"
+)
+POST_V2_DIAGNOSTIC_BUNDLE_DIGEST = (
+    "sha256:51b84c6477a17a66e92290ed7cb6f787fb9df8f5445d112d76e3e38c055f6d2f"
+)
+PACKAGE_PLAN_DISCRIMINATOR_GOAL_REFERENCE = (
+    "thread:/goal/m4-package-runtime-plan-discriminator/2026-08-28"
+)
+PACKAGE_PLAN_DISCRIMINATOR_GOAL_DIGEST = (
+    "sha256:44ff546b459a3e433b0b9ed1d009eb92c82b9fd1f3afc5f331a1ba0fe51115aa"
 )
 _QEMU_PATH = "/usr/bin/qemu-system-x86_64"
 _QEMU_DIGEST = "sha256:8a35ccba41582fc6c38b9df85fc9e35fa1d42f414d2d7d8090ee9b2f5e7c0854"
@@ -164,6 +188,24 @@ PACKAGE_RUNTIME_PLAN_BINDING_IDS = (
 )
 PACKAGE_RUNTIME_PLAN_OUTCOMES = frozenset(
     {"MISMATCH", "QUERY_ERROR", "DECODE_ERROR", "READ_ERROR", "RESOLVE_ERROR"}
+)
+PACKAGE_RUNTIME_PLAN_OBSERVATION_ERRORS = frozenset(
+    {
+        "DUPLICATE", "KEY_READY_FORBIDDEN", "MALFORMED", "MISSING",
+        "ORDER_MISMATCH", "UNKNOWN",
+    }
+)
+_PACKAGE_RUNTIME_PLAN_PARSER_ERRORS = {
+    "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_DUPLICATE": "DUPLICATE",
+    "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED": "MALFORMED",
+    "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING": "MISSING",
+    "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ORDER_MISMATCH": (
+        "ORDER_MISMATCH"
+    ),
+    "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_UNKNOWN": "UNKNOWN",
+}
+_PACKAGE_RUNTIME_PLAN_REJECTED = (
+    "PACKAGE_RUNTIME_PLAN_OBSERVATION_REJECTED"
 )
 _PACKAGE_RUNTIME_PLAN_OBSERVATION_KEYS = frozenset(
     {"record_type", "non_authorizing", "binding_id", "outcome"}
@@ -421,16 +463,65 @@ def _post_v2_diagnostic_goal_record() -> dict[str, object]:
     }
 
 
+def _package_plan_discriminator_goal_record() -> dict[str, object]:
+    return {
+        "goal_version": "1.0.0",
+        "goal_kind": "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR",
+        "user_scope_reference": PACKAGE_PLAN_DISCRIMINATOR_GOAL_REFERENCE,
+        "predecessor_qualification_ledger_digest": (
+            FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        ),
+        "predecessor_post_v2_diagnostic_ledger_digest": (
+            POST_V2_DIAGNOSTIC_LEDGER_DIGEST
+        ),
+        "predecessor_post_v2_diagnostic_bundle_digest": (
+            POST_V2_DIAGNOSTIC_BUNDLE_DIGEST
+        ),
+        "max_attempts": 1,
+        "success_target": 1,
+        "success_target_authorizing": False,
+        "allowed_phases": ["provision", "run"],
+        "allowed_outcome": (
+            "SANITIZED_PACKAGE_RUNTIME_PLAN_OBSERVATION_ONLY"
+        ),
+        "forbidden_operations": [
+            "AUTOMATIC_RETRY",
+            "KEY_ADMISSION_ARTIFACT",
+            "PACKAGE_PLAN_REMEDIATION",
+            "POST_V2_DIAGNOSTIC_BUNDLE_MUTATION",
+            "POST_V2_DIAGNOSTIC_LEDGER_WRITE",
+            "QUALIFICATION_EVIDENCE_EXPORT",
+            "QUALIFICATION_V2_LEDGER_WRITE",
+            "REBOOT_OR_RECOVERY",
+            "RUNTIME_VERIFIED_CLAIM",
+            "WORKER_OR_EFFECT_EXECUTION",
+        ],
+    }
+
+
 def _validate_post_v2_diagnostic_goal_record(value: object) -> dict[str, object]:
-    expected = _post_v2_diagnostic_goal_record()
-    if (
-        type(value) is not dict
-        or _canonical(value) != _canonical(expected)
-        or len(_canonical(value)) != 582
-        or _digest_bytes(_canonical(value)) != POST_V2_DIAGNOSTIC_GOAL_DIGEST
-    ):
+    if type(value) is not dict:
         _stop("POST_V2_DIAGNOSTIC_GOAL_MISMATCH")
-    return value
+    raw = _canonical(value)
+    for expected, size, digest in (
+        (
+            _post_v2_diagnostic_goal_record(),
+            582,
+            POST_V2_DIAGNOSTIC_GOAL_DIGEST,
+        ),
+        (
+            _package_plan_discriminator_goal_record(),
+            1002,
+            PACKAGE_PLAN_DISCRIMINATOR_GOAL_DIGEST,
+        ),
+    ):
+        if (
+            raw == _canonical(expected)
+            and len(raw) == size
+            and _digest_bytes(raw) == digest
+        ):
+            return value
+    _stop("POST_V2_DIAGNOSTIC_GOAL_MISMATCH")
 
 
 def _post_v2_diagnostic_contract(
@@ -447,7 +538,7 @@ def _post_v2_diagnostic_contract(
     goal = _validate_post_v2_diagnostic_goal_record(goal_record)
     core = {
         "contract_version": "1.0.0",
-        "contract_kind": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+        "contract_kind": goal["goal_kind"],
         "goal_record": goal,
         "goal_record_digest": _digest_bytes(_canonical(goal)),
         "failed_v2_candidate": FAILED_QUALIFICATION_V2_CANDIDATE,
@@ -466,6 +557,17 @@ def _post_v2_diagnostic_contract(
         "allowed_phases": ["provision", "run"],
         "non_authorizing": True,
     }
+    if goal["goal_kind"] == "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR":
+        core.update(
+            {
+                "predecessor_post_v2_diagnostic_ledger_digest": (
+                    POST_V2_DIAGNOSTIC_LEDGER_DIGEST
+                ),
+                "predecessor_post_v2_diagnostic_bundle_digest": (
+                    POST_V2_DIAGNOSTIC_BUNDLE_DIGEST
+                ),
+            }
+        )
     core_digest = _digest_bytes(_canonical(core))
     environment_preimage = {
         "contract_core_digest": core_digest,
@@ -499,9 +601,21 @@ def _validate_post_v2_diagnostic_contract(value: object) -> dict[str, object]:
         "raw_profile_artifact_digest", "base_image_digest", "max_attempts",
         "allowed_phases", "non_authorizing",
     }
+    if (
+        type(core) is dict
+        and core.get("contract_kind")
+        == "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR"
+    ):
+        core_keys |= {
+            "predecessor_post_v2_diagnostic_ledger_digest",
+            "predecessor_post_v2_diagnostic_bundle_digest",
+        }
     if type(core) is not dict or frozenset(core) != core_keys:
         _stop("POST_V2_DIAGNOSTIC_CONTRACT_MALFORMED")
     goal = _validate_post_v2_diagnostic_goal_record(core["goal_record"])
+    discriminator = (
+        goal["goal_kind"] == "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR"
+    )
     digests = (
         core["goal_record_digest"], core["failed_qualification_v2_ledger_digest"],
         core["source_files_digest"], core["canonical_profile_digest"],
@@ -509,7 +623,7 @@ def _validate_post_v2_diagnostic_contract(value: object) -> dict[str, object]:
     )
     if (
         core["contract_version"] != "1.0.0"
-        or core["contract_kind"] != "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC"
+        or core["contract_kind"] != goal["goal_kind"]
         or core["goal_record_digest"] != _digest_bytes(_canonical(goal))
         or core["failed_v2_candidate"] != FAILED_QUALIFICATION_V2_CANDIDATE
         or core["failed_v2_tree"] != FAILED_QUALIFICATION_V2_TREE
@@ -531,6 +645,19 @@ def _validate_post_v2_diagnostic_contract(value: object) -> dict[str, object]:
         or core["max_attempts"] != 1
         or core["allowed_phases"] != ["provision", "run"]
         or core["non_authorizing"] is not True
+        or (
+            discriminator
+            and (
+                core["predecessor_post_v2_diagnostic_ledger_digest"]
+                != POST_V2_DIAGNOSTIC_LEDGER_DIGEST
+                or core["predecessor_post_v2_diagnostic_bundle_digest"]
+                != POST_V2_DIAGNOSTIC_BUNDLE_DIGEST
+                or core["predecessor_post_v2_diagnostic_ledger_digest"]
+                != goal["predecessor_post_v2_diagnostic_ledger_digest"]
+                or core["predecessor_post_v2_diagnostic_bundle_digest"]
+                != goal["predecessor_post_v2_diagnostic_bundle_digest"]
+            )
+        )
     ):
         _stop("POST_V2_DIAGNOSTIC_CONTRACT_BINDING_MISMATCH")
     core_digest = _digest_bytes(_canonical(core))
@@ -567,9 +694,17 @@ def _post_v2_diagnostic_request(contract: object) -> dict[str, object]:
     value = _strict_json(
         _canonical(_validate_post_v2_diagnostic_contract(contract)), 1 << 20
     )
+    discriminator = (
+        value["contract_core"]["contract_kind"]
+        == "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR"
+    )
     return {
-        "request_version": "2.1.0",
-        "mode": "POST_V2_PRE_ADMISSION_DIAGNOSTIC",
+        "request_version": "2.2.0" if discriminator else "2.1.0",
+        "mode": (
+            "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR"
+            if discriminator
+            else "POST_V2_PRE_ADMISSION_DIAGNOSTIC"
+        ),
         "diagnostic_contract": value,
         "diagnostic_contract_digest": _post_v2_diagnostic_contract_digest(value),
     }
@@ -1274,6 +1409,64 @@ def _verify_failed_v2_qualification_ledger(
     return expected_digest
 
 
+def _verify_package_plan_discriminator_predecessors() -> dict[str, str]:
+    failed = _verify_failed_v2_qualification_ledger()
+    raw = _read_regular(POST_V2_DIAGNOSTIC_LEDGER, 4 << 20)
+    if _digest_bytes(raw) != POST_V2_DIAGNOSTIC_LEDGER_DIGEST:
+        _stop("PACKAGE_PLAN_DISCRIMINATOR_PREDECESSOR_DIGEST_MISMATCH")
+    if not raw.endswith(b"\n") or b"\n\n" in raw:
+        _stop("PACKAGE_PLAN_DISCRIMINATOR_PREDECESSOR_MALFORMED")
+    lines = raw[:-1].split(b"\n")
+    if len(lines) != 2:
+        _stop("PACKAGE_PLAN_DISCRIMINATOR_PREDECESSOR_MALFORMED")
+    validator = PostV2DiagnosticLedger(
+        POST_V2_DIAGNOSTIC_LAB,
+        goal_record=_post_v2_diagnostic_goal_record(),
+    )
+    rows: list[tuple[dict[str, object], str]] = []
+    previous: str | None = None
+    for sequence, line in enumerate(lines, 1):
+        row = _strict_json(line, 1 << 20)
+        validator._validate_row(row, sequence, previous)
+        digest = _digest_bytes(line)
+        rows.append((row, digest))
+        previous = digest
+    started, terminal = rows[0], rows[1]
+    if (
+        terminal[0]["previous_entry_digest"] != started[1]
+        or terminal[0]["diagnostic_start_digest"] != started[1]
+        or terminal[0]["diagnostic_bundle_digest"]
+        != POST_V2_DIAGNOSTIC_BUNDLE_DIGEST
+    ):
+        _stop("PACKAGE_PLAN_DISCRIMINATOR_PREDECESSOR_MALFORMED")
+    for name in validator._common_keys() - {
+        "post_v2_diagnostic_ledger_version", "sequence",
+        "previous_entry_digest", "entry_type", "recorded_at",
+    }:
+        if terminal[0][name] != started[0][name]:
+            _stop("PACKAGE_PLAN_DISCRIMINATOR_PREDECESSOR_MALFORMED")
+    bundle_raw = _read_regular(POST_V2_DIAGNOSTIC_BUNDLE, 2 << 20)
+    if _digest_bytes(bundle_raw) != POST_V2_DIAGNOSTIC_BUNDLE_DIGEST:
+        _stop("PACKAGE_PLAN_DISCRIMINATOR_PREDECESSOR_DIGEST_MISMATCH")
+    bundle = _validate_post_v2_diagnostic_record(
+        _strict_json(bundle_raw, 2 << 20), lab=POST_V2_DIAGNOSTIC_LAB
+    )
+    if (
+        bundle["diagnostic_start_digest"] != started[1]
+        or bundle["diagnostic_contract"] != started[0]["diagnostic_contract"]
+        or bundle["diagnostic_contract_digest"]
+        != started[0]["diagnostic_contract_digest"]
+        or bundle["contract_core_digest"]
+        != started[0]["contract_core_digest"]
+    ):
+        _stop("PACKAGE_PLAN_DISCRIMINATOR_PREDECESSOR_MALFORMED")
+    return {
+        "failed_qualification_v2_ledger_digest": failed,
+        "post_v2_diagnostic_ledger_digest": POST_V2_DIAGNOSTIC_LEDGER_DIGEST,
+        "post_v2_diagnostic_bundle_digest": POST_V2_DIAGNOSTIC_BUNDLE_DIGEST,
+    }
+
+
 class DiagnosticStart(NamedTuple):
     candidate: str
     tree: str
@@ -1663,6 +1856,21 @@ class PostV2DiagnosticLedger:
             _canonical(_validate_post_v2_diagnostic_goal_record(goal_record)),
             1 << 20,
         )
+        self.discriminator = (
+            self.goal_record["goal_kind"]
+            == "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR"
+        )
+        self.ledger_name = (
+            PACKAGE_PLAN_DISCRIMINATOR_LEDGER_NAME
+            if self.discriminator
+            else POST_V2_DIAGNOSTIC_LEDGER_NAME
+        )
+        self.ledger_version = "2.1.0" if self.discriminator else "2.0.0"
+        self.diagnostic_kind = (
+            "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR"
+            if self.discriminator
+            else "M4_POST_V2_PRE_ADMISSION"
+        )
         self.goal_record_digest = _digest_bytes(_canonical(self.goal_record))
         self.clock = (lambda: datetime.now(UTC)) if clock is None else clock
         self._directory_descriptor = -1
@@ -1694,19 +1902,21 @@ class PostV2DiagnosticLedger:
             if created:
                 _fsync_directory(self.lab.parent)
             names = set(os.listdir(self.lab))
+            if self.discriminator and not created and self.ledger_name not in names:
+                _stop("POST_V2_DIAGNOSTIC_LAB_REUSE_FORBIDDEN")
             if (
-                POST_V2_DIAGNOSTIC_LEDGER_NAME not in names
+                self.ledger_name not in names
                 and names
-                or POST_V2_DIAGNOSTIC_LEDGER_NAME in names
+                or self.ledger_name in names
                 and not names <= {
-                    POST_V2_DIAGNOSTIC_LEDGER_NAME, "runs", "diagnostics"
+                    self.ledger_name, "runs", "diagnostics"
                 }
             ):
                 _stop("POST_V2_DIAGNOSTIC_LAB_REUSE_FORBIDDEN")
             ledger_created = False
             try:
                 self._descriptor = os.open(
-                    POST_V2_DIAGNOSTIC_LEDGER_NAME,
+                    self.ledger_name,
                     os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL
                     | os.O_CLOEXEC | os.O_NOFOLLOW,
                     0o600,
@@ -1715,7 +1925,7 @@ class PostV2DiagnosticLedger:
                 ledger_created = True
             except FileExistsError:
                 self._descriptor = os.open(
-                    POST_V2_DIAGNOSTIC_LEDGER_NAME,
+                    self.ledger_name,
                     os.O_RDWR | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW,
                     dir_fd=self._directory_descriptor,
                 )
@@ -1792,9 +2002,8 @@ class PostV2DiagnosticLedger:
                 _stop("POST_V2_DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
         return rows
 
-    @staticmethod
-    def _common_keys() -> set[str]:
-        return {
+    def _common_keys(self) -> set[str]:
+        keys = {
             "post_v2_diagnostic_ledger_version", "sequence",
             "previous_entry_digest", "entry_type", "recorded_at",
             "diagnostic_kind", "candidate", "tree", "environment",
@@ -1804,6 +2013,18 @@ class PostV2DiagnosticLedger:
             "contract_core_digest", "diagnostic_contract_digest",
             "max_attempts", "attempt",
         }
+        if self.discriminator:
+            keys |= {
+                "predecessor_post_v2_diagnostic_ledger_digest",
+                "predecessor_post_v2_diagnostic_bundle_digest",
+                "success_target", "success_target_authorizing",
+            }
+        return keys
+
+    def _terminal_reasons(self) -> frozenset[str]:
+        if self.discriminator:
+            return _DIAGNOSTIC_REASONS | {_PACKAGE_RUNTIME_PLAN_REJECTED}
+        return _DIAGNOSTIC_REASONS
 
     def _validate_row(
         self, row: object, sequence: int, previous: str | None
@@ -1829,14 +2050,19 @@ class PostV2DiagnosticLedger:
             "base_image_digest", "contract_core_digest",
             "diagnostic_contract_digest",
         )
+        if self.discriminator:
+            digest_names += (
+                "predecessor_post_v2_diagnostic_ledger_digest",
+                "predecessor_post_v2_diagnostic_bundle_digest",
+            )
         if (
-            row["post_v2_diagnostic_ledger_version"] != "2.0.0"
+            row["post_v2_diagnostic_ledger_version"] != self.ledger_version
             or type(row["sequence"]) is not int
             or row["sequence"] != sequence
             or row["previous_entry_digest"] != previous
             or row["entry_type"]
             != ("DIAGNOSTIC_STARTED" if sequence == 1 else "DIAGNOSTIC_TERMINAL")
-            or row["diagnostic_kind"] != "M4_POST_V2_PRE_ADMISSION"
+            or row["diagnostic_kind"] != self.diagnostic_kind
             or type(row["candidate"]) is not str
             or _COMMIT.fullmatch(row["candidate"]) is None
             or type(row["tree"]) is not str
@@ -1857,6 +2083,18 @@ class PostV2DiagnosticLedger:
             or row["attempt"] != 1
             or type(row["recorded_at"]) is not str
             or _TIME.fullmatch(row["recorded_at"]) is None
+            or (
+                self.discriminator
+                and (
+                    row["predecessor_post_v2_diagnostic_ledger_digest"]
+                    != POST_V2_DIAGNOSTIC_LEDGER_DIGEST
+                    or row["predecessor_post_v2_diagnostic_bundle_digest"]
+                    != POST_V2_DIAGNOSTIC_BUNDLE_DIGEST
+                    or type(row["success_target"]) is not int
+                    or row["success_target"] != 1
+                    or row["success_target_authorizing"] is not False
+                )
+            )
         ):
             _stop("POST_V2_DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
         recorded = datetime.strptime(
@@ -1883,6 +2121,21 @@ class PostV2DiagnosticLedger:
                 or row["contract_core_digest"] != contract["contract_core_digest"]
                 or row["diagnostic_contract_digest"]
                 != _post_v2_diagnostic_contract_digest(contract)
+                or (
+                    self.discriminator
+                    and (
+                        row["predecessor_post_v2_diagnostic_ledger_digest"]
+                        != core[
+                            "predecessor_post_v2_diagnostic_ledger_digest"
+                        ]
+                        or row[
+                            "predecessor_post_v2_diagnostic_bundle_digest"
+                        ]
+                        != core[
+                            "predecessor_post_v2_diagnostic_bundle_digest"
+                        ]
+                    )
+                )
             ):
                 _stop("POST_V2_DIAGNOSTIC_LEDGER_BINDING_MISMATCH")
         else:
@@ -1891,7 +2144,7 @@ class PostV2DiagnosticLedger:
                 row["systemd_properties_digest"], row["cleanup_digest"],
             )
             if (
-                row["terminal_reason"] not in _DIAGNOSTIC_REASONS
+                row["terminal_reason"] not in self._terminal_reasons()
                 or any(
                     type(item) is not str or _DIGEST.fullmatch(item) is None
                     for item in values
@@ -1916,14 +2169,14 @@ class PostV2DiagnosticLedger:
         extra: dict[str, object],
     ) -> str:
         row = {
-            "post_v2_diagnostic_ledger_version": "2.0.0",
+            "post_v2_diagnostic_ledger_version": self.ledger_version,
             "sequence": len(self._rows) + 1,
             "previous_entry_digest": None if not self._rows else self._rows[-1][1],
             "entry_type": entry_type,
             "recorded_at": self.clock().astimezone(UTC).replace(
                 microsecond=0
             ).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "diagnostic_kind": "M4_POST_V2_PRE_ADMISSION",
+            "diagnostic_kind": self.diagnostic_kind,
             "candidate": start.candidate,
             "tree": start.tree,
             "environment": start.environment,
@@ -1941,6 +2194,19 @@ class PostV2DiagnosticLedger:
             "attempt": 1,
             **extra,
         }
+        if self.discriminator:
+            row.update(
+                {
+                    "predecessor_post_v2_diagnostic_ledger_digest": (
+                        POST_V2_DIAGNOSTIC_LEDGER_DIGEST
+                    ),
+                    "predecessor_post_v2_diagnostic_bundle_digest": (
+                        POST_V2_DIAGNOSTIC_BUNDLE_DIGEST
+                    ),
+                    "success_target": 1,
+                    "success_target_authorizing": False,
+                }
+            )
         raw = _canonical(row)
         digest = _digest_bytes(raw)
         line = raw + b"\n"
@@ -2004,7 +2270,7 @@ class PostV2DiagnosticLedger:
         )
         if (
             start != self._active
-            or terminal_reason not in _DIAGNOSTIC_REASONS
+            or terminal_reason not in self._terminal_reasons()
             or any(
                 type(item) is not str or _DIGEST.fullmatch(item) is None
                 for item in values
@@ -2910,6 +3176,26 @@ def _validate_package_runtime_plan_observation(
     return value
 
 
+def _package_runtime_plan_observation_error(
+    reason: str,
+) -> dict[str, str]:
+    error = _PACKAGE_RUNTIME_PLAN_PARSER_ERRORS.get(reason, reason)
+    if error not in PACKAGE_RUNTIME_PLAN_OBSERVATION_ERRORS:
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ERROR_UNKNOWN")
+    return {"package_runtime_plan_observation_error": error}
+
+
+def _validate_package_runtime_plan_observation_error(
+    value: object,
+) -> str:
+    if (
+        type(value) is not str
+        or value not in PACKAGE_RUNTIME_PLAN_OBSERVATION_ERRORS
+    ):
+        _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_ERROR_UNKNOWN")
+    return value
+
+
 def _extract_package_runtime_plan_observation(
     unit_raw: bytes,
 ) -> dict[str, object]:
@@ -3535,14 +3821,18 @@ def _run_post_v2_diagnostic_vm_phase(
     client_key: Path,
     known_hosts: Path,
     contract: dict[str, object],
+    *,
+    lab: Path = POST_V2_DIAGNOSTIC_LAB,
 ) -> tuple[
     dict[str, object], str, list[str], list[str], list[dict[str, object]],
     dict[str, object], dict[str, object] | None,
 ]:
+    discriminator = (
+        contract["contract_core"]["contract_kind"]
+        == "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR"
+    )
     unit = "harness-m4-controller@run.service"
-    with QemuProcess(
-        attempt_root, 1, "run", lab=POST_V2_DIAGNOSTIC_LAB
-    ) as qemu:
+    with QemuProcess(attempt_root, 1, "run", lab=lab) as qemu:
         _wait_for_ssh(qemu, client_key, known_hosts)
         boot_id = _guest_boot_id(client_key, known_hosts)
         _ssh(
@@ -3553,49 +3843,110 @@ def _run_post_v2_diagnostic_vm_phase(
         observation = _wait_key_ready_diagnostic(
             qemu, client_key, known_hosts, unit
         )
-        (
-            unit_lines,
-            kernel_lines,
-            markers,
-            package_runtime_plan_observation,
-        ) = _collect_pre_key_diagnostics(
-            qemu,
-            client_key,
-            known_hosts,
-            unit,
-            require_package_runtime_plan_observation=True,
-        )
-        if package_runtime_plan_observation is None:
-            _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING")
+        try:
+            (
+                unit_lines,
+                kernel_lines,
+                markers,
+                package_runtime_plan_result,
+            ) = _collect_pre_key_diagnostics(
+                qemu,
+                client_key,
+                known_hosts,
+                unit,
+                require_package_runtime_plan_observation=True,
+            )
+            if package_runtime_plan_result is None:
+                _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING")
+        except QualificationStop as error:
+            if (
+                not discriminator
+                or str(error) not in _PACKAGE_RUNTIME_PLAN_PARSER_ERRORS
+            ):
+                raise
+            package_runtime_plan_result = (
+                _package_runtime_plan_observation_error(str(error))
+            )
+            error_name = package_runtime_plan_result[
+                "package_runtime_plan_observation_error"
+            ]
+            unavailable = [
+                "UNAVAILABLE:PACKAGE_RUNTIME_PLAN_OBSERVATION_" + error_name
+            ]
+            try:
+                (
+                    unit_lines,
+                    kernel_lines,
+                    markers,
+                    _,
+                ) = _collect_pre_key_diagnostics(
+                    qemu,
+                    client_key,
+                    known_hosts,
+                    unit,
+                    require_package_runtime_plan_observation=False,
+                )
+            except QualificationStop:
+                unit_lines, kernel_lines, markers = unavailable, unavailable, []
+            if len(unit_lines) > 512 or any(
+                type(line) is not str or len(line) > 1024
+                for line in unit_lines
+            ):
+                unit_lines, markers = unavailable, []
+            if len(kernel_lines) > 512 or any(
+                type(line) is not str or len(line) > 1024
+                for line in kernel_lines
+            ):
+                kernel_lines = unavailable
+            observation = {
+                **observation,
+                "terminal_reason": _PACKAGE_RUNTIME_PLAN_REJECTED,
+            }
         ready = observation["key_ready"]
         if ready is not None:
-            try:
-                _validate_post_v2_key_ready(ready, contract)
-            except QualificationStop:
+            if discriminator:
+                package_runtime_plan_result = (
+                    _package_runtime_plan_observation_error(
+                        "KEY_READY_FORBIDDEN"
+                    )
+                )
                 observation = {
                     **observation,
-                    "terminal_reason": "SERVICE_FAILED_PRE_KEY_READY",
-                    "key_ready": None,
+                    "terminal_reason": _PACKAGE_RUNTIME_PLAN_REJECTED,
                 }
-                unit_lines = (
-                    unit_lines + ["HOST:POST_V2_KEY_READY_MALFORMED"]
-                )[-512:]
+            else:
+                try:
+                    _validate_post_v2_key_ready(ready, contract)
+                except QualificationStop:
+                    observation = {
+                        **observation,
+                        "terminal_reason": "SERVICE_FAILED_PRE_KEY_READY",
+                        "key_ready": None,
+                    }
+                    unit_lines = (
+                        unit_lines + ["HOST:POST_V2_KEY_READY_MALFORMED"]
+                    )[-512:]
         if qemu.alive():
             try:
                 _poweroff(qemu, client_key, known_hosts)
             except QualificationStop:
-                observation = {
-                    **observation,
-                    "terminal_reason": "QEMU_EXITED",
-                    "qemu_return_code": getattr(qemu.process, "returncode", None),
-                }
+                if not (
+                    discriminator
+                    and frozenset(package_runtime_plan_result)
+                    == {"package_runtime_plan_observation_error"}
+                ):
+                    observation = {
+                        **observation,
+                        "terminal_reason": "QEMU_EXITED",
+                        "qemu_return_code": getattr(
+                            qemu.process, "returncode", None
+                        ),
+                    }
     _verify_management_port_free()
     return (
         observation, boot_id, unit_lines, kernel_lines, markers,
-        package_runtime_plan_observation,
-        _diagnostic_qemu_outcome(
-            qemu, "run", lab=POST_V2_DIAGNOSTIC_LAB
-        ),
+        package_runtime_plan_result,
+        _diagnostic_qemu_outcome(qemu, "run", lab=lab),
     )
 
 
@@ -3893,7 +4244,7 @@ def _sanitize_post_v2_diagnostic_record(
     if type(record) is not dict:
         _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
     value = dict(record)
-    if value.get("diagnostic_version") == "2.1.0":
+    if value.get("diagnostic_version") in {"2.1.0", "2.2.0"}:
         _validate_package_runtime_plan_observation_lines(
             value.get("unit_journal"),
             value.get("package_runtime_plan_observation"),
@@ -3972,8 +4323,12 @@ def _validate_post_v2_diagnostic_record(
         _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
     if value["diagnostic_version"] == "2.0.0":
         expected = historical_expected
-    elif value["diagnostic_version"] == "2.1.0":
+    elif value["diagnostic_version"] in {"2.1.0", "2.2.0"}:
         expected = historical_expected | {"package_runtime_plan_observation"}
+    elif value["diagnostic_version"] == "2.3.0":
+        expected = historical_expected | {
+            "package_runtime_plan_observation_error"
+        }
     else:
         _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
     if frozenset(value) != expected:
@@ -3983,6 +4338,21 @@ def _validate_post_v2_diagnostic_record(
         value["diagnostic_contract"]
     )
     core = contract["contract_core"]
+    discriminator = (
+        core["contract_kind"] == "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR"
+    )
+    expected_claim = (
+        "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR_ONLY"
+        if discriminator
+        else "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY"
+    )
+    observation_error = (
+        _validate_package_runtime_plan_observation_error(
+            value["package_runtime_plan_observation_error"]
+        )
+        if value["diagnostic_version"] == "2.3.0"
+        else None
+    )
     properties = value["systemd_properties"]
     artifacts = value["artifact_digests"]
     markers = value["stage_markers"]
@@ -3991,7 +4361,15 @@ def _validate_post_v2_diagnostic_record(
         value["contract_core_digest"], value["diagnostic_start_digest"],
     )
     if (
-        value["claim"] != "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY"
+        value["claim"] != expected_claim
+        or (
+            discriminator
+            and value["diagnostic_version"] not in {"2.2.0", "2.3.0"}
+        )
+        or (
+            not discriminator
+            and value["diagnostic_version"] not in {"2.0.0", "2.1.0"}
+        )
         or value["status"] != "NOT_ATTESTED"
         or core["goal_record"] != goal
         or value["goal_record_digest"] != _digest_bytes(_canonical(goal))
@@ -4007,7 +4385,15 @@ def _validate_post_v2_diagnostic_record(
             value["boot_id"] != "UNAVAILABLE"
             and re.fullmatch(r"[0-9a-f-]{36}", value["boot_id"]) is None
         )
-        or value["observed_terminal_reason"] not in _DIAGNOSTIC_REASONS
+        or (
+            value["diagnostic_version"] == "2.3.0"
+            and value["observed_terminal_reason"]
+            != _PACKAGE_RUNTIME_PLAN_REJECTED
+        )
+        or (
+            value["diagnostic_version"] != "2.3.0"
+            and value["observed_terminal_reason"] not in _DIAGNOSTIC_REASONS
+        )
         or type(properties) is not dict
         or frozenset(properties) != frozenset(_SERVICE_PROPERTIES)
         or any(
@@ -4037,6 +4423,20 @@ def _validate_post_v2_diagnostic_record(
                 or _DIGEST.fullmatch(value["key_ready_digest"]) is None
             )
         )
+        or (
+            discriminator
+            and value["diagnostic_version"] == "2.2.0"
+            and value["key_ready_digest"] is not None
+        )
+        or (
+            value["diagnostic_version"] == "2.3.0"
+            and (
+                observation_error == "KEY_READY_FORBIDDEN"
+                and value["key_ready_digest"] is None
+                or observation_error != "KEY_READY_FORBIDDEN"
+                and value["key_ready_digest"] is not None
+            )
+        )
     ):
         _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
     order = (
@@ -4058,7 +4458,20 @@ def _validate_post_v2_diagnostic_record(
         seen.append(marker["stage"])
     if seen != sorted(seen, key=order.index):
         _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
-    if value["diagnostic_version"] == "2.1.0":
+    if (
+        discriminator
+        and value["diagnostic_version"] == "2.2.0"
+        and seen != ["SERVICE_ENTERED"]
+    ):
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    if (
+        discriminator
+        and value["diagnostic_version"] == "2.3.0"
+        and observation_error != "KEY_READY_FORBIDDEN"
+        and seen not in ([], ["SERVICE_ENTERED"])
+    ):
+        _stop("POST_V2_DIAGNOSTIC_RECORD_MALFORMED")
+    if value["diagnostic_version"] in {"2.1.0", "2.2.0"}:
         _validate_package_runtime_plan_observation_lines(
             value["unit_journal"],
             value["package_runtime_plan_observation"],
@@ -4591,10 +5004,43 @@ def _key_ready_diagnostic(goal: Path) -> dict[str, object]:
             raise
 
 
-def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
-    goal_record = _post_v2_diagnostic_goal_record()
-    _validate_post_v2_diagnostic_goal_record(goal_record)
-    predecessor_digest = _verify_failed_v2_qualification_ledger()
+def _post_v2_pre_admission_diagnostic(
+    *, goal_record: object | None = None
+) -> dict[str, object]:
+    if goal_record is None:
+        goal_record = _post_v2_diagnostic_goal_record()
+    goal_record = _validate_post_v2_diagnostic_goal_record(goal_record)
+    discriminator = (
+        goal_record["goal_kind"]
+        == "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR"
+    )
+    lab = (
+        PACKAGE_PLAN_DISCRIMINATOR_LAB
+        if discriminator
+        else POST_V2_DIAGNOSTIC_LAB
+    )
+    claim = (
+        "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR_ONLY"
+        if discriminator
+        else "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY"
+    )
+    goal_digest = (
+        PACKAGE_PLAN_DISCRIMINATOR_GOAL_DIGEST
+        if discriminator
+        else POST_V2_DIAGNOSTIC_GOAL_DIGEST
+    )
+    predecessors = (
+        _verify_package_plan_discriminator_predecessors()
+        if discriminator
+        else {
+            "failed_qualification_v2_ledger_digest": (
+                _verify_failed_v2_qualification_ledger()
+            )
+        }
+    )
+    predecessor_digest = predecessors[
+        "failed_qualification_v2_ledger_digest"
+    ]
     source = _source_state()
     _, profile_digest = _profile()
     image, qemu_version = _verify_host_assets()
@@ -4631,19 +5077,16 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
     kernel_lines = ["UNAVAILABLE:PROVISION_FAILED"]
     markers: list[dict[str, object]] = []
     package_runtime_plan_observation: dict[str, object] | None = None
+    package_runtime_plan_observation_error: str | None = None
     cleanup_complete = False
     removed: list[str] = []
     bundle: Path | None = None
     cleanup_error: QualificationStop | None = None
-    with PostV2DiagnosticLedger(
-        POST_V2_DIAGNOSTIC_LAB, goal_record=goal_record
-    ) as ledger:
+    with PostV2DiagnosticLedger(lab, goal_record=goal_record) as ledger:
         ledger.ensure_available()
-        runs = POST_V2_DIAGNOSTIC_LAB / "runs"
+        runs = lab / "runs"
         _mkdir_exact(runs, 0o700)
-        if (POST_V2_DIAGNOSTIC_LAB / "diagnostics").exists() or (
-            POST_V2_DIAGNOSTIC_LAB / "diagnostics"
-        ).is_symlink():
+        if (lab / "diagnostics").exists() or (lab / "diagnostics").is_symlink():
             _stop("POST_V2_DIAGNOSTIC_DESTINATION_REUSE_FORBIDDEN")
         attempt_root = runs / "attempt-1"
         if attempt_root.exists() or attempt_root.is_symlink():
@@ -4664,7 +5107,7 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
                 qemu_version=qemu_version,
                 seed_digest=seed_digest,
                 attempt=1,
-                lab=POST_V2_DIAGNOSTIC_LAB,
+                lab=lab,
                 phases=("provision", "run"),
             )
             contract = _post_v2_diagnostic_contract(
@@ -4690,7 +5133,7 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
                     known_hosts,
                     host_provenance=provenance,
                     request=request,
-                    lab=POST_V2_DIAGNOSTIC_LAB,
+                    lab=lab,
                 )
             except VMCleanupUnproven:
                 raise
@@ -4704,11 +5147,34 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
                         unit_lines,
                         kernel_lines,
                         markers,
-                        package_runtime_plan_observation,
+                        package_runtime_plan_result,
                         phase_outcomes["run"],
                     ) = _run_post_v2_diagnostic_vm_phase(
-                        attempt_root, client_key, known_hosts, contract
+                        attempt_root,
+                        client_key,
+                        known_hosts,
+                        contract,
+                        lab=lab,
                     )
+                    if (
+                        discriminator
+                        and type(package_runtime_plan_result) is dict
+                        and frozenset(package_runtime_plan_result)
+                        == {"package_runtime_plan_observation_error"}
+                    ):
+                        package_runtime_plan_observation_error = (
+                            _validate_package_runtime_plan_observation_error(
+                                package_runtime_plan_result[
+                                    "package_runtime_plan_observation_error"
+                                ]
+                            )
+                        )
+                    else:
+                        package_runtime_plan_observation = (
+                            _validate_package_runtime_plan_observation(
+                                package_runtime_plan_result
+                            )
+                        )
                 except VMCleanupUnproven:
                     raise
                 except QualificationStop as error:
@@ -4731,15 +5197,24 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
                 else None
             )
             qemu_log_captures = _capture_post_v2_qemu_logs(attempt_root)
-            if package_runtime_plan_observation is None:
+            if (
+                package_runtime_plan_observation is None
+                and package_runtime_plan_observation_error is None
+            ):
                 _stop("POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING")
+            if package_runtime_plan_observation_error is not None:
+                terminal_reason = _PACKAGE_RUNTIME_PLAN_REJECTED
             record = _sanitize_post_v2_diagnostic_record(
                 {
-                    "diagnostic_version": "2.1.0",
-                    "claim": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY",
+                    "diagnostic_version": (
+                        "2.3.0"
+                        if package_runtime_plan_observation_error is not None
+                        else ("2.2.0" if discriminator else "2.1.0")
+                    ),
+                    "claim": claim,
                     "status": "NOT_ATTESTED",
                     "goal_record": goal_record,
-                    "goal_record_digest": POST_V2_DIAGNOSTIC_GOAL_DIGEST,
+                    "goal_record_digest": goal_digest,
                     "diagnostic_contract": contract,
                     "diagnostic_contract_digest": (
                         _post_v2_diagnostic_contract_digest(contract)
@@ -4752,30 +5227,38 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
                     "unit_journal": unit_lines,
                     "kernel_events": kernel_lines,
                     "stage_markers": markers,
-                    "package_runtime_plan_observation": (
-                        package_runtime_plan_observation
+                    **(
+                        {
+                            "package_runtime_plan_observation_error": (
+                                package_runtime_plan_observation_error
+                            )
+                        }
+                        if package_runtime_plan_observation_error is not None
+                        else {
+                            "package_runtime_plan_observation": (
+                                package_runtime_plan_observation
+                            )
+                        }
                     ),
                     "artifact_digests": artifact_digests,
                     "qemu_phase_outcomes": phase_outcomes,
                     "qemu_log_captures": qemu_log_captures,
                     "key_ready_digest": key_ready_digest,
                 },
-                lab=POST_V2_DIAGNOSTIC_LAB,
+                lab=lab,
             )
-            bundle = _materialize_post_v2_diagnostic_bundle(
-                POST_V2_DIAGNOSTIC_LAB, record
-            )
+            bundle = _materialize_post_v2_diagnostic_bundle(lab, record)
             bundle_digest = _digest_file(bundle, 2 << 20)
             try:
                 removed = _cleanup_diagnostic_attempt(
-                    attempt_root, lab=POST_V2_DIAGNOSTIC_LAB
+                    attempt_root, lab=lab
                 )
                 cleanup_complete = True
                 try:
                     os.rmdir(runs)
                 except OSError:
                     pass
-                _fsync_directory(POST_V2_DIAGNOSTIC_LAB)
+                _fsync_directory(lab)
             except QualificationStop as error:
                 cleanup_error = error
                 terminal_reason = "CLEANUP_FAILED"
@@ -4797,12 +5280,10 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
             )
             if cleanup_error is not None:
                 raise cleanup_error
-            ledger_path = (
-                POST_V2_DIAGNOSTIC_LAB / POST_V2_DIAGNOSTIC_LEDGER_NAME
-            )
+            ledger_path = lab / ledger.ledger_name
             return {
                 "outcome": "DIAGNOSTIC_COMPLETE",
-                "claim": "M4_POST_V2_PRE_ADMISSION_DIAGNOSTIC_ONLY",
+                "claim": claim,
                 "status": "NOT_ATTESTED",
                 "terminal_reason": terminal_reason,
                 "last_stage": markers[-1]["stage"] if markers else "NONE",
@@ -4822,6 +5303,22 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
                 "host_tool_digests": tools,
                 "disk_bytes_remaining_after_worst_case": remaining,
                 "predecessor_qualification_ledger_digest": predecessor_digest,
+                **(
+                    {
+                        "predecessor_post_v2_diagnostic_ledger_digest": (
+                            predecessors[
+                                "post_v2_diagnostic_ledger_digest"
+                            ]
+                        ),
+                        "predecessor_post_v2_diagnostic_bundle_digest": (
+                            predecessors[
+                                "post_v2_diagnostic_bundle_digest"
+                            ]
+                        ),
+                    }
+                    if discriminator
+                    else {}
+                ),
             }
         except VMCleanupUnproven:
             raise
@@ -4829,13 +5326,19 @@ def _post_v2_pre_admission_diagnostic() -> dict[str, object]:
             if attempt_root.exists() or attempt_root.is_symlink():
                 try:
                     _cleanup_diagnostic_attempt(
-                        attempt_root, lab=POST_V2_DIAGNOSTIC_LAB
+                        attempt_root, lab=lab
                     )
                 except QualificationStop as cleanup_failure:
                     raise QualificationStop(
                         "CLEANUP_FAILED:" + str(cleanup_failure)
                     ) from primary_error
             raise
+
+
+def _package_plan_discriminator() -> dict[str, object]:
+    return _post_v2_pre_admission_diagnostic(
+        goal_record=_package_plan_discriminator_goal_record()
+    )
 
 
 def _qualification_terminal_reason(error: BaseException, fallback: str) -> str:
@@ -5016,9 +5519,21 @@ def _post_v2_diagnostic_absent(reason: str) -> dict[str, object]:
     }
 
 
+def _package_plan_discriminator_absent(reason: str) -> dict[str, object]:
+    return {
+        "outcome": "ABSENT",
+        "claim": "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR_ONLY",
+        "reason": reason,
+        "status": "NOT_ATTESTED",
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     post_v2_diagnostic = arguments == ["--post-v2-pre-admission-diagnostic"]
+    package_plan_discriminator = arguments == [
+        "--package-runtime-plan-discriminator"
+    ]
     try:
         if not arguments:
             result = _qualification()
@@ -5026,18 +5541,28 @@ def main(argv: list[str] | None = None) -> int:
             result = _key_ready_diagnostic(Path(arguments[1]))
         elif arguments == ["--post-v2-pre-admission-diagnostic"]:
             result = _post_v2_pre_admission_diagnostic()
+        elif package_plan_discriminator:
+            result = _package_plan_discriminator()
         else:
             _stop("M4_HOST_ARGUMENTS_FORBIDDEN")
     except (OSError, ValueError, QualificationStop) as error:
         reason = str(error) if str(error) else (
-            "M4_POST_V2_DIAGNOSTIC_FAILED"
-            if post_v2_diagnostic
-            else "M4_HOST_QUALIFICATION_FAILED"
+            "M4_PACKAGE_PLAN_DISCRIMINATOR_FAILED"
+            if package_plan_discriminator
+            else (
+                "M4_POST_V2_DIAGNOSTIC_FAILED"
+                if post_v2_diagnostic
+                else "M4_HOST_QUALIFICATION_FAILED"
+            )
         )
         failure = (
-            _post_v2_diagnostic_absent(reason)
-            if post_v2_diagnostic
-            else _absent(reason)
+            _package_plan_discriminator_absent(reason)
+            if package_plan_discriminator
+            else (
+                _post_v2_diagnostic_absent(reason)
+                if post_v2_diagnostic
+                else _absent(reason)
+            )
         )
         sys.stdout.buffer.write(_canonical(failure) + b"\n")
         return 1

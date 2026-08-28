@@ -1825,6 +1825,191 @@ class M4VMRunnerContractTests(unittest.TestCase):
                 module.PUBLICATION_ROOT = old_root
                 module.DENIED_REPOSITORY = old_denied
 
+    def test_package_plan_discriminator_contract_is_closed_and_stops_before_keys(
+        self,
+    ) -> None:
+        module = _module()
+        goal = {
+            "goal_version": "1.0.0",
+            "goal_kind": "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR",
+            "user_scope_reference": (
+                "thread:/goal/m4-package-runtime-plan-discriminator/2026-08-28"
+            ),
+            "predecessor_qualification_ledger_digest": (
+                "sha256:c80f4eb33b811b59a4f80aee5fdf781964b441d20e1620ca4b1f2b63f30c479a"
+            ),
+            "predecessor_post_v2_diagnostic_ledger_digest": (
+                "sha256:e8cfa1b9117268bf2298ba1936a99a79114e8f83aea2188e998fce6becdf97dc"
+            ),
+            "predecessor_post_v2_diagnostic_bundle_digest": (
+                "sha256:51b84c6477a17a66e92290ed7cb6f787fb9df8f5445d112d76e3e38c055f6d2f"
+            ),
+            "max_attempts": 1,
+            "success_target": 1,
+            "success_target_authorizing": False,
+            "allowed_phases": ["provision", "run"],
+            "allowed_outcome": "SANITIZED_PACKAGE_RUNTIME_PLAN_OBSERVATION_ONLY",
+            "forbidden_operations": [
+                "AUTOMATIC_RETRY",
+                "KEY_ADMISSION_ARTIFACT",
+                "PACKAGE_PLAN_REMEDIATION",
+                "POST_V2_DIAGNOSTIC_BUNDLE_MUTATION",
+                "POST_V2_DIAGNOSTIC_LEDGER_WRITE",
+                "QUALIFICATION_EVIDENCE_EXPORT",
+                "QUALIFICATION_V2_LEDGER_WRITE",
+                "REBOOT_OR_RECOVERY",
+                "RUNTIME_VERIFIED_CLAIM",
+                "WORKER_OR_EFFECT_EXECUTION",
+            ],
+        }
+        core = {
+            "contract_version": "1.0.0",
+            "contract_kind": "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR",
+            "goal_record": goal,
+            "goal_record_digest": module._digest_bytes(module._canonical(goal)),
+            "failed_v2_candidate": module.FAILED_V2_CANDIDATE,
+            "failed_v2_tree": module.FAILED_V2_TREE,
+            "failed_qualification_v2_ledger_digest": (
+                module.FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+            ),
+            "predecessor_post_v2_diagnostic_ledger_digest": (
+                module.POST_V2_DIAGNOSTIC_LEDGER_DIGEST
+            ),
+            "predecessor_post_v2_diagnostic_bundle_digest": (
+                module.POST_V2_DIAGNOSTIC_BUNDLE_DIGEST
+            ),
+            "candidate": "e" * 40,
+            "tree": "f" * 40,
+            "attempt": 1,
+            "source_files_digest": "sha256:" + "1" * 64,
+            "canonical_profile_digest": module.CANONICAL_PROFILE_DIGEST,
+            "raw_profile_artifact_digest": module.CANONICAL_PROFILE_DIGEST,
+            "base_image_digest": module.BASE_IMAGE_DIGEST,
+            "max_attempts": 1,
+            "allowed_phases": ["provision", "run"],
+            "non_authorizing": True,
+        }
+        core_digest = module._digest_bytes(module._canonical(core))
+        environment = {
+            "contract_core_digest": core_digest,
+            "source_archive_digest": "sha256:" + "2" * 64,
+            "seed_digest": "sha256:" + "3" * 64,
+            "package_runtime_plan_digest": "sha256:" + "4" * 64,
+            "host_provenance_digest": "sha256:" + "5" * 64,
+        }
+        contract = {
+            "contract_core": core,
+            "contract_core_digest": core_digest,
+            "environment_preimage": environment,
+            "environment_digest": module._digest_bytes(module._canonical(environment)),
+        }
+        request = {
+            "request_version": "2.2.0",
+            "mode": "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR",
+            "diagnostic_contract": contract,
+            "diagnostic_contract_digest": module._digest_bytes(
+                module._canonical(contract)
+            ),
+        }
+        self.assertEqual(
+            module._validate_launch_request(request),
+            "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR",
+        )
+        for name in (
+            "predecessor_post_v2_diagnostic_ledger_digest",
+            "predecessor_post_v2_diagnostic_bundle_digest",
+        ):
+            changed = deepcopy(request)
+            changed_core = changed["diagnostic_contract"]["contract_core"]
+            changed_core[name] = "sha256:" + "0" * 64
+            changed["diagnostic_contract"]["contract_core_digest"] = (
+                module._digest_bytes(module._canonical(changed_core))
+            )
+            changed["diagnostic_contract"]["environment_preimage"][
+                "contract_core_digest"
+            ] = changed["diagnostic_contract"]["contract_core_digest"]
+            changed["diagnostic_contract"]["environment_digest"] = (
+                module._digest_bytes(
+                    module._canonical(
+                        changed["diagnostic_contract"]["environment_preimage"]
+                    )
+                )
+            )
+            changed["diagnostic_contract_digest"] = module._digest_bytes(
+                module._canonical(changed["diagnostic_contract"])
+            )
+            with self.subTest(name=name), self.assertRaises(module.QualificationStop):
+                module._validate_launch_request(changed)
+
+        with (
+            mock.patch.object(
+                module, "_verify_bound_environment", return_value={"plan": True}
+            ) as verify,
+            self.assertRaisesRegex(
+                module.QualificationStop,
+                "^PACKAGE_RUNTIME_PLAN_DISCRIMINATOR_NO_FAILURE$",
+            ),
+        ):
+            module._verify_package_plan_discriminator_environment(
+                request, {}, {}, {}
+            )
+        self.assertIs(verify.call_args.kwargs["diagnostic_observation"], True)
+        run_source = inspect.getsource(module._run_phase)
+        self.assertLess(
+            run_source.index("_verify_package_plan_discriminator_environment("),
+            run_source.index('_diagnostic_stage("REQUEST_VALIDATED")'),
+        )
+        for forbidden in (
+            "_complete_post_v2_diagnostic(", "_await_key_admission(",
+            "_export_m4_evidence(",
+        ):
+            self.assertNotIn(
+                forbidden,
+                inspect.getsource(module._verify_package_plan_discriminator_environment),
+            )
+
+        fake_m3 = type(
+            "M3",
+            (),
+            {
+                "_require_guest": staticmethod(lambda: {}),
+                "_source_identity": staticmethod(lambda: {}),
+                "_host_provenance": staticmethod(lambda: {}),
+            },
+        )()
+        with (
+            mock.patch.object(module, "_diagnostic_stage"),
+            mock.patch.object(module.os, "geteuid", return_value=0),
+            mock.patch.object(module, "_profile", return_value={}),
+            mock.patch.object(module, "_load_m3", return_value=fake_m3),
+            mock.patch.object(
+                module.Path,
+                "read_text",
+                return_value="00000000-0000-0000-0000-000000000001",
+            ),
+            mock.patch.object(
+                module, "_read_regular", return_value=module._canonical(request)
+            ),
+            mock.patch.object(
+                module,
+                "_verify_package_plan_discriminator_environment",
+                side_effect=module.QualificationStop("DISCRIMINATOR_STOP"),
+            ) as discriminator,
+            mock.patch.object(module, "_prepare_keys") as prepare_keys,
+            mock.patch.object(module, "_await_key_admission") as admission,
+            mock.patch.object(module, "_configure_m3_supply_trust") as effects,
+            mock.patch.object(module, "_export_m4_evidence") as evidence,
+            self.assertRaisesRegex(
+                module.QualificationStop, "^DISCRIMINATOR_STOP$"
+            ),
+        ):
+            module._run_phase()
+        discriminator.assert_called_once()
+        prepare_keys.assert_not_called()
+        admission.assert_not_called()
+        effects.assert_not_called()
+        evidence.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

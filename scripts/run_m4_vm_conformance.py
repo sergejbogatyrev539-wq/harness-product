@@ -124,6 +124,12 @@ FAILED_QUALIFICATION_V2_LEDGER_DIGEST = (
 )
 FAILED_V2_CANDIDATE = "a2336eb987364cc6bff0fdcdc7d7bfb8b21b3db8"
 FAILED_V2_TREE = "106facb47f1b203ed121917adfa7c885374d9fdc"
+POST_V2_DIAGNOSTIC_LEDGER_DIGEST = (
+    "sha256:e8cfa1b9117268bf2298ba1936a99a79114e8f83aea2188e998fce6becdf97dc"
+)
+POST_V2_DIAGNOSTIC_BUNDLE_DIGEST = (
+    "sha256:51b84c6477a17a66e92290ed7cb6f787fb9df8f5445d112d76e3e38c055f6d2f"
+)
 POST_V2_DIAGNOSTIC_MODE = "POST_V2_PRE_ADMISSION_DIAGNOSTIC"
 POST_V2_DIAGNOSTIC_GOAL_REFERENCE = (
     "thread:/goal/m4-post-v2-pre-admission-diagnostic/2026-08-28"
@@ -131,6 +137,25 @@ POST_V2_DIAGNOSTIC_GOAL_REFERENCE = (
 POST_V2_DIAGNOSTIC_FORBIDDEN_OPERATIONS = [
     "AUTOMATIC_RETRY",
     "KEY_ADMISSION_ARTIFACT",
+    "QUALIFICATION_EVIDENCE_EXPORT",
+    "QUALIFICATION_V2_LEDGER_WRITE",
+    "REBOOT_OR_RECOVERY",
+    "RUNTIME_VERIFIED_CLAIM",
+    "WORKER_OR_EFFECT_EXECUTION",
+]
+PACKAGE_PLAN_DISCRIMINATOR_MODE = "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR"
+PACKAGE_PLAN_DISCRIMINATOR_GOAL_REFERENCE = (
+    "thread:/goal/m4-package-runtime-plan-discriminator/2026-08-28"
+)
+PACKAGE_PLAN_DISCRIMINATOR_GOAL_DIGEST = (
+    "sha256:44ff546b459a3e433b0b9ed1d009eb92c82b9fd1f3afc5f331a1ba0fe51115aa"
+)
+PACKAGE_PLAN_DISCRIMINATOR_FORBIDDEN_OPERATIONS = [
+    "AUTOMATIC_RETRY",
+    "KEY_ADMISSION_ARTIFACT",
+    "PACKAGE_PLAN_REMEDIATION",
+    "POST_V2_DIAGNOSTIC_BUNDLE_MUTATION",
+    "POST_V2_DIAGNOSTIC_LEDGER_WRITE",
     "QUALIFICATION_EVIDENCE_EXPORT",
     "QUALIFICATION_V2_LEDGER_WRITE",
     "REBOOT_OR_RECOVERY",
@@ -339,6 +364,28 @@ _POST_V2_DIAGNOSTIC_GOAL_KEYS = frozenset(
         "goal_version", "goal_kind", "user_scope_reference",
         "predecessor_qualification_ledger_digest", "max_attempts",
         "allowed_phases", "allowed_outcome", "forbidden_operations",
+    }
+)
+_PACKAGE_PLAN_DISCRIMINATOR_CORE_KEYS = frozenset(
+    {
+        "contract_version", "contract_kind", "goal_record", "goal_record_digest",
+        "failed_v2_candidate", "failed_v2_tree",
+        "failed_qualification_v2_ledger_digest",
+        "predecessor_post_v2_diagnostic_ledger_digest",
+        "predecessor_post_v2_diagnostic_bundle_digest", "candidate", "tree",
+        "attempt", "source_files_digest", "canonical_profile_digest",
+        "raw_profile_artifact_digest", "base_image_digest", "max_attempts",
+        "allowed_phases", "non_authorizing",
+    }
+)
+_PACKAGE_PLAN_DISCRIMINATOR_GOAL_KEYS = frozenset(
+    {
+        "goal_version", "goal_kind", "user_scope_reference",
+        "predecessor_qualification_ledger_digest",
+        "predecessor_post_v2_diagnostic_ledger_digest",
+        "predecessor_post_v2_diagnostic_bundle_digest", "max_attempts",
+        "success_target", "success_target_authorizing", "allowed_phases",
+        "allowed_outcome", "forbidden_operations",
     }
 )
 _PACKAGE_RUNTIME_PLAN_KEYS = frozenset(
@@ -690,6 +737,107 @@ def _post_v2_diagnostic_request_contract(
     return contract, contract_digest
 
 
+def _package_plan_discriminator_request_contract(
+    request: dict[str, object],
+) -> tuple[dict[str, object], str]:
+    if (
+        type(request) is not dict
+        or frozenset(request) != _POST_V2_DIAGNOSTIC_REQUEST_KEYS
+        or request.get("request_version") != "2.2.0"
+        or request.get("mode") != PACKAGE_PLAN_DISCRIMINATOR_MODE
+    ):
+        _stop("M4_PACKAGE_PLAN_DISCRIMINATOR_REQUEST_MISMATCH")
+    contract = request["diagnostic_contract"]
+    if type(contract) is not dict or frozenset(contract) != (
+        _POST_V2_DIAGNOSTIC_CONTRACT_KEYS
+    ):
+        _stop("M4_PACKAGE_PLAN_DISCRIMINATOR_CONTRACT_MISMATCH")
+    core = contract["contract_core"]
+    environment = contract["environment_preimage"]
+    if (
+        type(core) is not dict
+        or frozenset(core) != _PACKAGE_PLAN_DISCRIMINATOR_CORE_KEYS
+        or type(environment) is not dict
+        or frozenset(environment) != _QUALIFICATION_ENVIRONMENT_KEYS
+    ):
+        _stop("M4_PACKAGE_PLAN_DISCRIMINATOR_CONTRACT_MISMATCH")
+    goal = core["goal_record"]
+    expected_goal = {
+        "goal_version": "1.0.0",
+        "goal_kind": PACKAGE_PLAN_DISCRIMINATOR_MODE,
+        "user_scope_reference": PACKAGE_PLAN_DISCRIMINATOR_GOAL_REFERENCE,
+        "predecessor_qualification_ledger_digest": (
+            FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        ),
+        "predecessor_post_v2_diagnostic_ledger_digest": (
+            POST_V2_DIAGNOSTIC_LEDGER_DIGEST
+        ),
+        "predecessor_post_v2_diagnostic_bundle_digest": (
+            POST_V2_DIAGNOSTIC_BUNDLE_DIGEST
+        ),
+        "max_attempts": 1,
+        "success_target": 1,
+        "success_target_authorizing": False,
+        "allowed_phases": ["provision", "run"],
+        "allowed_outcome": (
+            "SANITIZED_PACKAGE_RUNTIME_PLAN_OBSERVATION_ONLY"
+        ),
+        "forbidden_operations": (
+            PACKAGE_PLAN_DISCRIMINATOR_FORBIDDEN_OPERATIONS
+        ),
+    }
+    if (
+        type(goal) is not dict
+        or frozenset(goal) != _PACKAGE_PLAN_DISCRIMINATOR_GOAL_KEYS
+        or _canonical(goal) != _canonical(expected_goal)
+        or _digest_bytes(_canonical(goal))
+        != PACKAGE_PLAN_DISCRIMINATOR_GOAL_DIGEST
+        or core["contract_version"] != "1.0.0"
+        or core["contract_kind"] != PACKAGE_PLAN_DISCRIMINATOR_MODE
+        or core["goal_record_digest"]
+        != PACKAGE_PLAN_DISCRIMINATOR_GOAL_DIGEST
+        or core["failed_v2_candidate"] != FAILED_V2_CANDIDATE
+        or core["failed_v2_tree"] != FAILED_V2_TREE
+        or core["failed_qualification_v2_ledger_digest"]
+        != FAILED_QUALIFICATION_V2_LEDGER_DIGEST
+        or core["predecessor_post_v2_diagnostic_ledger_digest"]
+        != POST_V2_DIAGNOSTIC_LEDGER_DIGEST
+        or core["predecessor_post_v2_diagnostic_bundle_digest"]
+        != POST_V2_DIAGNOSTIC_BUNDLE_DIGEST
+        or type(core["candidate"]) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", core["candidate"]) is None
+        or core["candidate"] == FAILED_V2_CANDIDATE
+        or type(core["tree"]) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", core["tree"]) is None
+        or core["tree"] == FAILED_V2_TREE
+        or type(core["attempt"]) is not int
+        or isinstance(core["attempt"], bool)
+        or core["attempt"] != 1
+        or not _is_digest(core["source_files_digest"])
+        or core["canonical_profile_digest"] != CANONICAL_PROFILE_DIGEST
+        or core["raw_profile_artifact_digest"] != CANONICAL_PROFILE_DIGEST
+        or core["base_image_digest"] != BASE_IMAGE_DIGEST
+        or type(core["max_attempts"]) is not int
+        or isinstance(core["max_attempts"], bool)
+        or core["max_attempts"] != 1
+        or core["allowed_phases"] != ["provision", "run"]
+        or core["non_authorizing"] is not True
+        or not all(_is_digest(item) for item in environment.values())
+    ):
+        _stop("M4_PACKAGE_PLAN_DISCRIMINATOR_CONTRACT_MISMATCH")
+    core_digest = _digest_bytes(_canonical(core))
+    contract_digest = _digest_bytes(_canonical(contract))
+    if (
+        contract["contract_core_digest"] != core_digest
+        or environment["contract_core_digest"] != core_digest
+        or contract["environment_digest"]
+        != _digest_bytes(_canonical(environment))
+        or request["diagnostic_contract_digest"] != contract_digest
+    ):
+        _stop("M4_PACKAGE_PLAN_DISCRIMINATOR_CONTRACT_DIGEST_MISMATCH")
+    return contract, contract_digest
+
+
 def _validate_launch_request(request: object) -> str:
     diagnostic_keys = frozenset(
         {
@@ -704,8 +852,14 @@ def _validate_launch_request(request: object) -> str:
         _qualification_request_contract(request)
         return "QUALIFICATION"
     if frozenset(request) == _POST_V2_DIAGNOSTIC_REQUEST_KEYS:
-        _post_v2_diagnostic_request_contract(request)
-        return POST_V2_DIAGNOSTIC_MODE
+        selector = (request.get("request_version"), request.get("mode"))
+        if selector == ("2.1.0", POST_V2_DIAGNOSTIC_MODE):
+            _post_v2_diagnostic_request_contract(request)
+            return POST_V2_DIAGNOSTIC_MODE
+        if selector == ("2.2.0", PACKAGE_PLAN_DISCRIMINATOR_MODE):
+            _package_plan_discriminator_request_contract(request)
+            return PACKAGE_PLAN_DISCRIMINATOR_MODE
+        _stop("M4_DIAGNOSTIC_REQUEST_MISMATCH")
     if frozenset(request) == diagnostic_keys:
         if (
             request["request_version"] != "1.1.0"
@@ -906,6 +1060,24 @@ def _verify_post_v2_diagnostic_environment(
         "M4_POST_V2_DIAGNOSTIC_ENVIRONMENT_MISMATCH",
         diagnostic_observation=True,
     )
+
+
+def _verify_package_plan_discriminator_environment(
+    request: dict[str, object],
+    source: dict[str, object],
+    host_provenance: dict[str, object],
+    profile: dict[str, object],
+) -> None:
+    contract, _ = _package_plan_discriminator_request_contract(request)
+    _verify_bound_environment(
+        contract,
+        source,
+        host_provenance,
+        profile,
+        "M4_PACKAGE_PLAN_DISCRIMINATOR_ENVIRONMENT_MISMATCH",
+        diagnostic_observation=True,
+    )
+    _stop("PACKAGE_RUNTIME_PLAN_DISCRIMINATOR_NO_FAILURE")
 
 
 def _validate_run_state(value: object) -> dict[str, object]:
@@ -5332,6 +5504,10 @@ def _run_phase() -> None:
         )
     elif request_mode == POST_V2_DIAGNOSTIC_MODE:
         _verify_post_v2_diagnostic_environment(
+            request, source, host_provenance, profile
+        )
+    elif request_mode == PACKAGE_PLAN_DISCRIMINATOR_MODE:
+        _verify_package_plan_discriminator_environment(
             request, source, host_provenance, profile
         )
     elif request["candidate"] != source["commit"] or request["tree"] != source["tree"]:

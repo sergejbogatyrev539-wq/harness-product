@@ -2306,6 +2306,341 @@ class M4HostLauncherTests(unittest.TestCase):
         )
         self.assertNotIn("M4_EXACT_DISPOSABLE", failure["claim"])
 
+    def test_package_plan_discriminator_is_exact_bound_one_use_and_non_authorizing(
+        self,
+    ) -> None:
+        goal = self.launcher._package_plan_discriminator_goal_record()
+        self.assertEqual(goal["goal_kind"], "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR")
+        self.assertEqual(goal["max_attempts"], 1)
+        self.assertEqual(goal["success_target"], 1)
+        self.assertIs(goal["success_target_authorizing"], False)
+        self.assertEqual(
+            goal["predecessor_qualification_ledger_digest"],
+            self.launcher.FAILED_QUALIFICATION_V2_LEDGER_DIGEST,
+        )
+        self.assertEqual(
+            goal["predecessor_post_v2_diagnostic_ledger_digest"],
+            "sha256:e8cfa1b9117268bf2298ba1936a99a79114e8f83aea2188e998fce6becdf97dc",
+        )
+        self.assertEqual(
+            goal["predecessor_post_v2_diagnostic_bundle_digest"],
+            "sha256:51b84c6477a17a66e92290ed7cb6f787fb9df8f5445d112d76e3e38c055f6d2f",
+        )
+        self.assertEqual(
+            self.launcher._digest_bytes(self.launcher._canonical(goal)),
+            "sha256:44ff546b459a3e433b0b9ed1d009eb92c82b9fd1f3afc5f331a1ba0fe51115aa",
+        )
+        contract = self.launcher._post_v2_diagnostic_contract(
+            goal_record=goal,
+            candidate="e" * 40,
+            tree="f" * 40,
+            source_files_digest="sha256:" + "1" * 64,
+            source_archive_digest="sha256:" + "2" * 64,
+            seed_digest="sha256:" + "3" * 64,
+            package_runtime_plan_digest="sha256:" + "4" * 64,
+            host_provenance_digest="sha256:" + "5" * 64,
+        )
+        core = contract["contract_core"]
+        self.assertEqual(core["contract_kind"], goal["goal_kind"])
+        self.assertEqual(core["contract_version"], "1.0.0")
+        for name in (
+            "predecessor_post_v2_diagnostic_ledger_digest",
+            "predecessor_post_v2_diagnostic_bundle_digest",
+        ):
+            self.assertEqual(core[name], goal[name])
+        request = self.launcher._post_v2_diagnostic_request(contract)
+        self.assertEqual(request["request_version"], "2.2.0")
+        self.assertEqual(request["mode"], "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR")
+
+        unavailable = {
+            name: "UNAVAILABLE" for name in self.launcher._SERVICE_PROPERTIES
+        }
+        package_observation = {
+            "binding_id": "RUNTIME_TOOL_LIBCRYPTO",
+            "non_authorizing": True,
+            "outcome": "MISMATCH",
+            "record_type": "M4_PACKAGE_RUNTIME_PLAN_OBSERVATION",
+        }
+        class FakeQemu:
+            process = type("Process", (), {"returncode": 0})()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            @staticmethod
+            def alive() -> bool:
+                return True
+
+        for name, ready, collection, expected_error in (
+            (
+                "missing",
+                None,
+                [
+                    self.launcher.QualificationStop(
+                        "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MISSING"
+                    ),
+                    (["missing observation"], [], [], None),
+                ],
+                "MISSING",
+            ),
+            (
+                "key-ready",
+                {"unexpected": True},
+                [(["observation", "stop"], [], [], package_observation)],
+                "KEY_READY_FORBIDDEN",
+            ),
+            (
+                "malformed-unbounded-recollection",
+                None,
+                [
+                    self.launcher.QualificationStop(
+                        "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED"
+                    ),
+                    self.launcher.QualificationStop(
+                        "DIAGNOSTIC_JOURNAL_UNBOUNDED"
+                    ),
+                ],
+                "MALFORMED",
+            ),
+            (
+                "malformed-oversized-line",
+                None,
+                [
+                    self.launcher.QualificationStop(
+                        "POST_V2_PACKAGE_RUNTIME_PLAN_OBSERVATION_MALFORMED"
+                    ),
+                    (["x" * 1025], [], [], None),
+                ],
+                "MALFORMED",
+            ),
+        ):
+            with (
+                self.subTest(name=name),
+                mock.patch.object(self.launcher, "QemuProcess", return_value=FakeQemu()),
+                mock.patch.object(self.launcher, "_wait_for_ssh"),
+                mock.patch.object(
+                    self.launcher,
+                    "_guest_boot_id",
+                    return_value="00000000-0000-0000-0000-000000000001",
+                ),
+                mock.patch.object(self.launcher, "_ssh"),
+                mock.patch.object(
+                    self.launcher,
+                    "_wait_key_ready_diagnostic",
+                    return_value={
+                        "terminal_reason": (
+                            "KEY_READY_REACHED"
+                            if ready is not None
+                            else "SERVICE_FAILED_PRE_KEY_READY"
+                        ),
+                        "key_ready": ready,
+                        "systemd_properties": unavailable,
+                        "qemu_return_code": None,
+                    },
+                ),
+                mock.patch.object(
+                    self.launcher,
+                    "_collect_pre_key_diagnostics",
+                    side_effect=collection,
+                ),
+                mock.patch.object(self.launcher, "_poweroff"),
+                mock.patch.object(self.launcher, "_verify_management_port_free"),
+                mock.patch.object(
+                    self.launcher,
+                    "_diagnostic_qemu_outcome",
+                    return_value={
+                        "argv_digest": "sha256:" + "a" * 64,
+                        "return_code": 0,
+                    },
+                ),
+            ):
+                phase = self.launcher._run_post_v2_diagnostic_vm_phase(
+                    self.root / "attempt-1",
+                    self.root / "ssh-client",
+                    self.root / "known-hosts",
+                    contract,
+                    lab=self.root / "phase-lab",
+                )
+            self.assertEqual(
+                phase[5], {"package_runtime_plan_observation_error": expected_error}
+            )
+            self.assertEqual(
+                phase[0]["terminal_reason"],
+                "PACKAGE_RUNTIME_PLAN_OBSERVATION_REJECTED",
+            )
+            self.assertLessEqual(len(phase[2]), 512)
+            self.assertTrue(all(len(line) <= 1024 for line in phase[2]))
+
+        lab = self.root / "package-plan-discriminator"
+        with self.launcher.PostV2DiagnosticLedger(
+            lab, goal_record=goal, clock=lambda: self.now
+        ) as ledger:
+            start = ledger.begin(contract)
+            outcomes = {
+                phase: {
+                    "argv_digest": self.launcher._digest_bytes(
+                        self.launcher._canonical(
+                            self.launcher._qemu_argv(1, phase, lab=lab)
+                        )
+                    ),
+                    "return_code": 0,
+                }
+                for phase in ("provision", "run")
+            }
+            error_record = {
+                "diagnostic_version": "2.3.0",
+                "claim": "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR_ONLY",
+                "status": "NOT_ATTESTED",
+                "goal_record": goal,
+                "goal_record_digest": self.launcher.PACKAGE_PLAN_DISCRIMINATOR_GOAL_DIGEST,
+                "diagnostic_contract": contract,
+                "diagnostic_contract_digest": (
+                    self.launcher._post_v2_diagnostic_contract_digest(contract)
+                ),
+                "contract_core_digest": contract["contract_core_digest"],
+                "diagnostic_start_digest": start.digest,
+                "boot_id": "UNAVAILABLE",
+                "observed_terminal_reason": (
+                    "PACKAGE_RUNTIME_PLAN_OBSERVATION_REJECTED"
+                ),
+                "systemd_properties": unavailable,
+                "unit_journal": ["missing observation"],
+                "kernel_events": [],
+                "stage_markers": [
+                    {
+                        "record_type": "M4_PRE_KEY_STAGE",
+                        "stage": "SERVICE_ENTERED",
+                        "non_authorizing": True,
+                    }
+                ],
+                "package_runtime_plan_observation_error": "MISSING",
+                "artifact_digests": {
+                    name: "sha256:" + character * 64
+                    for name, character in (
+                        ("host_launcher", "1"), ("runner", "2"),
+                        ("service", "3"), ("profile", "4"),
+                    )
+                },
+                "qemu_phase_outcomes": outcomes,
+                "qemu_log_captures": {
+                    name: {"bytes": 0, "digest": None, "lines": []}
+                    for name in (
+                        "provision.qemu.log", "provision.serial.log",
+                        "run.qemu.log", "run.serial.log",
+                    )
+                },
+                "key_ready_digest": None,
+            }
+            bundle = self.launcher._materialize_post_v2_diagnostic_bundle(
+                lab, error_record
+            )
+            bundle_digest = self.launcher._digest_file(bundle, 2 << 20)
+            ledger.terminalize(
+                start,
+                "PACKAGE_RUNTIME_PLAN_OBSERVATION_REJECTED",
+                diagnostic_bundle_digest=bundle_digest,
+                key_ready_digest=None,
+                systemd_properties_digest="sha256:" + "7" * 64,
+                cleanup_digest="sha256:" + "8" * 64,
+                qemu_phase_outcomes=outcomes,
+            )
+        ledger_path = lab / self.launcher.PACKAGE_PLAN_DISCRIMINATOR_LEDGER_NAME
+        self.assertTrue(ledger_path.is_file())
+        rows = [json.loads(line) for line in ledger_path.read_bytes().splitlines()]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["max_attempts"], 1)
+        self.assertEqual(rows[0]["success_target"], 1)
+        self.assertIs(rows[0]["success_target_authorizing"], False)
+        self.assertEqual(rows[1]["previous_entry_digest"], start.digest)
+        self.assertEqual(rows[1]["diagnostic_bundle_digest"], bundle_digest)
+        self.assertEqual(
+            self.launcher._read_post_v2_diagnostic_bundle(bundle, lab=lab),
+            error_record,
+        )
+        late_success = dict(error_record)
+        late_success["diagnostic_version"] = "2.2.0"
+        late_success.pop("package_runtime_plan_observation_error")
+        late_success["package_runtime_plan_observation"] = package_observation
+        late_success["observed_terminal_reason"] = "SERVICE_FAILED_PRE_KEY_READY"
+        late_success["unit_journal"] = [
+            self.launcher._canonical(package_observation).decode("utf-8"),
+            self.launcher._canonical(
+                {
+                    "outcome": "STOP",
+                    "reason": "PACKAGE_RUNTIME_PLAN_BINDING_MISMATCH",
+                    "status": "NOT_ATTESTED",
+                }
+            ).decode("utf-8"),
+        ]
+        late_success["stage_markers"] = [
+            *error_record["stage_markers"],
+            {
+                "record_type": "M4_PRE_KEY_STAGE",
+                "stage": "REQUEST_VALIDATED",
+                "non_authorizing": True,
+            },
+        ]
+        with self.assertRaisesRegex(
+            self.launcher.QualificationStop,
+            "POST_V2_DIAGNOSTIC_RECORD_MALFORMED",
+        ):
+            self.launcher._validate_post_v2_diagnostic_record(
+                late_success, lab=lab
+            )
+        with self.assertRaisesRegex(
+            self.launcher.QualificationStop,
+            "POST_V2_DIAGNOSTIC_ATTEMPT_LIMIT_REACHED",
+        ):
+            with self.launcher.PostV2DiagnosticLedger(
+                lab, goal_record=goal, clock=lambda: self.now
+            ) as ledger:
+                ledger.ensure_available()
+
+        self.assertEqual(
+            self.launcher.PACKAGE_PLAN_DISCRIMINATOR_LAB,
+            Path(
+                "/home/a1/Загрузки/harness/"
+                "harness-m4-package-plan-discriminator"
+            ),
+        )
+        source = inspect.getsource(self.launcher._package_plan_discriminator)
+        for forbidden in (
+            ".admit(", "_key_admission(", '"recover"', "_export_bundle(",
+            "_verify_bundle(", "_qualification(",
+        ):
+            self.assertNotIn(forbidden, source)
+        pipeline = inspect.getsource(self.launcher._post_v2_pre_admission_diagnostic)
+        self.assertLess(
+            pipeline.index("_materialize_post_v2_diagnostic_bundle"),
+            pipeline.index("_cleanup_diagnostic_attempt"),
+        )
+        self.assertLess(
+            pipeline.index("_cleanup_diagnostic_attempt"),
+            pipeline.index("ledger.terminalize"),
+        )
+        output = tempfile.TemporaryFile(mode="w+b")
+        stdout = mock.Mock(buffer=output)
+        with (
+            mock.patch.object(self.launcher.sys, "stdout", stdout),
+            mock.patch.object(
+                self.launcher,
+                "_package_plan_discriminator",
+                side_effect=self.launcher.QualificationStop("EXPECTED_STOP"),
+            ),
+        ):
+            self.assertEqual(
+                self.launcher.main(["--package-runtime-plan-discriminator"]), 1
+            )
+        output.seek(0)
+        failure = json.loads(output.read())
+        output.close()
+        self.assertEqual(
+            failure["claim"], "M4_PACKAGE_RUNTIME_PLAN_DISCRIMINATOR_ONLY"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
