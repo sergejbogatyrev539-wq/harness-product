@@ -2787,12 +2787,68 @@ class M4VMRunnerContractTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(module.QualificationStop):
                 module._validate_run_state(value)
 
+    def test_prepared_publication_root_fd_resolves_exact_canonical_target(self) -> None:
+        module = _module()
+        l0 = module._load_project()[1]
+        compiled = l0.compile_profile(module._strict_bytes(L0_PROFILE.read_bytes()))
+        self.assertEqual(
+            (compiled.outcome, compiled.reason),
+            (l0.L0Outcome.COMPILED_DRAFT, l0.L0Reason.PROFILE_COMPILED),
+        )
+        self.assertIsNotNone(compiled.profile)
+
+        with tempfile.TemporaryDirectory(prefix="harness-m4-publication-root-") as directory:
+            base = Path(directory)
+            parent = base / "anchor"
+            root = parent / "publication"
+            denied = base / "synthetic-repository"
+            root_descriptor = -1
+            try:
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch.object(module, "PUBLICATION_PARENT", parent))
+                    stack.enter_context(mock.patch.object(module, "PUBLICATION_ROOT", root))
+                    stack.enter_context(mock.patch.object(module, "DENIED_REPOSITORY", denied))
+                    stack.enter_context(mock.patch.object(module.os, "chown"))
+                    stack.enter_context(mock.patch.object(module.os, "fchown"))
+                    root_descriptor = module._prepare_publication_root()
+
+                    result = l0.resolve_target(
+                        compiled.profile,
+                        root_descriptor,
+                        {
+                            "canonical_path": "/staging/artifact.txt",
+                            "descriptor_id": "m4-publication-target-1",
+                            "root_id": "m4-publication-root-1",
+                            "resolution_epoch": 1,
+                        },
+                    )
+                    self.assertEqual(
+                        (result.outcome, result.reason),
+                        (l0.L0Outcome.RESOLVED, l0.L0Reason.PATH_RESOLVED),
+                    )
+                    self.assertIsNotNone(result.binding)
+                    target = root / "artifact.txt"
+                    info = target.stat()
+                    self.assertEqual(result.binding.canonical_path, "/staging/artifact.txt")
+                    self.assertEqual(
+                        (result.binding.final_device, result.binding.final_inode),
+                        (info.st_dev, info.st_ino),
+                    )
+                    self.assertEqual(result.binding.final_digest, module._digest_bytes(b"old\n"))
+                    self.assertFalse((root / "staging").exists())
+            finally:
+                if root_descriptor >= 0:
+                    module.os.close(root_descriptor)
+                for path in (parent, denied, denied / ".git"):
+                    if path.exists():
+                        module.os.chmod(path, 0o700)
+
     def test_restart_publication_rejects_oversized_artifact_before_hashing(self) -> None:
         module = _module()
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "anchor"
             root = parent / "publication"
-            artifact = root / "staging" / "artifact.txt"
+            artifact = root / "artifact.txt"
             denied = Path(directory) / "synthetic-repository"
             artifact.parent.mkdir(parents=True)
             denied.mkdir()
@@ -2826,7 +2882,10 @@ class M4VMRunnerContractTests(unittest.TestCase):
                     module,
                     "_digest_bytes",
                     side_effect=AssertionError("oversized bytes reached the hasher"),
-                ), self.assertRaises(module.QualificationStop):
+                ), self.assertRaisesRegex(
+                    module.QualificationStop,
+                    "^M4_PUBLICATION_RESTART_BYTES_MISMATCH$",
+                ):
                     module._recover_publication(state)
             finally:
                 module.PUBLICATION_PARENT = old_parent

@@ -3860,10 +3860,7 @@ def _prepare_publication_root() -> int:
     os.chmod(PUBLICATION_PARENT, 0o555)
     os.chown(PUBLICATION_ROOT, publisher_uid, publisher_gid)
     os.chmod(PUBLICATION_ROOT, 0o700)
-    staging = PUBLICATION_ROOT / "staging"
-    staging.mkdir(mode=0o700)
-    os.chown(staging, publisher_uid, publisher_gid)
-    target = staging / "artifact.txt"
+    target = PUBLICATION_ROOT / "artifact.txt"
     _write_exact(target, b"old\n", 0o600, publisher_uid, publisher_gid)
     denied_git = DENIED_REPOSITORY / ".git"
     denied_git.mkdir(parents=True, mode=0o555)
@@ -5520,7 +5517,7 @@ def _recover_publication(state: dict[str, object]) -> dict[str, object]:
         ):
             _stop("M4_PUBLICATION_RESTART_IDENTITY_MISMATCH")
         artifact_descriptor = os.open(
-            "staging/artifact.txt",
+            "artifact.txt",
             os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
             dir_fd=root_descriptor,
         )
@@ -6118,7 +6115,7 @@ def _run_phase() -> None:
             _stop("M4_PUBLICATION_EVIDENCE_ABSENT")
         published_binding = publication_events[0]["receipt"]["published_binding"]
         artifact_digest = _digest_file(
-            PUBLICATION_ROOT / "staging" / "artifact.txt",
+            PUBLICATION_ROOT / "artifact.txt",
             1 << 20,
         )
         marker = {
