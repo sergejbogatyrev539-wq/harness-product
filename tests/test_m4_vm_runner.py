@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 import importlib.util
 import inspect
 from enum import Enum
@@ -3016,6 +3017,403 @@ class M4VMRunnerContractTests(unittest.TestCase):
         admission.assert_not_called()
         effects.assert_not_called()
         evidence.assert_not_called()
+
+    def test_post_key_exception_reason_is_closed_fixed_and_secret_free(
+        self,
+    ) -> None:
+        module = _module()
+        host = _host_module()
+
+        class PrivateRuntimeError(Exception):
+            pass
+
+        cases = (
+            (
+                json.JSONDecodeError(
+                    "private token", "/private/customer/path", 0
+                ),
+                "JSONDECODEERROR",
+            ),
+            (module.sqlite3.IntegrityError("private token"), "SQLITEERROR"),
+            (
+                module.subprocess.CalledProcessError(
+                    7, ["/private/customer/path"]
+                ),
+                "SUBPROCESSERROR",
+            ),
+            (FileNotFoundError("/private/customer/path"), "OSERROR"),
+            (ValueError("private token"), "VALUEERROR"),
+            (TypeError("private token"), "TYPEERROR"),
+            (KeyError("private token"), "KEYERROR"),
+            (AttributeError("private token"), "ATTRIBUTEERROR"),
+            (PrivateRuntimeError("private token"), "EXCEPTION"),
+        )
+        expected_stages = (
+            "ADMISSION_CONSUMPTION",
+            "SUPPLY_AND_CONTROLLER_SETUP",
+            "PUBLISHER_AUTHORITY_FRONTIER_SETUP",
+            "RUNTIME_CONSTRUCTION",
+            "COORDINATOR_EXECUTION",
+            "PRE_RESTART_FINALIZATION",
+        )
+        self.assertEqual(module._POST_KEY_EXCEPTION_STAGES, expected_stages)
+        for error, code in cases:
+            with self.subTest(error=type(error).__name__):
+                reason = module._post_key_exception_reason(
+                    "RUNTIME_CONSTRUCTION", error
+                )
+                self.assertEqual(
+                    reason,
+                    "M4_POST_KEY_RUNTIME_CONSTRUCTION_" + code,
+                )
+                self.assertTrue(host._is_post_key_run_failure_reason(reason))
+                self.assertNotIn("PRIVATE", reason)
+                self.assertNotIn("CUSTOMER", reason)
+                if isinstance(error, PrivateRuntimeError):
+                    self.assertNotIn("PRIVATERUNTIMEERROR", reason)
+        self.assertEqual(
+            module._post_key_exception_reason(
+                "UNKNOWN_STAGE", OSError("private token")
+            ),
+            "M4_RUNTIME_FAILURE",
+        )
+
+        staged_reason = module._post_key_exception_reason(
+            "RUNTIME_CONSTRUCTION",
+            OSError("private path/token"),
+        )
+        arguments = mock.Mock(internal_role=None, phase="run")
+        stdout = mock.Mock(buffer=BytesIO())
+        stderr = StringIO()
+        with (
+            mock.patch.object(module, "_parse_args", return_value=arguments),
+            mock.patch.object(
+                module,
+                "_run_phase",
+                side_effect=module.QualificationStop(staged_reason),
+            ),
+            mock.patch.object(module.sys, "stdout", stdout),
+            mock.patch.object(module.sys, "stderr", stderr),
+        ):
+            result = module.main([])
+        self.assertEqual(result, 2)
+        self.assertEqual(
+            stdout.buffer.getvalue(),
+            module._canonical(
+                {
+                    "outcome": "STOP",
+                    "reason": "M4_POST_KEY_RUNTIME_CONSTRUCTION_OSERROR",
+                    "status": "NOT_ATTESTED",
+                }
+            )
+            + b"\n",
+        )
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertNotIn(b"private", stdout.buffer.getvalue())
+        self.assertNotIn(b"OSError", stdout.buffer.getvalue())
+        self.assertNotIn(b"Traceback", stdout.buffer.getvalue())
+
+    def test_run_phase_maps_all_six_post_key_exception_boundaries(
+        self,
+    ) -> None:
+        module = _module()
+        stages = (
+            "ADMISSION_CONSUMPTION",
+            "SUPPLY_AND_CONTROLLER_SETUP",
+            "PUBLISHER_AUTHORITY_FRONTIER_SETUP",
+            "RUNTIME_CONSTRUCTION",
+            "COORDINATOR_EXECUTION",
+            "PRE_RESTART_FINALIZATION",
+        )
+
+        def invoke(
+            target: str, error: BaseException
+        ) -> tuple[
+            BaseException,
+            list[str],
+            mock.Mock,
+            mock.Mock,
+            mock.Mock,
+        ]:
+            calls: list[str] = []
+            manager = mock.Mock()
+            controller = mock.Mock()
+            publisher_session = mock.Mock()
+            runtime = mock.Mock(events=[])
+            coordinator = mock.Mock()
+            committed = object()
+            frontier_bound = object()
+            joined = object()
+            joined_reason = object()
+
+            def boundary(stage: str, value: object = None) -> object:
+                calls.append(stage)
+                if target == stage:
+                    raise error
+                return value
+
+            class FinalizationResult:
+                @property
+                def outcome(self) -> object:
+                    return boundary("PRE_RESTART_FINALIZATION")
+
+            with tempfile.TemporaryDirectory(
+                prefix="m4-post-key-stage-"
+            ) as directory:
+                root = Path(directory)
+                runtime_root = root / "runtime"
+                controller_root = root / "controller"
+                evidence_root = root / "evidence"
+                m3_runtime = root / "m3-runtime"
+                m3_controller = root / "m3-controller"
+                publication_parent = root / "publication-parent"
+                publication_root = publication_parent / "publication"
+                publication_root.mkdir(parents=True)
+                raw_l0 = object()
+                compiled_l0 = object()
+                measurement = object()
+                seccomp_program = b"seccomp"
+                topology = object()
+                bound = SimpleNamespace(
+                    outcome=committed,
+                    reason=frontier_bound,
+                    d2_frontier_digest="sha256:" + "1" * 64,
+                    frontier_record_digest="sha256:" + "2" * 64,
+                    m4_iteration=1,
+                    contract_digest="sha256:" + "3" * 64,
+                )
+                controller.bind_current_m4_frontier.return_value = bound
+                durable = SimpleNamespace(
+                    DurableOutcome=SimpleNamespace(COMMITTED=committed),
+                    DurableReason=SimpleNamespace(D2_FRONTIER_BOUND=frontier_bound),
+                )
+                fake_m4 = SimpleNamespace(
+                    M4Outcome=SimpleNamespace(JOINED=joined),
+                    M4Reason=SimpleNamespace(JOINED=joined_reason),
+                    M4Principals=mock.Mock(return_value=object()),
+                    M4Coordinator=mock.Mock(return_value=coordinator),
+                )
+                chain = {
+                    "m4_authority": {
+                        "context": {
+                            "topology": topology,
+                            "topology_verification": {},
+                        }
+                    },
+                    "times": {
+                        "issued_at": "2026-08-28T00:00:00Z",
+                        "prepare_at": "2026-08-28T00:00:00Z",
+                    },
+                    "claim": SimpleNamespace(
+                        transaction_id="transaction",
+                        claim_digest="sha256:" + "4" * 64,
+                        material_digest="sha256:" + "5" * 64,
+                    ),
+                    "supply": SimpleNamespace(
+                        expires_at="2026-08-28T01:00:00Z",
+                    ),
+                    "staging": {
+                        "descriptor": 7,
+                        "path": str(root / "staging"),
+                    },
+                    "content": b"content",
+                }
+
+                def start_publisher(**_kwargs: object) -> tuple[object, object]:
+                    return boundary(
+                        "PUBLISHER_AUTHORITY_FRONTIER_SETUP",
+                        (publisher_session, object()),
+                    )
+
+                def runtime_factory(**_kwargs: object) -> object:
+                    return boundary("RUNTIME_CONSTRUCTION", runtime)
+
+                def execute(*_args: object, **_kwargs: object) -> object:
+                    return boundary(
+                        "COORDINATOR_EXECUTION", FinalizationResult()
+                    )
+
+                coordinator.execute.side_effect = execute
+                fake_m3 = SimpleNamespace(
+                    RUNTIME=m3_runtime,
+                    CONTROLLER=m3_controller,
+                    Ed25519PayloadVerifier=object,
+                    _require_guest=mock.Mock(return_value={}),
+                    _source_identity=mock.Mock(return_value={}),
+                    _host_provenance=mock.Mock(return_value={}),
+                    _load_apparmor=mock.Mock(return_value={}),
+                    _verify_tools=mock.Mock(return_value={}),
+                    _role_seccomp_programs=mock.Mock(
+                        return_value=({"BROKER": b"broker"}, {})
+                    ),
+                    CgroupManager=mock.Mock(return_value=manager),
+                    _authority_chain=mock.Mock(return_value=chain),
+                    _transition_time=mock.Mock(
+                        return_value="2026-08-28T00:00:01Z"
+                    ),
+                )
+                request = {}
+                profile = {
+                    "roles": {
+                        "CONTROLLER": {
+                            "principal_id": "controller-principal",
+                            "session_id": "controller-session",
+                        },
+                        "OBSERVER": {
+                            "principal_id": "observer-principal",
+                            "session_id": "observer-session",
+                        },
+                    }
+                }
+                contract = {"contract_core": {}}
+                contract_digest = "sha256:" + "6" * 64
+                captured: BaseException | None = None
+                patches = (
+                    mock.patch.multiple(
+                        module,
+                        RUNTIME=runtime_root,
+                        CONTROLLER=controller_root,
+                        EVIDENCE=evidence_root,
+                        PUBLICATION_PARENT=publication_parent,
+                        PUBLICATION_ROOT=publication_root,
+                    ),
+                    mock.patch.object(module.os, "geteuid", return_value=0),
+                    mock.patch.object(module.os, "chown"),
+                    mock.patch.object(module.os, "chmod"),
+                    mock.patch.object(
+                        module.Path,
+                        "read_text",
+                        return_value="00000000-0000-0000-0000-000000000001",
+                    ),
+                    mock.patch.object(module, "_diagnostic_stage"),
+                    mock.patch.object(module, "_profile", return_value=profile),
+                    mock.patch.object(module, "_load_m3", return_value=fake_m3),
+                    mock.patch.object(module, "_read_regular", return_value=b"{}"),
+                    mock.patch.object(module, "_strict_bytes", return_value=request),
+                    mock.patch.object(
+                        module,
+                        "_validate_launch_request",
+                        return_value="QUALIFICATION",
+                    ),
+                    mock.patch.object(
+                        module,
+                        "_qualification_request_contract",
+                        return_value=(contract, contract_digest),
+                    ),
+                    mock.patch.object(
+                        module,
+                        "_verify_qualification_environment",
+                        return_value={},
+                    ),
+                    mock.patch.object(module, "_load_apparmor"),
+                    mock.patch.object(
+                        module,
+                        "_prepare_publication_root",
+                        side_effect=lambda: module.os.open(
+                            publication_root,
+                            module.os.O_RDONLY | module.os.O_DIRECTORY,
+                        ),
+                    ),
+                    mock.patch.object(module, "_prepare_keys", return_value={}),
+                    mock.patch.object(module, "_prepare_supply_key", return_value={}),
+                    mock.patch.object(module, "_write_runtime_trust", return_value={}),
+                    mock.patch.object(
+                        module,
+                        "_await_key_admission",
+                        side_effect=lambda *_args: boundary(
+                            "ADMISSION_CONSUMPTION", {}
+                        ),
+                    ),
+                    mock.patch.object(
+                        module,
+                        "_configure_m3_supply_trust",
+                        side_effect=lambda *_args: boundary(
+                            "SUPPLY_AND_CONTROLLER_SETUP",
+                            (
+                                raw_l0,
+                                compiled_l0,
+                                measurement,
+                                seccomp_program,
+                            ),
+                        ),
+                    ),
+                    mock.patch.object(
+                        module,
+                        "_m4_role_seccomp_programs",
+                        return_value={
+                            "PUBLISHER": b"publisher",
+                            "EXECUTOR": b"executor",
+                            "OBSERVER": b"observer",
+                        },
+                    ),
+                    mock.patch.object(
+                        module, "ControllerSession", return_value=controller
+                    ),
+                    mock.patch.object(
+                        module,
+                        "_start_publisher_session",
+                        side_effect=start_publisher,
+                    ),
+                    mock.patch.object(
+                        module, "_m4_authority_builder", return_value=object()
+                    ),
+                    mock.patch.object(
+                        module,
+                        "_load_project",
+                        return_value=(durable, None, fake_m4, None, None),
+                    ),
+                    mock.patch.object(
+                        module, "M4GuestRuntime", side_effect=runtime_factory
+                    ),
+                    mock.patch.object(
+                        module, "ConfiguredVerifierRouter", return_value=object()
+                    ),
+                )
+                with ExitStack() as stack:
+                    for patcher in patches:
+                        stack.enter_context(patcher)
+                    try:
+                        module._run_phase()
+                    except BaseException as caught:
+                        captured = caught
+                if captured is None:
+                    self.fail("post-key boundary did not stop")
+                return captured, calls, manager, controller, publisher_session
+
+        for index, stage in enumerate(stages):
+            private_error = OSError("private path/token")
+            error, calls, manager, controller, publisher = invoke(
+                stage, private_error
+            )
+            with self.subTest(stage=stage):
+                self.assertIsInstance(error, module.QualificationStop)
+                self.assertEqual(
+                    str(error), "M4_POST_KEY_" + stage + "_OSERROR"
+                )
+                self.assertEqual(calls, list(stages[: index + 1]))
+                if index >= 2:
+                    manager.cleanup.assert_called_once_with()
+                    controller.close.assert_called_once_with()
+                if index >= 3:
+                    publisher.close.assert_called_once_with()
+
+        typed = module.QualificationStop("M4_RUNTIME_JOIN_FAILED")
+        error, _, manager, controller, publisher = invoke(
+            "RUNTIME_CONSTRUCTION", typed
+        )
+        self.assertIs(error, typed)
+        manager.cleanup.assert_called_once_with()
+        controller.close.assert_called_once_with()
+        publisher.close.assert_called_once_with()
+        for base_error in (SystemExit(7), KeyboardInterrupt()):
+            error, _, manager, controller, publisher = invoke(
+                "RUNTIME_CONSTRUCTION", base_error
+            )
+            with self.subTest(base_error=type(base_error).__name__):
+                self.assertIs(error, base_error)
+                manager.cleanup.assert_called_once_with()
+                controller.close.assert_called_once_with()
+                publisher.close.assert_called_once_with()
 
     def test_guest_stop_reason_boundary_is_total_closed_and_host_parseable(
         self,

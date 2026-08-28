@@ -457,6 +457,25 @@ class QualificationStop(Exception):
 
 
 _STOP_REASON = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+_POST_KEY_EXCEPTION_STAGES = (
+    "ADMISSION_CONSUMPTION",
+    "SUPPLY_AND_CONTROLLER_SETUP",
+    "PUBLISHER_AUTHORITY_FRONTIER_SETUP",
+    "RUNTIME_CONSTRUCTION",
+    "COORDINATOR_EXECUTION",
+    "PRE_RESTART_FINALIZATION",
+)
+_POST_KEY_EXCEPTION_CLASSES = (
+    (json.JSONDecodeError, "JSONDECODEERROR"),
+    (sqlite3.Error, "SQLITEERROR"),
+    (subprocess.SubprocessError, "SUBPROCESSERROR"),
+    (OSError, "OSERROR"),
+    (ValueError, "VALUEERROR"),
+    (TypeError, "TYPEERROR"),
+    (KeyError, "KEYERROR"),
+    (AttributeError, "ATTRIBUTEERROR"),
+    (Exception, "EXCEPTION"),
+)
 
 
 def _sanitize_stop_reason(reason: object) -> str:
@@ -467,6 +486,19 @@ def _sanitize_stop_reason(reason: object) -> str:
 
 def _stop(reason: object) -> NoReturn:
     raise QualificationStop(_sanitize_stop_reason(reason))
+
+
+def _post_key_exception_reason(stage: object, error: object) -> str:
+    if (
+        type(stage) is not str
+        or stage not in _POST_KEY_EXCEPTION_STAGES
+        or not isinstance(error, Exception)
+    ):
+        return "M4_RUNTIME_FAILURE"
+    for exception_type, code in _POST_KEY_EXCEPTION_CLASSES:
+        if isinstance(error, exception_type):
+            return f"M4_POST_KEY_{stage}_{code}"
+    return "M4_RUNTIME_FAILURE"
 
 
 def _canonical(value: object) -> bytes:
@@ -5841,11 +5873,13 @@ def _run_phase() -> None:
     publisher_session: PublisherSession | None = None
     chain: dict[str, object] | None = None
     denial_events: list[dict[str, object]] = []
+    post_key_stage: str | None = None
     try:
         if request_mode == POST_V2_DIAGNOSTIC_MODE:
             _complete_post_v2_diagnostic(
                 request, keys, supply_key, runtime_trust
             )
+        post_key_stage = "ADMISSION_CONSUMPTION"
         key_admission = _await_key_admission(
             request, keys, supply_key, runtime_trust
         )
@@ -5855,6 +5889,7 @@ def _run_phase() -> None:
             or package_runtime_plan is None
         ):
             _stop("M4_DIAGNOSTIC_REQUEST_NONAUTHORIZING")
+        post_key_stage = "SUPPLY_AND_CONTROLLER_SETUP"
         raw_l0, compiled_l0, measurement, seccomp_program = (
             _configure_m3_supply_trust(m3, supply_key)
         )
@@ -5869,6 +5904,7 @@ def _run_phase() -> None:
                 _publication_denial_probe(manager, point, pause)
             )
 
+        post_key_stage = "PUBLISHER_AUTHORITY_FRONTIER_SETUP"
         publisher_session, publication = _start_publisher_session(
             m3=m3,
             manager=manager,
@@ -5938,6 +5974,7 @@ def _run_phase() -> None:
         ):
             _stop("M4_FRONTIER_BIND_FAILED")
 
+        post_key_stage = "RUNTIME_CONSTRUCTION"
         executor_facts: list[dict[str, object]] = []
         observer_facts: list[dict[str, object]] = []
 
@@ -5994,6 +6031,7 @@ def _run_phase() -> None:
             m4_verifier_factory=ConfiguredVerifierRouter,
             external_verification_provider=controller,
         )
+        post_key_stage = "COORDINATOR_EXECUTION"
         result = coordinator.execute(
             chain["claim"],
             chain["supply"],
@@ -6011,6 +6049,7 @@ def _run_phase() -> None:
                 "observed_at": m4_times,
             },
         )
+        post_key_stage = "PRE_RESTART_FINALIZATION"
         if (
             result.outcome is not m4.M4Outcome.JOINED
             or result.reason is not m4.M4Reason.JOINED
@@ -6161,6 +6200,12 @@ def _run_phase() -> None:
             )
             + b"\n"
         )
+    except QualificationStop:
+        raise
+    except Exception as error:
+        if post_key_stage is None:
+            raise
+        _stop(_post_key_exception_reason(post_key_stage, error))
     finally:
         if publisher_session is not None:
             try:
