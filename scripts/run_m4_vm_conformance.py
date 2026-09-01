@@ -2479,8 +2479,6 @@ def _executor_role() -> None:
         "outcome": result.outcome.value,
         "reason": result.reason.value,
         "record": None if result.record is None else asdict(result.record),
-        "pid": os.getpid(),
-        "session": os.getsid(0),
         "verifier_instances": 3,
         "independent_cryptographic_implementations": False,
     }
@@ -2538,8 +2536,6 @@ def _observer_role() -> None:
     except OSError as error:
         truncate_denied = error.errno in {errno.EBADF, errno.EINVAL, errno.EPERM}
     measurement = {
-        "pid": os.getpid(),
-        "session": os.getsid(0),
         "uid": os.geteuid(),
         "gid": os.getegid(),
         "device": info.st_dev,
@@ -4788,7 +4784,7 @@ def _executor_launcher(
             _stop("EXECUTOR_REPORT_CHANNEL_ABSENT")
         report = _strict_bytes(_read_line(process.stdout.fileno(), MAX_REPORT, 10))
         expected = {
-            "outcome", "reason", "record", "pid", "session",
+            "outcome", "reason", "record",
             "verifier_instances", "independent_cryptographic_implementations",
         }
         if (
@@ -4801,8 +4797,6 @@ def _executor_launcher(
             or type(report["record"]) is not dict
             or frozenset(report["record"])
             != frozenset(l0.StageRecord.__dataclass_fields__)
-            or report["pid"] != launched["process_id"]
-            or report["session"] != launched["facts"]["process_session"]
         ):
             _stop("EXECUTOR_REPORT_MALFORMED")
         record = _stage_record_from_data(report["record"])
@@ -4927,7 +4921,7 @@ def _observer_launcher(
             _stop("OBSERVER_REPORT_CHANNEL_ABSENT")
         report = _strict_bytes(_read_line(process.stdout.fileno(), MAX_REPORT, 10))
         measurement_keys = {
-            "pid", "session", "uid", "gid", "device", "inode", "size",
+            "uid", "gid", "device", "inode", "size",
             "digest", "seals", "read_only", "write_denied", "truncate_denied",
         }
         if (
@@ -4946,10 +4940,10 @@ def _observer_launcher(
         measurement = report["measurement"]
         facts = launched["facts"]
         if (
-            measurement["pid"] != launched["process_id"]
-            or measurement["session"] != facts["process_session"]
-            or measurement["uid"] != ROLE_IDS["OBSERVER"][0]
-            or measurement["gid"] != ROLE_IDS["OBSERVER"][1]
+            type(measurement["uid"]) is not int
+            or type(measurement["gid"]) is not int
+            or measurement["uid"] != facts["namespace_uid"]
+            or measurement["gid"] != facts["namespace_gid"]
             or measurement["device"] != snapshot.device
             or measurement["inode"] != snapshot.inode
             or measurement["size"] != snapshot.size
@@ -4990,8 +4984,8 @@ def _observer_launcher(
             report["verification_source"],
             launched["process_id"],
             facts["process_session"],
-            ROLE_IDS["OBSERVER"][0],
-            ROLE_IDS["OBSERVER"][1],
+            facts["launcher_uid"],
+            facts["launcher_gid"],
         )
     except Exception:
         _abort_m4_role(m3, manager, launched)

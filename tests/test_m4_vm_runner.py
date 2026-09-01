@@ -808,6 +808,238 @@ class M4VMRunnerContractTests(unittest.TestCase):
                     entrypoint()
                 next_boundary.assert_not_called()
 
+    def test_nested_role_reports_keep_namespace_and_host_identity_coordinates_distinct(
+        self,
+    ) -> None:
+        module = _module()
+        durable, l0, m4, _, _ = module._load_project()
+        digest = "sha256:" + "1" * 64
+        host_pid = 91_001
+        host_session = 91_002
+        host_uid = 91_003
+        host_gid = 91_004
+        namespace_uid = 11_003
+        namespace_gid = 12_003
+        facts = {
+            "process_session": host_session,
+            "launcher_uid": host_uid,
+            "launcher_gid": host_gid,
+            "namespace_uid": namespace_uid,
+            "namespace_gid": namespace_gid,
+        }
+
+        def launched_role() -> tuple[dict[str, object], mock.Mock]:
+            process = mock.Mock(spec=module.subprocess.Popen)
+            process.stdout = mock.Mock()
+            process.stdout.fileno.return_value = 70
+            return (
+                {
+                    "process": process,
+                    "process_id": host_pid,
+                    "facts": dict(facts),
+                },
+                process,
+            )
+
+        record_body = {
+            "transaction_id": "transaction-1",
+            "claim_digest": digest,
+            "binding_digest": "sha256:" + "2" * 64,
+            "before_digest": "sha256:" + "3" * 64,
+            "after_digest": "sha256:" + "4" * 64,
+            "bytes_written": 1,
+        }
+        record = {
+            **record_body,
+            "record_digest": l0._hash_text(l0._canonical(record_body)),
+        }
+        claim = object.__new__(durable.DispatchClaim)
+        object.__setattr__(claim, "transaction_id", record["transaction_id"])
+        object.__setattr__(claim, "claim_digest", record["claim_digest"])
+        supply = object.__new__(l0.SupplyVerification)
+        grant = object.__new__(durable.StageExecutionGrant)
+
+        def invoke_executor(report: dict[str, object]) -> object:
+            launched, _ = launched_role()
+            with (
+                mock.patch.object(module.os, "pipe2", return_value=(40, 41)),
+                mock.patch.object(module.os, "write", return_value=len(module.START_PACKET)),
+                mock.patch.object(module.os, "close"),
+                mock.patch.object(module, "asdict", return_value={}),
+                mock.patch.object(module, "_launch_m4_role", return_value=launched),
+                mock.patch.object(module, "_read_line", return_value=b"report"),
+                mock.patch.object(module, "_strict_bytes", return_value=report),
+                mock.patch.object(module, "_finish_m4_role"),
+                mock.patch.object(module, "_abort_m4_role"),
+            ):
+                return module._executor_launcher(
+                    object(),
+                    claim,
+                    supply,
+                    9,
+                    {},
+                    grant,
+                    lambda: None,
+                    lambda: None,
+                    lambda: None,
+                    m3=object(),
+                    manager=object(),
+                    raw_l0_profile={},
+                    seccomp_program=b"seccomp",
+                )
+
+        executor_report = {
+            "outcome": "STAGED",
+            "reason": "STAGED",
+            "record": record,
+            "verifier_instances": 3,
+            "independent_cryptographic_implementations": False,
+        }
+        execution = invoke_executor(executor_report)
+        self.assertIs(type(execution), m4.RuntimeStageExecution)
+        self.assertEqual((execution.process_id, execution.process_session), (host_pid, host_session))
+        for field, value in (("pid", host_pid), ("session", host_session)):
+            with (
+                self.subTest(role="EXECUTOR", field=field),
+                self.assertRaisesRegex(
+                    module.QualificationStop,
+                    r"^EXECUTOR_REPORT_MALFORMED$",
+                ),
+            ):
+                invoke_executor({**executor_report, field: value})
+        executor_source = inspect.getsource(module._executor_role)
+        self.assertNotIn('"pid": os.getpid()', executor_source)
+        self.assertNotIn('"session": os.getsid(0)', executor_source)
+
+        seals = (
+            module.fcntl.F_SEAL_GROW
+            | module.fcntl.F_SEAL_SHRINK
+            | module.fcntl.F_SEAL_WRITE
+            | module.fcntl.F_SEAL_SEAL
+        )
+        snapshot = m4.M4Snapshot(
+            "snapshot-1",
+            21,
+            22,
+            23,
+            "sha256:" + "5" * 64,
+            (),
+            True,
+            True,
+        )
+        measurement = {
+            "uid": namespace_uid,
+            "gid": namespace_gid,
+            "device": snapshot.device,
+            "inode": snapshot.inode,
+            "size": snapshot.size,
+            "digest": snapshot.digest,
+            "seals": seals,
+            "read_only": True,
+            "write_denied": True,
+            "truncate_denied": True,
+        }
+        receipt = {"observed_at": "2026-09-02T00:00:00Z"}
+        verification_source = {
+            "verifier_id": "observer-verifier/v1",
+            "issuer_id": "observer",
+            "key_id": "observer-key",
+            "proof": "proof",
+        }
+
+        def invoke_observer(observed: dict[str, object]) -> object:
+            launched, _ = launched_role()
+            report = {
+                "kind": "OBSERVER_RECEIPT",
+                "receipt": receipt,
+                "verification_source": verification_source,
+                "measurement": observed,
+            }
+            stat = SimpleNamespace(st_dev=21, st_ino=22, st_size=23)
+
+            def fcntl_call(_descriptor: int, command: int, *_args: object) -> int:
+                if command == module.fcntl.F_DUPFD_CLOEXEC:
+                    return 42
+                if command == module.fcntl.F_GET_SEALS:
+                    return seals
+                if command == module.fcntl.F_GETFL:
+                    return module.os.O_RDONLY
+                raise AssertionError(f"unexpected fcntl command: {command}")
+
+            verified = SimpleNamespace(status=durable.VerificationStatus.VERIFIED)
+            router = mock.Mock()
+            router.verify.return_value = verified
+            with (
+                mock.patch.object(module.os, "pipe2", return_value=(40, 41)),
+                mock.patch.object(module.os, "open", return_value=43),
+                mock.patch.object(module.os, "fstat", return_value=stat),
+                mock.patch.object(module.os, "write", return_value=len(module.START_PACKET)),
+                mock.patch.object(module.os, "close"),
+                mock.patch.object(module.fcntl, "fcntl", side_effect=fcntl_call),
+                mock.patch.object(module, "asdict", return_value={}),
+                mock.patch.object(module, "_launch_m4_role", return_value=launched),
+                mock.patch.object(module, "_read_line", return_value=b"report"),
+                mock.patch.object(module, "_strict_bytes", return_value=report),
+                mock.patch.object(module, "ConfiguredVerifierRouter", return_value=router),
+                mock.patch.object(module, "_finish_m4_role"),
+                mock.patch.object(module, "_abort_m4_role"),
+            ):
+                return module._observer_launcher(
+                    object(),
+                    8,
+                    snapshot,
+                    {},
+                    m3=object(),
+                    manager=object(),
+                    raw_l0_profile={},
+                    m4_profile={},
+                    seccomp_program=b"seccomp",
+                )
+
+        observation = invoke_observer(measurement)
+        self.assertIs(type(observation), m4.RuntimeObserverReceipt)
+        self.assertEqual(
+            (
+                observation.process_id,
+                observation.process_session,
+                observation.uid,
+                observation.gid,
+            ),
+            (host_pid, host_session, host_uid, host_gid),
+        )
+        for field, value in (
+            ("uid", host_uid),
+            ("gid", host_gid),
+            ("uid", float(namespace_uid)),
+            ("gid", float(namespace_gid)),
+        ):
+            with (
+                self.subTest(field=field, value=value),
+                self.assertRaisesRegex(
+                    module.QualificationStop,
+                    r"^OBSERVER_REPORT_MISMATCH$",
+                ),
+            ):
+                invoke_observer({**measurement, field: value})
+        for field, value in (("pid", host_pid), ("session", host_session)):
+            with (
+                self.subTest(role="OBSERVER", field=field),
+                self.assertRaisesRegex(
+                    module.QualificationStop,
+                    r"^OBSERVER_REPORT_MALFORMED$",
+                ),
+            ):
+                invoke_observer({**measurement, field: value})
+        observer_source = inspect.getsource(module._observer_role)
+        self.assertNotIn('"pid": os.getpid()', observer_source)
+        self.assertNotIn('"session": os.getsid(0)', observer_source)
+        self.assertIn('"uid": os.geteuid()', observer_source)
+        self.assertIn('"gid": os.getegid()', observer_source)
+
+        publisher_source = inspect.getsource(module._start_publisher_session)
+        self.assertIn('facts=launched["facts"]', publisher_source)
+        self.assertNotIn('"measurement"', publisher_source)
+
     def test_role_launcher_rejects_unowned_stdio_channels_before_allocation(self) -> None:
         module = _module()
         cases = (
