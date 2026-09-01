@@ -3172,10 +3172,13 @@ class M4VMRunnerContractTests(unittest.TestCase):
         self.assertNotIn(b"OSError", stdout.buffer.getvalue())
         self.assertNotIn(b"Traceback", stdout.buffer.getvalue())
 
-    def test_run_phase_maps_all_six_post_key_exception_boundaries(
+    def test_dynamically_loaded_m3_stop_crosses_post_key_boundary_with_sanitized_reason(
         self,
     ) -> None:
         module = _module()
+        with mock.patch.object(module, "M3_RUNNER", M3_RUNNER):
+            real_m3 = module._load_m3()
+        self.assertIsNot(real_m3.QualificationStop, module.QualificationStop)
         stages = (
             "ADMISSION_CONSUMPTION",
             "SUPPLY_AND_CONTROLLER_SETUP",
@@ -3294,6 +3297,7 @@ class M4VMRunnerContractTests(unittest.TestCase):
 
                 coordinator.execute.side_effect = execute
                 fake_m3 = SimpleNamespace(
+                    QualificationStop=real_m3.QualificationStop,
                     RUNTIME=m3_runtime,
                     CONTROLLER=m3_controller,
                     Ed25519PayloadVerifier=object,
@@ -3456,6 +3460,18 @@ class M4VMRunnerContractTests(unittest.TestCase):
                 if index >= 3:
                     publisher.close.assert_called_once_with()
 
+        generic_error, _, manager, controller, publisher = invoke(
+            "RUNTIME_CONSTRUCTION", RuntimeError("/private/generic")
+        )
+        self.assertEqual(
+            str(generic_error),
+            "M4_POST_KEY_RUNTIME_CONSTRUCTION_EXCEPTION",
+        )
+        self.assertNotIn("/private/generic", str(generic_error))
+        manager.cleanup.assert_called_once_with()
+        controller.close.assert_called_once_with()
+        publisher.close.assert_called_once_with()
+
         typed = module.QualificationStop("M4_RUNTIME_JOIN_FAILED")
         error, _, manager, controller, publisher = invoke(
             "RUNTIME_CONSTRUCTION", typed
@@ -3473,6 +3489,62 @@ class M4VMRunnerContractTests(unittest.TestCase):
                 manager.cleanup.assert_called_once_with()
                 controller.close.assert_called_once_with()
                 publisher.close.assert_called_once_with()
+
+        arguments = mock.Mock(internal_role=None, phase="run")
+        m3_cases = (
+            (
+                real_m3.QualificationStop("GUEST_MARKER_MISMATCH"),
+                "GUEST_MARKER_MISMATCH",
+            ),
+            (
+                real_m3.QualificationStop(
+                    "PREPARED_BROKER_FAILED:/private/token"
+                ),
+                "M4_RUNTIME_FAILURE",
+            ),
+            (real_m3.QualificationStop(), "M4_RUNTIME_FAILURE"),
+            (
+                real_m3.QualificationStop("GUEST_MARKER_MISMATCH", "extra"),
+                "M4_RUNTIME_FAILURE",
+            ),
+        )
+        for m3_error, expected_reason in m3_cases:
+            error, _, manager, controller, publisher = invoke(
+                "RUNTIME_CONSTRUCTION", m3_error
+            )
+            with self.subTest(m3_reason=m3_error.args):
+                self.assertIsInstance(error, module.QualificationStop)
+                self.assertEqual(str(error), expected_reason)
+                manager.cleanup.assert_called_once_with()
+                controller.close.assert_called_once_with()
+                publisher.close.assert_called_once_with()
+
+                stdout = mock.Mock(buffer=BytesIO())
+                stderr = StringIO()
+                with (
+                    mock.patch.object(
+                        module, "_parse_args", return_value=arguments
+                    ),
+                    mock.patch.object(module, "_run_phase", side_effect=error),
+                    mock.patch.object(module.sys, "stdout", stdout),
+                    mock.patch.object(module.sys, "stderr", stderr),
+                ):
+                    self.assertEqual(module.main([]), 2)
+                self.assertEqual(
+                    stdout.buffer.getvalue(),
+                    module._canonical(
+                        {
+                            "outcome": "STOP",
+                            "reason": expected_reason,
+                            "status": "NOT_ATTESTED",
+                        }
+                    )
+                    + b"\n",
+                )
+                self.assertEqual(stderr.getvalue(), "")
+                self.assertNotIn(b"/private/token", stdout.buffer.getvalue())
+                self.assertNotIn(b"extra", stdout.buffer.getvalue())
+                self.assertNotIn(b"Traceback", stdout.buffer.getvalue())
 
     def test_guest_stop_reason_boundary_is_total_closed_and_host_parseable(
         self,
