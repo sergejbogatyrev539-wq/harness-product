@@ -151,10 +151,6 @@ is guest-only and never a developer-host fallback.
   enlarge the attempt ceiling.
 - A success target never enlarges an attempt ceiling. Every failed, blocked,
   restarted, or nested attempt counts against its exact contract.
-- M4 repository/code-model conformance and M4 runtime attestation are separate.
-  An open or failed M4 attestation blocks only the corresponding runtime claim;
-  it does not block separately authorized M5/M6/M7 implementation. Such work may
-  not inherit M4 evidence, bypass its own gates, or advance `STATUS.json`.
 - A roadmap, report, test, or launcher presence never grants task authority.
   `automatic_continuation` remains `FORBIDDEN`.
 

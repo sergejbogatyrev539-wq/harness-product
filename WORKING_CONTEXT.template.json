@@ -6,5 +6,5 @@
   "progress": {"working_set": [], "last_check": null, "cause": null, "diagnostic_attempts": 0},
   "qualification": {"candidate_environment_pair": null, "attempt_ledger": "ABSENT", "vm_start": "FORBIDDEN_WITHOUT_EXACT_ONE_USE_SCOPE"},
   "continuation": {"next_step_hint": "STOP_AWAIT_EXPLICIT_USER_GOAL", "automatic_continuation": "FORBIDDEN"},
-  "notes": ["This record is milestone-neutral, non-authorizing coordination data; it grants no task, runtime, qualification, remediation, retry, or status authority.", "The repository-owned one-use launcher still requires an exact external user scope and a fresh unconsumed contract.", "Legacy launcher modes are historical regression paths only; open attestation does not block separately authorized milestone implementation."]
+  "notes": ["This record is milestone-neutral, non-authorizing coordination data; it grants no task, runtime, qualification, remediation, retry, or status authority.", "The repository-owned one-use launcher still requires an exact external user scope and a fresh unconsumed contract.", "Legacy launcher modes are historical regression paths only."]
 }

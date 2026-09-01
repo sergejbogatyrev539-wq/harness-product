@@ -140,9 +140,6 @@ class RepositoryContractTests(unittest.TestCase):
             "changed exact candidate or environment, a fresh canonical one-use scope projection, and a fresh append-only one-use ledger.",
             "Never retry unchanged exact bytes or enlarge the attempt ceiling.",
             "A success target never enlarges an attempt ceiling.",
-            "M4 repository/code-model conformance and M4 runtime attestation are separate.",
-            "it does not block separately authorized M5/M6/M7 implementation.",
-            "not inherit M4 evidence, bypass its own gates, or advance `STATUS.json`.",
             "A roadmap, report, test, or launcher presence never grants task authority.",
             "Do not start the next milestone or a new review cycle.",
             "a formally process-blind reviewer reads only its frozen review packet",
@@ -185,9 +182,6 @@ class RepositoryContractTests(unittest.TestCase):
             "repository-owned, test-covered entrypoint for a new physical M4 qualification",
             "request-bound one-use path",
             "not a production or general launcher, runtime attestation, or source of authority",
-            "An open or failed M4 runtime attestation blocks only that exact runtime claim.",
-            "It does not block separately authorized code implementation for M5, M6, or M7.",
-            "inherit no M4 evidence, bypass none of their own gates, and do not advance `STATUS.json`",
         ):
             self.assertIn(rule, normalized_architecture)
         self.assertNotIn("No reviewed host VM entrypoint", normalized_architecture)
@@ -212,7 +206,7 @@ class RepositoryContractTests(unittest.TestCase):
             [
                 "This record is milestone-neutral, non-authorizing coordination data; it grants no task, runtime, qualification, remediation, retry, or status authority.",
                 "The repository-owned one-use launcher still requires an exact external user scope and a fresh unconsumed contract.",
-                "Legacy launcher modes are historical regression paths only; open attestation does not block separately authorized milestone implementation.",
+                "Legacy launcher modes are historical regression paths only.",
             ],
         )
         self.assertNotIn("M4 is not authorized", " ".join(template["notes"]))

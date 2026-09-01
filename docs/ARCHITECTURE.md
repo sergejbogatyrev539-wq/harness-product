@@ -253,12 +253,8 @@ production or general launcher, runtime attestation, or source of authority.
 The no-argument and diagnostic/discriminator modes are historical regression
 paths only and are not paths for new work.
 
-An open or failed M4 runtime attestation blocks only that exact runtime claim.
-It does not block separately authorized code implementation for M5, M6, or M7.
-Those milestones inherit no M4 evidence, bypass none of their own gates, and do
-not advance `STATUS.json` without their own implementation, checks, and
-evidence. No report, passing test, roadmap transition, or launcher presence
-starts a qualification or milestone without exact user authority.
+No report, passing test, roadmap transition, or launcher presence starts a
+qualification or milestone without exact user authority.
 
 ## Evidence and profiles
 
