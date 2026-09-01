@@ -2417,8 +2417,8 @@ def _compile_l0_profile(raw: object) -> object:
 def _executor_role() -> None:
     expected = ROLE_LABELS["EXECUTOR"] + " (enforce)"
     if (
-        os.geteuid() != ROLE_IDS["EXECUTOR"][0]
-        or os.getegid() != ROLE_IDS["EXECUTOR"][1]
+        os.geteuid() != M4_NAMESPACE_ROLE_IDS["EXECUTOR"][2]
+        or os.getegid() != M4_NAMESPACE_ROLE_IDS["EXECUTOR"][3]
         or Path("/proc/self/attr/current").read_text(encoding="ascii").strip()
         != expected
     ):
@@ -2496,8 +2496,8 @@ def _executor_role() -> None:
 def _observer_role() -> None:
     expected = ROLE_LABELS["OBSERVER"] + " (enforce)"
     if (
-        os.geteuid() != ROLE_IDS["OBSERVER"][0]
-        or os.getegid() != ROLE_IDS["OBSERVER"][1]
+        os.geteuid() != M4_NAMESPACE_ROLE_IDS["OBSERVER"][2]
+        or os.getegid() != M4_NAMESPACE_ROLE_IDS["OBSERVER"][3]
         or Path("/proc/self/attr/current").read_text(encoding="ascii").strip()
         != expected
     ):
@@ -2609,8 +2609,8 @@ def _publisher_response(request_id: int, kind: str, payload: dict[str, object]) 
 def _publisher_role() -> None:
     expected = ROLE_LABELS["PUBLISHER"] + " (enforce)"
     if (
-        os.geteuid() != ROLE_IDS["PUBLISHER"][0]
-        or os.getegid() != ROLE_IDS["PUBLISHER"][1]
+        os.geteuid() != M4_NAMESPACE_ROLE_IDS["PUBLISHER"][2]
+        or os.getegid() != M4_NAMESPACE_ROLE_IDS["PUBLISHER"][3]
         or Path("/proc/self/attr/current").read_text(encoding="ascii").strip()
         != expected
     ):

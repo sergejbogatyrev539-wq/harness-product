@@ -752,6 +752,62 @@ class M4VMRunnerContractTests(unittest.TestCase):
         for forbidden in ("--disable-userns", "--unshare-user", "--ro-bind / /"):
             self.assertNotIn(forbidden, source)
 
+    def test_nested_m4_role_entrypoints_require_namespace_identity(self) -> None:
+        module = _module()
+
+        class NextBoundary(Exception):
+            pass
+
+        cases = (
+            ("EXECUTOR", module._executor_role),
+            ("OBSERVER", module._observer_role),
+            ("PUBLISHER", module._publisher_role),
+        )
+        for role, entrypoint in cases:
+            outer_uid, outer_gid, namespace_uid, namespace_gid = (
+                module.M4_NAMESPACE_ROLE_IDS[role]
+            )
+            expected_label = module.ROLE_LABELS[role] + " (enforce)"
+            self.assertEqual((outer_uid, outer_gid), module.ROLE_IDS[role])
+            self.assertNotEqual((namespace_uid, namespace_gid), module.ROLE_IDS[role])
+
+            with (
+                self.subTest(role=role, identity="namespace"),
+                mock.patch.object(module.os, "geteuid", return_value=namespace_uid),
+                mock.patch.object(module.os, "getegid", return_value=namespace_gid),
+                mock.patch.object(
+                    module.Path,
+                    "read_text",
+                    return_value=expected_label,
+                ),
+                mock.patch.object(
+                    module,
+                    "_close_except",
+                    side_effect=NextBoundary,
+                ) as next_boundary,
+                self.assertRaises(NextBoundary),
+            ):
+                entrypoint()
+            next_boundary.assert_called_once_with(frozenset({0, 1, 2}))
+
+            for uid, gid, label in (
+                (outer_uid, outer_gid, expected_label),
+                (namespace_uid, namespace_gid, module.ROLE_LABELS[role]),
+            ):
+                with (
+                    self.subTest(role=role, uid=uid, gid=gid, label=label),
+                    mock.patch.object(module.os, "geteuid", return_value=uid),
+                    mock.patch.object(module.os, "getegid", return_value=gid),
+                    mock.patch.object(module.Path, "read_text", return_value=label),
+                    mock.patch.object(module, "_close_except") as next_boundary,
+                    self.assertRaisesRegex(
+                        module.QualificationStop,
+                        rf"^{role}_PRINCIPAL_MISMATCH$",
+                    ),
+                ):
+                    entrypoint()
+                next_boundary.assert_not_called()
+
     def test_role_launcher_rejects_unowned_stdio_channels_before_allocation(self) -> None:
         module = _module()
         cases = (
