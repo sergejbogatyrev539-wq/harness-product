@@ -946,6 +946,87 @@ class M4VMRunnerContractTests(unittest.TestCase):
         self.assertIn('"PREPARE": store.prepare_runtime_session', child_source)
         self.assertIn('"BIND_CURRENT_FRONTIER"', child_source)
 
+    def test_remapped_code_fd_survives_exec_with_closed_inventory(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="m4-code-fd-exec-") as directory:
+            root = Path(directory)
+            payload = root / "payload.py"
+            payload.write_text(
+                "import os\n"
+                "open_fds = []\n"
+                "for descriptor in range(32):\n"
+                "    try:\n"
+                "        os.fstat(descriptor)\n"
+                "    except OSError:\n"
+                "        continue\n"
+                "    open_fds.append(descriptor)\n"
+                "print(','.join(str(item) for item in open_fds), flush=True)\n",
+                encoding="utf-8",
+            )
+            probe = root / "probe.py"
+            probe.write_text(
+                "import os\n"
+                "import subprocess\n"
+                "import sys\n"
+                "target = os.open(os.devnull, os.O_RDONLY | os.O_CLOEXEC)\n"
+                "if target != 3:\n"
+                "    os.dup2(target, 3, inheritable=True)\n"
+                "    os.close(target)\n"
+                "else:\n"
+                "    os.set_inheritable(3, True)\n"
+                "source = os.open(sys.argv[2], os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)\n"
+                "if source <= 3:\n"
+                "    raise RuntimeError('source fd was not greater than target fd')\n"
+                "def remap():\n"
+                "    os.dup2(source, 3, inheritable=True)\n"
+                "    os.close(source)\n"
+                "pass_fds = (source,) if sys.argv[1] == 'old' else tuple(sorted({source, 3}))\n"
+                "try:\n"
+                "    completed = subprocess.run(\n"
+                "        [sys.executable, '-I', '-S', '/proc/self/fd/3'],\n"
+                "        close_fds=True,\n"
+                "        pass_fds=pass_fds,\n"
+                "        preexec_fn=remap,\n"
+                "        check=False,\n"
+                "    )\n"
+                "finally:\n"
+                "    os.close(source)\n"
+                "    os.close(3)\n"
+                "raise SystemExit(completed.returncode)\n",
+                encoding="utf-8",
+            )
+
+            old = module.subprocess.run(
+                [module.PYTHON, "-I", "-S", probe, "old", payload],
+                stdout=module.subprocess.PIPE,
+                stderr=module.subprocess.PIPE,
+                check=False,
+                timeout=10,
+            )
+            self.assertNotEqual(old.returncode, 0)
+            self.assertEqual(old.stdout, b"")
+            self.assertIn(b"/proc/self/fd/3", old.stderr)
+
+            fixed = module.subprocess.run(
+                [module.PYTHON, "-I", "-S", probe, "fixed", payload],
+                stdout=module.subprocess.PIPE,
+                stderr=module.subprocess.PIPE,
+                check=False,
+                timeout=10,
+            )
+            self.assertEqual(fixed.returncode, 0, fixed.stderr.decode("utf-8", "replace"))
+            self.assertEqual(fixed.stdout, b"0,1,2,3\n")
+            self.assertEqual(fixed.stderr, b"")
+
+        self.assertEqual(tuple(sorted({3, 3})), (3,))
+        for call_site in (
+            inspect.getsource(module.ControllerSession.__init__),
+            inspect.getsource(module._publication_denial_probe),
+        ):
+            self.assertIn("pass_fds=tuple(sorted({code, 3})),", call_site)
+            self.assertNotIn("pass_fds=(code,),", call_site)
+            self.assertIn("((code, 3),)", call_site)
+
     def test_run_phase_enters_one_actual_m3_to_m4_join_chain(self) -> None:
         module = _module()
         source = inspect.getsource(module._run_phase)
