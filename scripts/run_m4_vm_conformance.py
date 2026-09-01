@@ -6194,7 +6194,13 @@ def _run_phase() -> None:
     except QualificationStop:
         raise
     except m3.QualificationStop as error:
-        _stop(error.args[0] if len(error.args) == 1 else None)
+        if (
+            len(error.args) == 1
+            and type(error.args[0]) is str
+            and _STOP_REASON.fullmatch(error.args[0]) is not None
+        ):
+            _stop(error.args[0])
+        _stop(_post_key_exception_reason(post_key_stage, error))
     except Exception as error:
         if post_key_stage is None:
             raise

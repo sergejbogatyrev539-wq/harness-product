@@ -3863,30 +3863,50 @@ class M4VMRunnerContractTests(unittest.TestCase):
         m3_cases = (
             (
                 real_m3.QualificationStop("GUEST_MARKER_MISMATCH"),
+                "RUNTIME_CONSTRUCTION",
                 "GUEST_MARKER_MISMATCH",
+                (),
+            ),
+            (
+                real_m3.QualificationStop("COMMAND_FAILED:bwrap"),
+                "SUPPLY_AND_CONTROLLER_SETUP",
+                "M4_POST_KEY_SUPPLY_AND_CONTROLLER_SETUP_EXCEPTION",
+                (b"COMMAND_FAILED", b"bwrap"),
             ),
             (
                 real_m3.QualificationStop(
-                    "PREPARED_BROKER_FAILED:/private/token"
+                    "FD_INVENTORY_MISMATCH:0,1,2,3:/private/payload"
                 ),
-                "M4_RUNTIME_FAILURE",
+                "PUBLISHER_AUTHORITY_FRONTIER_SETUP",
+                "M4_POST_KEY_PUBLISHER_AUTHORITY_FRONTIER_SETUP_EXCEPTION",
+                (b"FD_INVENTORY_MISMATCH", b"/private/payload"),
             ),
-            (real_m3.QualificationStop(), "M4_RUNTIME_FAILURE"),
+            (
+                real_m3.QualificationStop(),
+                "ADMISSION_CONSUMPTION",
+                "M4_POST_KEY_ADMISSION_CONSUMPTION_EXCEPTION",
+                (),
+            ),
             (
                 real_m3.QualificationStop("GUEST_MARKER_MISMATCH", "extra"),
-                "M4_RUNTIME_FAILURE",
+                "COORDINATOR_EXECUTION",
+                "M4_POST_KEY_COORDINATOR_EXECUTION_EXCEPTION",
+                (b"GUEST_MARKER_MISMATCH", b"extra"),
             ),
         )
-        for m3_error, expected_reason in m3_cases:
+        for m3_error, stage, expected_reason, forbidden in m3_cases:
             error, _, manager, controller, publisher = invoke(
-                "RUNTIME_CONSTRUCTION", m3_error
+                stage, m3_error
             )
-            with self.subTest(m3_reason=m3_error.args):
+            with self.subTest(stage=stage, m3_reason=m3_error.args):
                 self.assertIsInstance(error, module.QualificationStop)
                 self.assertEqual(str(error), expected_reason)
-                manager.cleanup.assert_called_once_with()
-                controller.close.assert_called_once_with()
-                publisher.close.assert_called_once_with()
+                stage_index = stages.index(stage)
+                if stage_index >= 2:
+                    manager.cleanup.assert_called_once_with()
+                    controller.close.assert_called_once_with()
+                if stage_index >= 3:
+                    publisher.close.assert_called_once_with()
 
                 stdout = mock.Mock(buffer=BytesIO())
                 stderr = StringIO()
@@ -3911,8 +3931,8 @@ class M4VMRunnerContractTests(unittest.TestCase):
                     + b"\n",
                 )
                 self.assertEqual(stderr.getvalue(), "")
-                self.assertNotIn(b"/private/token", stdout.buffer.getvalue())
-                self.assertNotIn(b"extra", stdout.buffer.getvalue())
+                for raw_fragment in forbidden:
+                    self.assertNotIn(raw_fragment, stdout.buffer.getvalue())
                 self.assertNotIn(b"Traceback", stdout.buffer.getvalue())
 
     def test_guest_stop_reason_boundary_is_total_closed_and_host_parseable(
