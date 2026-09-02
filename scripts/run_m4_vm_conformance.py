@@ -489,6 +489,9 @@ _PUBLISHER_STARTUP_STAGES = frozenset(
         "READY_REPORT",
     }
 )
+_PUBLISHER_BOOTSTRAP_STAGES = frozenset(
+    {"DESCRIPTOR_ADOPTION", "TARGET_RESOLUTION", "ROOT_MEASUREMENT", "RESPONSE"}
+)
 
 
 def _sanitize_stop_reason(reason: object) -> str:
@@ -524,6 +527,19 @@ def _publisher_startup_exception_reason(stage: object, error: object) -> str:
     for exception_type, code in _POST_KEY_EXCEPTION_CLASSES:
         if isinstance(error, exception_type):
             return f"PUBLISHER_STARTUP_{stage}_{code}"
+    return "M4_RUNTIME_FAILURE"
+
+
+def _publisher_bootstrap_exception_reason(stage: object, error: object) -> str:
+    if (
+        type(stage) is not str
+        or stage not in _PUBLISHER_BOOTSTRAP_STAGES
+        or not isinstance(error, Exception)
+    ):
+        return "M4_RUNTIME_FAILURE"
+    for exception_type, code in _POST_KEY_EXCEPTION_CLASSES:
+        if isinstance(error, exception_type):
+            return f"PUBLISHER_BOOTSTRAP_{stage}_{code}"
     return "M4_RUNTIME_FAILURE"
 
 
@@ -2763,32 +2779,49 @@ def _publisher_role() -> None:
         if operation == "BOOTSTRAP":
             if len(descriptors) != 1 or payload or anchor is not None:
                 _stop("PUBLISHER_BOOTSTRAP_REPLAY")
-            publication_root_descriptor = _adopt_publication_root_descriptor(
-                descriptors[0]
-            )
-            root_info = os.fstat(publication_root_descriptor)
-            root_access = (
-                fcntl.fcntl(publication_root_descriptor, fcntl.F_GETFL)
-                & os.O_ACCMODE
-            )
-            if not stat.S_ISDIR(root_info.st_mode) or root_access != os.O_RDONLY:
-                _stop("PUBLISHER_BOOTSTRAP_MALFORMED")
-            resolved = l0.resolve_target(
-                profile,
-                publication_root_descriptor,
-                value["target"],
-            )
-            if resolved.outcome is not l0.L0Outcome.RESOLVED or resolved.binding is None:
-                _stop("PUBLISHER_TARGET_UNRESOLVED")
-            target = resolved.binding
-            anchor = publisher._measure_publication_root(
-                publication_root_descriptor
-            )
-            _publisher_response(
-                request_id,
-                "BOOTSTRAP",
-                {"target_binding": target.data(), "root_anchor": anchor.data()},
-            )
+            bootstrap_stage = "DESCRIPTOR_ADOPTION"
+            try:
+                publication_root_descriptor = _adopt_publication_root_descriptor(
+                    descriptors[0]
+                )
+                root_info = os.fstat(publication_root_descriptor)
+                root_access = (
+                    fcntl.fcntl(publication_root_descriptor, fcntl.F_GETFL)
+                    & os.O_ACCMODE
+                )
+                if not stat.S_ISDIR(root_info.st_mode) or root_access != os.O_RDONLY:
+                    _stop("PUBLISHER_BOOTSTRAP_MALFORMED")
+                bootstrap_stage = "TARGET_RESOLUTION"
+                resolved = l0.resolve_target(
+                    profile,
+                    publication_root_descriptor,
+                    value["target"],
+                )
+                if (
+                    resolved.outcome is not l0.L0Outcome.RESOLVED
+                    or resolved.binding is None
+                ):
+                    _stop("PUBLISHER_TARGET_UNRESOLVED")
+                target = resolved.binding
+                bootstrap_stage = "ROOT_MEASUREMENT"
+                anchor = publisher._measure_publication_root(
+                    publication_root_descriptor
+                )
+                bootstrap_stage = "RESPONSE"
+                _publisher_response(
+                    request_id,
+                    "BOOTSTRAP",
+                    {"target_binding": target.data(), "root_anchor": anchor.data()},
+                )
+            except QualificationStop:
+                raise
+            except publisher._Stop as error:
+                reason = getattr(error, "reason", None)
+                if type(reason) is publisher.PublisherReason:
+                    _stop(f"PUBLISHER_BOOTSTRAP_{bootstrap_stage}_{reason.value}")
+                _stop(_publisher_bootstrap_exception_reason(bootstrap_stage, error))
+            except Exception as error:
+                _stop(_publisher_bootstrap_exception_reason(bootstrap_stage, error))
         elif operation == "INSTALL":
             if (
                 descriptors

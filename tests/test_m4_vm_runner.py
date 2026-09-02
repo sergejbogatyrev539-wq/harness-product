@@ -1055,6 +1055,23 @@ class M4VMRunnerContractTests(unittest.TestCase):
             "M4_RUNTIME_FAILURE",
         )
 
+    def test_publisher_bootstrap_exception_reason_is_stage_closed(self) -> None:
+        module = _module()
+        reason = module._publisher_bootstrap_exception_reason(
+            "ROOT_MEASUREMENT",
+            PermissionError(1, "/private/mount"),
+        )
+        self.assertEqual(reason, "PUBLISHER_BOOTSTRAP_ROOT_MEASUREMENT_OSERROR")
+        self.assertRegex(reason, module._STOP_REASON)
+        self.assertNotIn("private", reason.lower())
+        self.assertEqual(
+            module._publisher_bootstrap_exception_reason(
+                "UNKNOWN",
+                RuntimeError("secret"),
+            ),
+            "M4_RUNTIME_FAILURE",
+        )
+
     def test_publisher_socket_adoption_requires_explicit_type_under_exact_seccomp(
         self,
     ) -> None:
