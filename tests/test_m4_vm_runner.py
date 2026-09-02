@@ -943,7 +943,11 @@ class M4VMRunnerContractTests(unittest.TestCase):
         start_source = inspect.getsource(module._start_publisher_session)
         self.assertIn("stderr_descriptor=subprocess.DEVNULL", start_source)
         bootstrap_offset = start_source.index(
-            "session.bootstrap(publication_root_descriptor)"
+            "session.bootstrap(namespace_publication_descriptor)"
+        )
+        self.assertLess(
+            start_source.index("_open_publication_root_in_namespace("),
+            bootstrap_offset,
         )
         self.assertGreater(
             start_source.index(
@@ -954,7 +958,7 @@ class M4VMRunnerContractTests(unittest.TestCase):
         )
         publisher_source = inspect.getsource(module._publisher_role)
         self.assertIn(
-            "publication_root_descriptor = _adopt_publication_root_descriptor(",
+            "publication_root_descriptor = _validate_publication_root_descriptor(",
             publisher_source,
         )
         self.assertIn("descriptors[0]", publisher_source)
@@ -1723,7 +1727,7 @@ os._exit(0)
             module.os.close(read_descriptor)
             module.os.close(write_descriptor)
 
-    def test_publisher_adopts_bound_root_in_its_mount_namespace(self) -> None:
+    def test_publisher_accepts_namespace_bound_root_without_path_reopen(self) -> None:
         module = _module()
         with tempfile.TemporaryDirectory(prefix="m4-publisher-root-adopt-") as directory:
             root = Path(directory) / "publication"
@@ -1740,20 +1744,28 @@ os._exit(0)
                     root,
                     module.os.O_RDONLY | module.os.O_DIRECTORY | module.os.O_CLOEXEC,
                 )
-                authority_number = authority_descriptor
                 authority_info = module.os.fstat(authority_descriptor)
-                local_descriptor = module._adopt_publication_root_descriptor(
-                    authority_descriptor
+                with mock.patch.object(
+                    module.os,
+                    "open",
+                    side_effect=AssertionError("confined publisher reopened a path"),
+                ):
+                    self.assertEqual(
+                        module._validate_publication_root_descriptor(
+                            authority_descriptor
+                        ),
+                        authority_descriptor,
+                    )
+                local_descriptor = module._open_publication_root_in_namespace(
+                    module.os.getpid(),
+                    authority_descriptor,
                 )
-                authority_descriptor = -1
                 local_info = module.os.fstat(local_descriptor)
                 self.assertEqual(
                     (local_info.st_dev, local_info.st_ino),
                     (authority_info.st_dev, authority_info.st_ino),
                 )
-                self.assertNotEqual(local_descriptor, authority_number)
-                with self.assertRaises(OSError):
-                    module.fcntl.fcntl(authority_number, module.fcntl.F_GETFD)
+                module.fcntl.fcntl(authority_descriptor, module.fcntl.F_GETFD)
 
                 substitute_descriptor = module.os.open(
                     substitute,
@@ -1763,8 +1775,10 @@ os._exit(0)
                     module.QualificationStop,
                     "^PUBLICATION_DESCRIPTOR_MISMATCH$",
                 ):
-                    module._adopt_publication_root_descriptor(substitute_descriptor)
-                substitute_descriptor = -1
+                    module._open_publication_root_in_namespace(
+                        module.os.getpid(),
+                        substitute_descriptor,
+                    )
             finally:
                 module.PUBLICATION_ROOT = original_root
                 for descriptor in (

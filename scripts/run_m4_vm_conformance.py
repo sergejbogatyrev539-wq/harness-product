@@ -2670,10 +2670,30 @@ def _publisher_response(request_id: int, kind: str, payload: dict[str, object]) 
     )
 
 
-def _adopt_publication_root_descriptor(authority_descriptor: int) -> int:
-    """Reopen the bound root in this mount namespace without changing authority."""
+def _validate_publication_root_descriptor(descriptor: int) -> int:
+    """Accept only the read-only directory already bound to this namespace."""
 
-    if type(authority_descriptor) is not int or authority_descriptor < 0:
+    if type(descriptor) is not int or descriptor < 0:
+        _stop("PUBLICATION_DESCRIPTOR_MALFORMED")
+    info = os.fstat(descriptor)
+    access = fcntl.fcntl(descriptor, fcntl.F_GETFL) & os.O_ACCMODE
+    if not stat.S_ISDIR(info.st_mode) or access != os.O_RDONLY:
+        _stop("PUBLICATION_DESCRIPTOR_MISMATCH")
+    return descriptor
+
+
+def _open_publication_root_in_namespace(
+    process_id: int,
+    authority_descriptor: int,
+) -> int:
+    """Open the bound root through the confined process's mount namespace."""
+
+    if (
+        type(process_id) is not int
+        or process_id < 1
+        or type(authority_descriptor) is not int
+        or authority_descriptor < 0
+    ):
         _stop("PUBLICATION_DESCRIPTOR_MALFORMED")
     local_descriptor = -1
     try:
@@ -2682,7 +2702,10 @@ def _adopt_publication_root_descriptor(authority_descriptor: int) -> int:
             fcntl.fcntl(authority_descriptor, fcntl.F_GETFL) & os.O_ACCMODE
         )
         local_descriptor = os.open(
-            PUBLICATION_ROOT,
+            Path("/proc")
+            / str(process_id)
+            / "root"
+            / PUBLICATION_ROOT.relative_to("/"),
             os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
         )
         local_info = os.fstat(local_descriptor)
@@ -2701,11 +2724,6 @@ def _adopt_publication_root_descriptor(authority_descriptor: int) -> int:
         if local_descriptor >= 0:
             os.close(local_descriptor)
         raise
-    finally:
-        try:
-            os.close(authority_descriptor)
-        except OSError:
-            pass
 
 
 def _publisher_role() -> None:
@@ -2781,7 +2799,7 @@ def _publisher_role() -> None:
                 _stop("PUBLISHER_BOOTSTRAP_REPLAY")
             bootstrap_stage = "DESCRIPTOR_ADOPTION"
             try:
-                publication_root_descriptor = _adopt_publication_root_descriptor(
+                publication_root_descriptor = _validate_publication_root_descriptor(
                     descriptors[0]
                 )
                 root_info = os.fstat(publication_root_descriptor)
@@ -5263,6 +5281,7 @@ def _start_publisher_session(
     parent, child = _publisher_control_pair()
     launched: dict[str, object] | None = None
     session: PublisherSession | None = None
+    namespace_publication_descriptor = -1
     try:
         publication = m4_profile.get("publication")
         target_path = publication.get("target") if type(publication) is dict else None
@@ -5315,7 +5334,13 @@ def _start_publisher_session(
             facts=launched["facts"],
             denial_probe=denial_probe,
         )
-        context = session.bootstrap(publication_root_descriptor)
+        namespace_publication_descriptor = _open_publication_root_in_namespace(
+            launched["process_id"],
+            publication_root_descriptor,
+        )
+        context = session.bootstrap(namespace_publication_descriptor)
+        os.close(namespace_publication_descriptor)
+        namespace_publication_descriptor = -1
         os.close(publication_root_descriptor)
         publication_root_descriptor = -1
         target_data = context["target_binding"].data()
@@ -5364,6 +5389,7 @@ def _start_publisher_session(
         raise
     finally:
         for descriptor in (
+            namespace_publication_descriptor,
             publication_parent_descriptor,
             publication_root_descriptor,
         ):
