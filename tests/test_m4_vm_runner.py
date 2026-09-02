@@ -951,6 +951,63 @@ class M4VMRunnerContractTests(unittest.TestCase):
         )
         self.assertNotIn("l0.resolve_target(profile, 2", publisher_source)
 
+    def test_publisher_ready_precedes_confined_fd_inventory_check(self) -> None:
+        module = _module()
+        read_descriptor, write_descriptor = module.os.pipe()
+        try:
+            module.os.write(
+                write_descriptor,
+                module._canonical(
+                    {
+                        "kind": "ROLE_READY",
+                        "protocol_version": 1,
+                        "role": "PUBLISHER",
+                    }
+                )
+                + b"\n",
+            )
+            module._await_m4_role_ready(read_descriptor, "PUBLISHER")
+        finally:
+            module.os.close(read_descriptor)
+            module.os.close(write_descriptor)
+
+        read_descriptor, write_descriptor = module.os.pipe()
+        try:
+            module.os.write(
+                write_descriptor,
+                module._canonical(
+                    {
+                        "outcome": "STOP",
+                        "reason": "PUBLISHER_PRINCIPAL_MISMATCH",
+                        "status": "NOT_ATTESTED",
+                    }
+                )
+                + b"\n",
+            )
+            with self.assertRaisesRegex(
+                module.QualificationStop,
+                r"^PUBLISHER_PRINCIPAL_MISMATCH$",
+            ):
+                module._await_m4_role_ready(read_descriptor, "PUBLISHER")
+        finally:
+            module.os.close(read_descriptor)
+            module.os.close(write_descriptor)
+
+        launcher_source = inspect.getsource(module._launch_m4_role)
+        self.assertLess(
+            launcher_source.index("_await_m4_role_ready"),
+            launcher_source.index("m3._find_confined_process"),
+        )
+        self.assertIn(
+            "startup_ready=True",
+            inspect.getsource(module._start_publisher_session),
+        )
+        publisher_source = inspect.getsource(module._publisher_role)
+        self.assertLess(
+            publisher_source.index('"kind": "ROLE_READY"'),
+            publisher_source.index("while True:"),
+        )
+
     def test_publisher_socket_adoption_requires_explicit_type_under_exact_seccomp(
         self,
     ) -> None:

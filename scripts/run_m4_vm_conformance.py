@@ -2161,6 +2161,32 @@ def _write_report(value: dict[str, object]) -> None:
         offset += written
 
 
+def _await_m4_role_ready(descriptor: int, role: str) -> None:
+    if (
+        type(descriptor) is not int
+        or descriptor < 0
+        or role != "PUBLISHER"
+    ):
+        _stop("M4_ROLE_READY_MALFORMED")
+    value = _strict_bytes(_read_line(descriptor, MAX_REPORT, 20), MAX_REPORT)
+    if value == {
+        "kind": "ROLE_READY",
+        "protocol_version": 1,
+        "role": role,
+    }:
+        return
+    if (
+        type(value) is dict
+        and frozenset(value) == {"outcome", "reason", "status"}
+        and value.get("outcome") == "STOP"
+        and value.get("status") == "NOT_ATTESTED"
+        and type(value.get("reason")) is str
+        and _STOP_REASON.fullmatch(value["reason"]) is not None
+    ):
+        _stop(value["reason"])
+    _stop("M4_ROLE_READY_MALFORMED")
+
+
 def _read_start(descriptor: int) -> None:
     if os.read(descriptor, len(START_PACKET)) != START_PACKET or os.read(descriptor, 1):
         _stop("EARLY_START_GATE_DENIED")
@@ -2636,6 +2662,13 @@ def _publisher_role() -> None:
     publication_root_descriptor: int | None = None
     installed_topology = None
     last_request = 0
+    _write_report(
+        {
+            "kind": "ROLE_READY",
+            "protocol_version": 1,
+            "role": "PUBLISHER",
+        }
+    )
     while True:
         request, descriptors = _recv_control(connection, None)
         request_id = int(request["request_id"])
@@ -4468,6 +4501,7 @@ def _launch_m4_role(
     stdin_descriptor: int,
     stdout_descriptor: int,
     stderr_descriptor: int,
+    startup_ready: bool = False,
     mounts: tuple[tuple[str, int, str], ...] = (),
 ) -> dict[str, object]:
     if (
@@ -4480,6 +4514,14 @@ def _launch_m4_role(
         or stdout_descriptor not in {subprocess.PIPE} and stdout_descriptor < 0
         or type(stderr_descriptor) is not int
         or stderr_descriptor not in {subprocess.DEVNULL} and stderr_descriptor < 0
+        or type(startup_ready) is not bool
+        or (
+            startup_ready
+            and (
+                role != "PUBLISHER"
+                or stdout_descriptor != subprocess.PIPE
+            )
+        )
         or any(
             type(row) is not tuple
             or len(row) != 3
@@ -4612,6 +4654,10 @@ def _launch_m4_role(
         if os.write(outer_write, b"1") != 1:
             _stop("M4_ROLE_OUTER_GATE_RELEASE_FAILED")
         close_owned(outer_write)
+        if startup_ready:
+            if process.stdout is None:
+                _stop("M4_ROLE_READY_MALFORMED")
+            _await_m4_role_ready(process.stdout.fileno(), role)
         confined_pid, facts = m3._find_confined_process(
             cgroup,
             ROLE_LABELS[role],
@@ -5115,6 +5161,7 @@ def _start_publisher_session(
             stdin_descriptor=child.fileno(),
             stdout_descriptor=subprocess.PIPE,
             stderr_descriptor=subprocess.DEVNULL,
+            startup_ready=True,
             mounts=(
                 (
                     "--ro-bind-fd",
