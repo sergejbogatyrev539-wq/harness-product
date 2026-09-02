@@ -2612,7 +2612,7 @@ def _publisher_role() -> None:
     ):
         _stop("PUBLISHER_PRINCIPAL_MISMATCH")
     _close_except(frozenset({0, 1, 2}))
-    connection = socket.socket(fileno=0)
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET, 0, fileno=0)
     value = _strict_file(
         ROLE_INPUT,
         frozenset({"input_version", "l0_profile", "m4_profile", "target"}),

@@ -808,6 +808,50 @@ class M4VMRunnerContractTests(unittest.TestCase):
                     entrypoint()
                 next_boundary.assert_not_called()
 
+    def test_publisher_adopts_inherited_seqpacket_socket_with_explicit_type(
+        self,
+    ) -> None:
+        module = _module()
+        _, _, namespace_uid, namespace_gid = module.M4_NAMESPACE_ROLE_IDS[
+            "PUBLISHER"
+        ]
+        expected_label = module.ROLE_LABELS["PUBLISHER"] + " (enforce)"
+
+        class NextBoundary(Exception):
+            pass
+
+        connection = object()
+        with (
+            mock.patch.object(module.os, "geteuid", return_value=namespace_uid),
+            mock.patch.object(module.os, "getegid", return_value=namespace_gid),
+            mock.patch.object(module.Path, "read_text", return_value=expected_label),
+            mock.patch.object(module, "_close_except") as close_except,
+            mock.patch.object(
+                module.socket,
+                "socket",
+                return_value=connection,
+            ) as adopt_socket,
+            mock.patch.object(
+                module,
+                "_strict_file",
+                side_effect=NextBoundary,
+            ) as next_boundary,
+            self.assertRaises(NextBoundary),
+        ):
+            module._publisher_role()
+
+        close_except.assert_called_once_with(frozenset({0, 1, 2}))
+        adopt_socket.assert_called_once_with(
+            module.socket.AF_UNIX,
+            module.socket.SOCK_SEQPACKET,
+            0,
+            fileno=0,
+        )
+        next_boundary.assert_called_once_with(
+            module.ROLE_INPUT,
+            frozenset({"input_version", "l0_profile", "m4_profile", "target"}),
+        )
+
     def test_nested_role_reports_keep_namespace_and_host_identity_coordinates_distinct(
         self,
     ) -> None:
