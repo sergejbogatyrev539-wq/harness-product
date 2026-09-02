@@ -96,6 +96,13 @@ cause, stop the broad loop, record the cause, and use a narrower discriminator.
 After three failed remedies for the same blocker, stop and report it instead of
 inventing a fourth variant.
 
+For a narrow runtime failure with one traceable causal path, the root/controller
+agent performs the primary root-cause investigation end to end: retained symptom
+-> exact code path -> one testable hypothesis -> local reproduction. Do not
+delegate or parallelize that primary search before the root has reproduced the
+cause. After reproduction, use subagents only for bounded independent verification
+or truly disjoint checks; their reports never substitute for the root's proof.
+
 Use these canonical local commands; do not rediscover invocation syntax:
 
 ```bash
