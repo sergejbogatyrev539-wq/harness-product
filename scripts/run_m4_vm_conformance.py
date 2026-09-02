@@ -2654,6 +2654,44 @@ def _publisher_response(request_id: int, kind: str, payload: dict[str, object]) 
     )
 
 
+def _adopt_publication_root_descriptor(authority_descriptor: int) -> int:
+    """Reopen the bound root in this mount namespace without changing authority."""
+
+    if type(authority_descriptor) is not int or authority_descriptor < 0:
+        _stop("PUBLICATION_DESCRIPTOR_MALFORMED")
+    local_descriptor = -1
+    try:
+        authority_info = os.fstat(authority_descriptor)
+        authority_access = (
+            fcntl.fcntl(authority_descriptor, fcntl.F_GETFL) & os.O_ACCMODE
+        )
+        local_descriptor = os.open(
+            PUBLICATION_ROOT,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+        local_info = os.fstat(local_descriptor)
+        local_access = fcntl.fcntl(local_descriptor, fcntl.F_GETFL) & os.O_ACCMODE
+        if (
+            not stat.S_ISDIR(authority_info.st_mode)
+            or not stat.S_ISDIR(local_info.st_mode)
+            or authority_access != os.O_RDONLY
+            or local_access != os.O_RDONLY
+            or (authority_info.st_dev, authority_info.st_ino)
+            != (local_info.st_dev, local_info.st_ino)
+        ):
+            _stop("PUBLICATION_DESCRIPTOR_MISMATCH")
+        return local_descriptor
+    except Exception:
+        if local_descriptor >= 0:
+            os.close(local_descriptor)
+        raise
+    finally:
+        try:
+            os.close(authority_descriptor)
+        except OSError:
+            pass
+
+
 def _publisher_role() -> None:
     startup_stage = "PRINCIPAL"
     try:
@@ -2725,7 +2763,9 @@ def _publisher_role() -> None:
         if operation == "BOOTSTRAP":
             if len(descriptors) != 1 or payload or anchor is not None:
                 _stop("PUBLISHER_BOOTSTRAP_REPLAY")
-            publication_root_descriptor = descriptors[0]
+            publication_root_descriptor = _adopt_publication_root_descriptor(
+                descriptors[0]
+            )
             root_info = os.fstat(publication_root_descriptor)
             root_access = (
                 fcntl.fcntl(publication_root_descriptor, fcntl.F_GETFL)

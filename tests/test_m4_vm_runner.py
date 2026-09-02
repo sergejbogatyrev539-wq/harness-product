@@ -953,7 +953,11 @@ class M4VMRunnerContractTests(unittest.TestCase):
             bootstrap_offset,
         )
         publisher_source = inspect.getsource(module._publisher_role)
-        self.assertIn("publication_root_descriptor = descriptors[0]", publisher_source)
+        self.assertIn(
+            "publication_root_descriptor = _adopt_publication_root_descriptor(",
+            publisher_source,
+        )
+        self.assertIn("descriptors[0]", publisher_source)
         self.assertRegex(
             publisher_source,
             r"(?s)l0\.resolve_target\(\s*profile,\s*publication_root_descriptor,",
@@ -1701,6 +1705,58 @@ os._exit(0)
         finally:
             module.os.close(read_descriptor)
             module.os.close(write_descriptor)
+
+    def test_publisher_adopts_bound_root_in_its_mount_namespace(self) -> None:
+        module = _module()
+        with tempfile.TemporaryDirectory(prefix="m4-publisher-root-adopt-") as directory:
+            root = Path(directory) / "publication"
+            substitute = Path(directory) / "substitute"
+            root.mkdir()
+            substitute.mkdir()
+            original_root = module.PUBLICATION_ROOT
+            authority_descriptor = -1
+            local_descriptor = -1
+            substitute_descriptor = -1
+            try:
+                module.PUBLICATION_ROOT = root
+                authority_descriptor = module.os.open(
+                    root,
+                    module.os.O_RDONLY | module.os.O_DIRECTORY | module.os.O_CLOEXEC,
+                )
+                authority_number = authority_descriptor
+                authority_info = module.os.fstat(authority_descriptor)
+                local_descriptor = module._adopt_publication_root_descriptor(
+                    authority_descriptor
+                )
+                authority_descriptor = -1
+                local_info = module.os.fstat(local_descriptor)
+                self.assertEqual(
+                    (local_info.st_dev, local_info.st_ino),
+                    (authority_info.st_dev, authority_info.st_ino),
+                )
+                self.assertNotEqual(local_descriptor, authority_number)
+                with self.assertRaises(OSError):
+                    module.fcntl.fcntl(authority_number, module.fcntl.F_GETFD)
+
+                substitute_descriptor = module.os.open(
+                    substitute,
+                    module.os.O_RDONLY | module.os.O_DIRECTORY | module.os.O_CLOEXEC,
+                )
+                with self.assertRaisesRegex(
+                    module.QualificationStop,
+                    "^PUBLICATION_DESCRIPTOR_MISMATCH$",
+                ):
+                    module._adopt_publication_root_descriptor(substitute_descriptor)
+                substitute_descriptor = -1
+            finally:
+                module.PUBLICATION_ROOT = original_root
+                for descriptor in (
+                    authority_descriptor,
+                    local_descriptor,
+                    substitute_descriptor,
+                ):
+                    if descriptor >= 0:
+                        module.os.close(descriptor)
 
     def test_run_phase_enters_one_actual_m3_to_m4_join_chain(self) -> None:
         module = _module()
