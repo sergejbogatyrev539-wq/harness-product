@@ -674,6 +674,8 @@ class M4VMRunnerContractTests(unittest.TestCase):
         for required in (
             "/inputs/m4-role.json r,",
             "/etc/harness-m4/runtime-trust.json r,",
+            "/opt/harness-m3-source/src/ r,",
+            "/opt/harness-m3-source/src/harness_product/ r,",
             "/opt/harness-m3-source/src/harness_product/** r,",
             "/var/lib/harness-m4-keys/public/** r,",
             "audit deny mount,",
