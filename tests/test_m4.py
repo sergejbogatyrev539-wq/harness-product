@@ -265,6 +265,29 @@ class M4CoordinatorTests(unittest.TestCase):
         self.assertTrue(all(not hasattr(harness_product, name) for name in forbidden))
         self.assertNotIn("stage_committed_intent", l0.__all__)
 
+    def test_publication_namespace_identity_does_not_follow_nsfs_magic_link(
+        self,
+    ) -> None:
+        with (
+            patch.object(
+                publisher.os,
+                "stat",
+                side_effect=AssertionError("namespace magic link was followed"),
+            ),
+            patch.object(
+                publisher.os,
+                "readlink",
+                return_value="mnt:[4026531832]",
+            ),
+        ):
+            self.assertEqual(
+                publisher._mount_namespace_id(),
+                "mntns:4026531832",
+            )
+        with patch.object(publisher.os, "readlink", return_value="mnt:[0]"):
+            with self.assertRaises(publisher._Stop):
+                publisher._mount_namespace_id()
+
     def test_controller_without_exact_publisher_boundary_cannot_start(self) -> None:
         chain = self.setup_chain()
         root_descriptor = os.open(

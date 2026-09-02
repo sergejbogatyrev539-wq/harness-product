@@ -456,6 +456,14 @@ def _parse_anchor(raw: object) -> PublicationRootAnchor:
     )
 
 
+def _mount_namespace_id() -> str:
+    value = os.readlink("/proc/self/ns/mnt")
+    match = re.fullmatch(r"mnt:\[([1-9][0-9]*)\]", value)
+    if match is None:
+        raise _Stop(PublisherReason.TARGET_MISMATCH)
+    return "mntns:" + match.group(1)
+
+
 def _mountpoint(mount_id: int) -> str:
     def unescape(value: str) -> str:
         def replacement(match: re.Match[str]) -> str:
@@ -484,7 +492,7 @@ def _measure_publication_root(root_descriptor: int) -> PublicationRootAnchor:
     components = tuple(component for component in root_path.split("/") if component)
     if not components:
         raise _Stop(PublisherReason.TARGET_MISMATCH)
-    namespace = os.stat("/proc/self/ns/mnt")
+    namespace_id = _mount_namespace_id()
     parent = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     ancestry: list[PublicationAncestryEntry] = []
     try:
@@ -518,7 +526,7 @@ def _measure_publication_root(root_descriptor: int) -> PublicationRootAnchor:
         os.close(parent)
     body: dict[str, object] = {
         "anchor_version": 1,
-        "mount_namespace_id": f"mntns:{namespace.st_dev}:{namespace.st_ino}",
+        "mount_namespace_id": namespace_id,
         "mount_id": f"mnt:{mount_id}",
         "mountpoint": _mountpoint(mount_id),
         "root_path": root_path,
