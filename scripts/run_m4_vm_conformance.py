@@ -2633,6 +2633,7 @@ def _publisher_role() -> None:
     target = None
     anchor = None
     trusted = None
+    publication_root_descriptor: int | None = None
     installed_topology = None
     last_request = 0
     while True:
@@ -2644,13 +2645,27 @@ def _publisher_role() -> None:
             _stop("PUBLISHER_REQUEST_REPLAY")
         last_request = request_id
         if operation == "BOOTSTRAP":
-            if descriptors or payload or anchor is not None:
+            if len(descriptors) != 1 or payload or anchor is not None:
                 _stop("PUBLISHER_BOOTSTRAP_REPLAY")
-            resolved = l0.resolve_target(profile, 2, value["target"])
+            publication_root_descriptor = descriptors[0]
+            root_info = os.fstat(publication_root_descriptor)
+            root_access = (
+                fcntl.fcntl(publication_root_descriptor, fcntl.F_GETFL)
+                & os.O_ACCMODE
+            )
+            if not stat.S_ISDIR(root_info.st_mode) or root_access != os.O_RDONLY:
+                _stop("PUBLISHER_BOOTSTRAP_MALFORMED")
+            resolved = l0.resolve_target(
+                profile,
+                publication_root_descriptor,
+                value["target"],
+            )
             if resolved.outcome is not l0.L0Outcome.RESOLVED or resolved.binding is None:
                 _stop("PUBLISHER_TARGET_UNRESOLVED")
             target = resolved.binding
-            anchor = publisher._measure_publication_root(2)
+            anchor = publisher._measure_publication_root(
+                publication_root_descriptor
+            )
             _publisher_response(
                 request_id,
                 "BOOTSTRAP",
@@ -2661,6 +2676,7 @@ def _publisher_role() -> None:
                 descriptors
                 or
                 trusted is not None
+                or publication_root_descriptor is None
                 or target is None
                 or anchor is None
                 or frozenset(payload)
@@ -2680,7 +2696,7 @@ def _publisher_role() -> None:
                 _stop("PUBLISHER_TOPOLOGY_MISMATCH")
             trusted = publisher.TrustedPublisher(
                 profile=profile,
-                root_descriptor=2,
+                root_descriptor=publication_root_descriptor,
                 topology=compiled.topology,
                 topology_verification=payload["topology_verification"],
                 verifier_factory=ConfiguredVerifierRouter,
@@ -2808,6 +2824,8 @@ def _publisher_role() -> None:
             if descriptors or payload:
                 _stop("PUBLISHER_STOP_MALFORMED")
             _publisher_response(request_id, "STOPPED", {"closed": True})
+            if publication_root_descriptor is not None:
+                os.close(publication_root_descriptor)
             connection.close()
             return
         else:
@@ -3412,8 +3430,10 @@ class PublisherSession:
             _stop("PUBLISHER_RESPONSE_MALFORMED")
         return value["payload"]
 
-    def bootstrap(self) -> dict[str, object]:
-        request_id = self._next_request("BOOTSTRAP", {})
+    def bootstrap(self, root_descriptor: int) -> dict[str, object]:
+        if type(root_descriptor) is not int or root_descriptor < 0:
+            _stop("PUBLISHER_BOOTSTRAP_MALFORMED")
+        request_id = self._next_request("BOOTSTRAP", {}, root_descriptor)
         payload = self._reply(request_id, "BOOTSTRAP")
         if frozenset(payload) != {"target_binding", "root_anchor"}:
             _stop("PUBLISHER_BOOTSTRAP_MALFORMED")
@@ -5094,7 +5114,7 @@ def _start_publisher_session(
             seccomp_program=seccomp_program,
             stdin_descriptor=child.fileno(),
             stdout_descriptor=subprocess.PIPE,
-            stderr_descriptor=publication_root_descriptor,
+            stderr_descriptor=subprocess.DEVNULL,
             mounts=(
                 (
                     "--ro-bind-fd",
@@ -5111,8 +5131,6 @@ def _start_publisher_session(
         child.close()
         os.close(publication_parent_descriptor)
         publication_parent_descriptor = -1
-        os.close(publication_root_descriptor)
-        publication_root_descriptor = -1
         session = PublisherSession(
             process=launched["process"],
             connection=parent,
@@ -5123,7 +5141,9 @@ def _start_publisher_session(
             facts=launched["facts"],
             denial_probe=denial_probe,
         )
-        context = session.bootstrap()
+        context = session.bootstrap(publication_root_descriptor)
+        os.close(publication_root_descriptor)
+        publication_root_descriptor = -1
         target_data = context["target_binding"].data()
         anchor_data = context["root_anchor"].data()
         if (

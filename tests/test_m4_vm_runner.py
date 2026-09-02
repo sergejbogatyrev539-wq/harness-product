@@ -852,6 +852,105 @@ class M4VMRunnerContractTests(unittest.TestCase):
             frozenset({"input_version", "l0_profile", "m4_profile", "target"}),
         )
 
+    def test_publisher_bootstrap_transfers_root_fd_after_valid_python_stdio(
+        self,
+    ) -> None:
+        module = _module()
+        parent, child = module._publisher_control_pair()
+        root_descriptor = received_descriptor = -1
+
+        class ReplyBoundary(Exception):
+            pass
+
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root_descriptor = module.os.open(
+                    directory,
+                    module.os.O_RDONLY | module.os.O_DIRECTORY,
+                )
+                root_info = module.os.fstat(root_descriptor)
+                probe = [
+                    module.sys.executable,
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    "import os; os.write(1, b'ENTERED')",
+                ]
+                directory_stderr = module.subprocess.run(
+                    probe,
+                    stdout=module.subprocess.PIPE,
+                    stderr=root_descriptor,
+                    check=False,
+                )
+                self.assertNotEqual(directory_stderr.returncode, 0)
+                self.assertEqual(directory_stderr.stdout, b"")
+                stream_stderr = module.subprocess.run(
+                    probe,
+                    stdout=module.subprocess.PIPE,
+                    stderr=module.subprocess.DEVNULL,
+                    check=False,
+                )
+                self.assertEqual(stream_stderr.returncode, 0)
+                self.assertEqual(stream_stderr.stdout, b"ENTERED")
+
+                session = module.PublisherSession.__new__(module.PublisherSession)
+                session.closed = False
+                session.process = SimpleNamespace(poll=lambda: None)
+                session.request_id = 0
+                session.connection = parent
+                with (
+                    mock.patch.object(
+                        session,
+                        "_reply",
+                        side_effect=ReplyBoundary,
+                    ),
+                    self.assertRaises(ReplyBoundary),
+                ):
+                    session.bootstrap(root_descriptor)
+                request, descriptors = module._recv_control(child, 1)
+                received_descriptor = descriptors[0]
+                self.assertEqual(
+                    request,
+                    {
+                        "protocol_version": 1,
+                        "request_id": 1,
+                        "operation": "BOOTSTRAP",
+                        "payload": {},
+                    },
+                )
+                received_info = module.os.fstat(received_descriptor)
+                self.assertEqual(
+                    (received_info.st_dev, received_info.st_ino),
+                    (root_info.st_dev, root_info.st_ino),
+                )
+        finally:
+            for descriptor in (root_descriptor, received_descriptor):
+                if descriptor >= 0:
+                    module.os.close(descriptor)
+            parent.close()
+            child.close()
+
+        start_source = inspect.getsource(module._start_publisher_session)
+        self.assertIn("stderr_descriptor=subprocess.DEVNULL", start_source)
+        bootstrap_offset = start_source.index(
+            "session.bootstrap(publication_root_descriptor)"
+        )
+        self.assertGreater(
+            start_source.index(
+                "os.close(publication_root_descriptor)",
+                bootstrap_offset,
+            ),
+            bootstrap_offset,
+        )
+        publisher_source = inspect.getsource(module._publisher_role)
+        self.assertIn("publication_root_descriptor = descriptors[0]", publisher_source)
+        self.assertRegex(
+            publisher_source,
+            r"(?s)l0\.resolve_target\(\s*profile,\s*publication_root_descriptor,",
+        )
+        self.assertNotIn("l0.resolve_target(profile, 2", publisher_source)
+
     def test_publisher_socket_adoption_requires_explicit_type_under_exact_seccomp(
         self,
     ) -> None:
