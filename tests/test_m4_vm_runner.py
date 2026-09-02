@@ -852,6 +852,125 @@ class M4VMRunnerContractTests(unittest.TestCase):
             frozenset({"input_version", "l0_profile", "m4_profile", "target"}),
         )
 
+    def test_publisher_socket_adoption_requires_explicit_type_under_exact_seccomp(
+        self,
+    ) -> None:
+        module = _module()
+        module.M3_RUNNER = M3_RUNNER
+        m3 = module._load_m3()
+        raw = module._strict_bytes(L0_SECCOMP.read_bytes())
+        self.assertIs(type(raw), dict)
+        rows = tuple(
+            sorted(
+                (
+                    *raw["syscalls"],
+                    *module.M4_ROLE_SECCOMP_ADDITIONS["PUBLISHER"],
+                )
+            )
+        )
+        self.assertNotIn(51, rows)
+        program = m3._compile_seccomp_rows(rows)
+
+        child_code = f"""
+import ctypes
+import errno
+import os
+import socket
+import sys
+
+class SockFilter(ctypes.Structure):
+    _fields_ = [
+        ("code", ctypes.c_ushort),
+        ("jt", ctypes.c_ubyte),
+        ("jf", ctypes.c_ubyte),
+        ("value", ctypes.c_uint),
+    ]
+
+class SockFprog(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_ushort),
+        ("filters", ctypes.POINTER(SockFilter)),
+    ]
+
+raw = bytes.fromhex({program.hex()!r})
+filters = (SockFilter * (len(raw) // ctypes.sizeof(SockFilter))).from_buffer_copy(raw)
+filter_program = SockFprog(len(filters), filters)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.prctl.argtypes = [
+    ctypes.c_int,
+    ctypes.c_ulong,
+    ctypes.c_void_p,
+    ctypes.c_ulong,
+    ctypes.c_ulong,
+]
+libc.prctl.restype = ctypes.c_int
+if libc.prctl(38, 1, None, 0, 0) != 0:
+    raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS")
+if libc.prctl(22, 2, ctypes.byref(filter_program), 0, 0) != 0:
+    raise OSError(ctypes.get_errno(), "PR_SET_SECCOMP")
+
+before = os.fstat(0)
+if sys.argv[1] == "generic":
+    try:
+        socket.socket(fileno=0)
+    except PermissionError as error:
+        if error.errno == errno.EPERM:
+            os.write(1, b"GENERIC_EPERM")
+            os._exit(0)
+    os._exit(10)
+
+adopted = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET, 0, fileno=0)
+after = os.fstat(adopted.fileno())
+if (
+    adopted.fileno() != 0
+    or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+    or adopted.family != socket.AF_UNIX
+    or adopted.type != socket.SOCK_SEQPACKET
+    or adopted.proto != 0
+    or adopted.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)
+    != socket.SOCK_SEQPACKET
+):
+    os._exit(11)
+os.write(1, ("EXPLICIT_OK:%d:%d" % (after.st_dev, after.st_ino)).encode("ascii"))
+os._exit(0)
+"""
+
+        for mode in ("generic", "explicit"):
+            peer, endpoint = module.socket.socketpair(
+                module.socket.AF_UNIX,
+                module.socket.SOCK_SEQPACKET,
+            )
+            with peer, endpoint, self.subTest(mode=mode):
+                info = module.os.fstat(endpoint.fileno())
+                completed = module.subprocess.run(
+                    [
+                        module.sys.executable,
+                        "-I",
+                        "-S",
+                        "-B",
+                        "-c",
+                        child_code,
+                        mode,
+                    ],
+                    stdin=endpoint,
+                    stdout=module.subprocess.PIPE,
+                    stderr=module.subprocess.PIPE,
+                    check=False,
+                    close_fds=True,
+                    timeout=10,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(completed.stderr, b"")
+                if mode == "generic":
+                    self.assertEqual(completed.stdout, b"GENERIC_EPERM")
+                else:
+                    self.assertEqual(
+                        completed.stdout,
+                        (
+                            "EXPLICIT_OK:%d:%d" % (info.st_dev, info.st_ino)
+                        ).encode("ascii"),
+                    )
+
     def test_nested_role_reports_keep_namespace_and_host_identity_coordinates_distinct(
         self,
     ) -> None:
