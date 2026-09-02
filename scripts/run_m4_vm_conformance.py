@@ -476,6 +476,19 @@ _POST_KEY_EXCEPTION_CLASSES = (
     (AttributeError, "ATTRIBUTEERROR"),
     (Exception, "EXCEPTION"),
 )
+_PUBLISHER_STARTUP_STAGES = frozenset(
+    {
+        "PRINCIPAL",
+        "FD_CLOSURE",
+        "CONTROL_ADOPTION",
+        "INPUT_LOAD",
+        "PROJECT_LOAD",
+        "PROFILE_COMPILE",
+        "KEY_LOAD",
+        "VERIFIER_LOAD",
+        "READY_REPORT",
+    }
+)
 
 
 def _sanitize_stop_reason(reason: object) -> str:
@@ -498,6 +511,19 @@ def _post_key_exception_reason(stage: object, error: object) -> str:
     for exception_type, code in _POST_KEY_EXCEPTION_CLASSES:
         if isinstance(error, exception_type):
             return f"M4_POST_KEY_{stage}_{code}"
+    return "M4_RUNTIME_FAILURE"
+
+
+def _publisher_startup_exception_reason(stage: object, error: object) -> str:
+    if (
+        type(stage) is not str
+        or stage not in _PUBLISHER_STARTUP_STAGES
+        or not isinstance(error, Exception)
+    ):
+        return "M4_RUNTIME_FAILURE"
+    for exception_type, code in _POST_KEY_EXCEPTION_CLASSES:
+        if isinstance(error, exception_type):
+            return f"PUBLISHER_STARTUP_{stage}_{code}"
     return "M4_RUNTIME_FAILURE"
 
 
@@ -2629,46 +2655,65 @@ def _publisher_response(request_id: int, kind: str, payload: dict[str, object]) 
 
 
 def _publisher_role() -> None:
-    expected = ROLE_LABELS["PUBLISHER"] + " (enforce)"
-    if (
-        os.geteuid() != M4_NAMESPACE_ROLE_IDS["PUBLISHER"][2]
-        or os.getegid() != M4_NAMESPACE_ROLE_IDS["PUBLISHER"][3]
-        or Path("/proc/self/attr/current").read_text(encoding="ascii").strip()
-        != expected
-    ):
-        _stop("PUBLISHER_PRINCIPAL_MISMATCH")
-    _close_except(frozenset({0, 1, 2}))
-    connection = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET, 0, fileno=0)
-    value = _strict_file(
-        ROLE_INPUT,
-        frozenset({"input_version", "l0_profile", "m4_profile", "target"}),
-    )
-    if (
-        value["input_version"] != "1.0.0"
-        or type(value["m4_profile"]) is not dict
-        or type(value["target"]) is not dict
-    ):
-        _stop("PUBLISHER_INPUT_MALFORMED")
-    durable, l0, _, publisher, _ = _load_project()
-    profile = _compile_l0_profile(value["l0_profile"])
-    key_row = value["m4_profile"].get("receipt_keys", {}).get("PUBLISHER")
-    if type(key_row) is not dict:
-        _stop("PUBLISHER_KEY_BINDING_MALFORMED")
-    key = RoleKey("PUBLISHER", key_row, KEY_ROOT / "publisher")
-    router = ConfiguredVerifierRouter()
+    startup_stage = "PRINCIPAL"
+    try:
+        expected = ROLE_LABELS["PUBLISHER"] + " (enforce)"
+        if (
+            os.geteuid() != M4_NAMESPACE_ROLE_IDS["PUBLISHER"][2]
+            or os.getegid() != M4_NAMESPACE_ROLE_IDS["PUBLISHER"][3]
+            or Path("/proc/self/attr/current").read_text(encoding="ascii").strip()
+            != expected
+        ):
+            _stop("PUBLISHER_PRINCIPAL_MISMATCH")
+        startup_stage = "FD_CLOSURE"
+        _close_except(frozenset({0, 1, 2}))
+        startup_stage = "CONTROL_ADOPTION"
+        connection = socket.socket(
+            socket.AF_UNIX,
+            socket.SOCK_SEQPACKET,
+            0,
+            fileno=0,
+        )
+        startup_stage = "INPUT_LOAD"
+        value = _strict_file(
+            ROLE_INPUT,
+            frozenset({"input_version", "l0_profile", "m4_profile", "target"}),
+        )
+        if (
+            value["input_version"] != "1.0.0"
+            or type(value["m4_profile"]) is not dict
+            or type(value["target"]) is not dict
+        ):
+            _stop("PUBLISHER_INPUT_MALFORMED")
+        startup_stage = "PROJECT_LOAD"
+        durable, l0, _, publisher, _ = _load_project()
+        startup_stage = "PROFILE_COMPILE"
+        profile = _compile_l0_profile(value["l0_profile"])
+        startup_stage = "KEY_LOAD"
+        key_row = value["m4_profile"].get("receipt_keys", {}).get("PUBLISHER")
+        if type(key_row) is not dict:
+            _stop("PUBLISHER_KEY_BINDING_MALFORMED")
+        key = RoleKey("PUBLISHER", key_row, KEY_ROOT / "publisher")
+        startup_stage = "VERIFIER_LOAD"
+        router = ConfiguredVerifierRouter()
+        startup_stage = "READY_REPORT"
+        _write_report(
+            {
+                "kind": "ROLE_READY",
+                "protocol_version": 1,
+                "role": "PUBLISHER",
+            }
+        )
+    except QualificationStop:
+        raise
+    except Exception as error:
+        _stop(_publisher_startup_exception_reason(startup_stage, error))
     target = None
     anchor = None
     trusted = None
     publication_root_descriptor: int | None = None
     installed_topology = None
     last_request = 0
-    _write_report(
-        {
-            "kind": "ROLE_READY",
-            "protocol_version": 1,
-            "role": "PUBLISHER",
-        }
-    )
     while True:
         request, descriptors = _recv_control(connection, None)
         request_id = int(request["request_id"])

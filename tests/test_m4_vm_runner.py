@@ -755,7 +755,7 @@ class M4VMRunnerContractTests(unittest.TestCase):
     def test_nested_m4_role_entrypoints_require_namespace_identity(self) -> None:
         module = _module()
 
-        class NextBoundary(Exception):
+        class NextBoundary(BaseException):
             pass
 
         cases = (
@@ -817,7 +817,7 @@ class M4VMRunnerContractTests(unittest.TestCase):
         ]
         expected_label = module.ROLE_LABELS["PUBLISHER"] + " (enforce)"
 
-        class NextBoundary(Exception):
+        class NextBoundary(BaseException):
             pass
 
         connection = object()
@@ -1006,6 +1006,40 @@ class M4VMRunnerContractTests(unittest.TestCase):
         self.assertLess(
             publisher_source.index('"kind": "ROLE_READY"'),
             publisher_source.index("while True:"),
+        )
+
+    def test_publisher_startup_exception_reason_is_stage_closed_and_secret_free(
+        self,
+    ) -> None:
+        module = _module()
+
+        class PrivateFailure(Exception):
+            pass
+
+        cases = (
+            (
+                "CONTROL_ADOPTION",
+                PermissionError(1, "/private/control.sock"),
+                "PUBLISHER_STARTUP_CONTROL_ADOPTION_OSERROR",
+            ),
+            (
+                "VERIFIER_LOAD",
+                PrivateFailure("/private/verifier/key"),
+                "PUBLISHER_STARTUP_VERIFIER_LOAD_EXCEPTION",
+            ),
+        )
+        for stage, error, expected in cases:
+            with self.subTest(stage=stage):
+                reason = module._publisher_startup_exception_reason(stage, error)
+                self.assertEqual(reason, expected)
+                self.assertRegex(reason, module._STOP_REASON)
+                self.assertNotIn("private", reason.lower())
+        self.assertEqual(
+            module._publisher_startup_exception_reason(
+                "UNKNOWN",
+                PrivateFailure("secret"),
+            ),
+            "M4_RUNTIME_FAILURE",
         )
 
     def test_publisher_socket_adoption_requires_explicit_type_under_exact_seccomp(
