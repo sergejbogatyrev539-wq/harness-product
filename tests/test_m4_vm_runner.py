@@ -684,6 +684,13 @@ class M4VMRunnerContractTests(unittest.TestCase):
         ):
             self.assertGreaterEqual(policy.count(required), 2)
         publisher = policy.split("profile harness-m4-lx-a.publisher", 1)[1]
+        for ancestor in (
+            "/var/ r,",
+            "/var/lib/ r,",
+            "/var/lib/harness-m4-publication/ r,",
+            "/var/lib/harness-m4-publication/anchor/ r,",
+        ):
+            self.assertIn(ancestor, publisher)
         self.assertIn("unix (getopt) type=seqpacket addr=none,", publisher)
         self.assertIn(
             "unix (receive) type=seqpacket addr=none peer=(addr=none,label=unconfined),",
@@ -1669,6 +1676,31 @@ os._exit(0)
             self.assertIn("pass_fds=tuple(sorted({code, 3})),", call_site)
             self.assertNotIn("pass_fds=(code,),", call_site)
             self.assertIn("((code, 3),)", call_site)
+
+    def test_publisher_reply_preserves_closed_child_stop(self) -> None:
+        module = _module()
+        read_descriptor, write_descriptor = module.os.pipe()
+        try:
+            raw = module._canonical(
+                {
+                    "outcome": "STOP",
+                    "reason": "PUBLISHER_TARGET_UNRESOLVED",
+                    "status": "NOT_ATTESTED",
+                }
+            )
+            module.os.write(write_descriptor, raw + b"\n")
+            session = module.PublisherSession.__new__(module.PublisherSession)
+            session.process = SimpleNamespace(
+                stdout=SimpleNamespace(fileno=lambda: read_descriptor)
+            )
+            with self.assertRaisesRegex(
+                module.QualificationStop,
+                "^PUBLISHER_TARGET_UNRESOLVED$",
+            ):
+                session._reply(1, "BOOTSTRAP")
+        finally:
+            module.os.close(read_descriptor)
+            module.os.close(write_descriptor)
 
     def test_run_phase_enters_one_actual_m3_to_m4_join_chain(self) -> None:
         module = _module()

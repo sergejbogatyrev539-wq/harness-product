@@ -3497,6 +3497,15 @@ class PublisherSession:
         raw = _read_line(self.process.stdout.fileno(), MAX_REPORT, 20)
         value = _strict_bytes(raw, MAX_REPORT)
         if (
+            type(value) is dict
+            and frozenset(value) == {"outcome", "reason", "status"}
+            and value.get("outcome") == "STOP"
+            and value.get("status") == "NOT_ATTESTED"
+            and type(value.get("reason")) is str
+            and _STOP_REASON.fullmatch(value["reason"]) is not None
+        ):
+            _stop(value["reason"])
+        if (
             type(value) is not dict
             or frozenset(value)
             != {"protocol_version", "request_id", "kind", "payload"}
