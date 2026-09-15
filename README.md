@@ -1,24 +1,26 @@
 # Harness product
 
-Universal, policy-enforced mediation for agent-initiated work. The product is to
-turn the normative Harness specification into a runtime in which untrusted
-workers can propose bounded work but cannot bypass the control path.
+Универсальная посредническая среда с принудительной политикой для работы,
+инициируемой агентами. Продукт превращает нормативную спецификацию Harness в
+исполняемую среду, в которой недоверенные работники могут предлагать
+ограниченную работу, но не могут обойти контур управления.
 
-## Current status
+## Текущий статус
 
 `specification=SPECIFIED; implementation=NOT_IMPLEMENTED; runtime_attestation=NOT_ATTESTED; overall=NOT_READY`.
-The copied `spec/` corpus is normative; it is not a runnable security product.
-Here `NOT_IMPLEMENTED` means that no complete current non-bypassable deployment
-implements the full specification; it does not mean that M1-M4 source modules
-are absent.
 
-## Start here
+Корпус `spec/` нормативен; это не готовый к запуску продукт безопасности. Здесь
+`NOT_IMPLEMENTED` означает, что ни одно текущее полное развёртывание с
+невозможностью обхода не реализует всю спецификацию; это не означает, что
+исходные модули M1–M4 отсутствуют.
 
-Agents must first read all of [AGENTS.md](AGENTS.md) and the ignored live record
-`.agent/WORKING_CONTEXT.json`, initialized from the closed
-[working-context template](WORKING_CONTEXT.template.json). The record preserves
-the current invariant, exact oracle, and progress across compaction or handoff,
-but is non-authorizing and cannot start work.
+## С чего начать
+
+Перед работой агенты обязаны сначала прочитать [AGENTS.md](AGENTS.md) целиком и
+игнорируемую живую запись `.agent/WORKING_CONTEXT.json`, инициализируемую из
+закрытого [шаблона рабочего контекста](WORKING_CONTEXT.template.json). Запись
+сохраняет текущий инвариант, точный оракул и прогресс между сжатиями контекста
+или передачей, но не даёт полномочий и не может сама начать работу.
 
 ```bash
 python -m venv .venv
@@ -26,171 +28,196 @@ python -m venv .venv
 .venv/bin/python scripts/check.py
 ```
 
-The single check verifies all 48 transferred specification files against
-`spec/MANIFEST.sha256`, runs the product unit tests, and executes the original
-specification-model runner. Any missing dependency or check is a failure, not a
-skip.
+Единая проверка сверяет все 48 переданных файлов спецификации с
+`spec/MANIFEST.sha256`, запускает модульные тесты продукта и исполняет
+оригинальный прогонщик модели спецификации. Любая отсутствующая зависимость
+или проверка — это ошибка, а не пропуск.
 
-## Intended minimum
+## Предполагаемый минимум
 
-1. A pure, total admission kernel derives and narrows an exact authority envelope.
-2. A Controller/PEP and broker durably authorize one use of a capability.
-3. A separately attested executor or gateway performs the exact call; a worker
-   only sends powerless proposals.
-4. The runtime blocks unknown or mismatched state, records authoritative events,
-   and retains same-profile evidence.
+1. Чистое тотальное admission-ядро выводит и сужает точную оболочку полномочий.
+2. Контроллер/точка принуждения политики (PEP) и брокер устойчиво авторизуют
+   одно использование возможности (capability).
+3. Отдельно аттестуемый исполнитель или шлюз выполняет точный вызов; работник
+   отправляет только безвластные предложения.
+4. Среда блокирует неизвестное или рассинхронизированное состояние, записывает
+   авторитетные события и сохраняет свидетельства того же профиля.
 
-See [architecture](docs/ARCHITECTURE.md), [roadmap](ROADMAP.md), and
-[security boundary](SECURITY.md). Implementations must follow [AGENTS.md](AGENTS.md).
+См. [архитектуру](docs/ARCHITECTURE.md), [дорожную карту](ROADMAP.md) и
+[границу безопасности](SECURITY.md). Реализации обязаны следовать
+[AGENTS.md](AGENTS.md).
 
-`src/harness_product/` keeps the M1 in-memory model pure. Its public
-`evaluate` API runs the deterministic
-`normalize → classify → derive → decide → transition` chain over closed input
-data and explicit time. Effective authority is the exact proposal contained by
-the manifest, policy, physical ceiling, and trusted-fact inputs. An `ALLOW`
-contains only an immutable proposal marked `authority=NONE`; it cannot dispatch
-or perform an effect. The returned digest is a deterministic binding, not a
-signature or attestation.
+## M1: чистое ядро решения
 
-M2 adds one direct, non-root-exported `harness_product.durable` stdlib SQLite
-store. Its format version remains 1 and its M4-extended schema is v5. Exact v1
-through v3 stores migrate atomically; exact v4 stores migrate only while their
-M4 surface is empty, and otherwise remain unchanged and fail closed. It uses
-`STRICT` tables, foreign keys, `BEGIN IMMEDIATE`,
-rollback-journal (`DELETE`) mode, and `synchronous=FULL`. Issue reruns the exact
-M1 decision and stores the complete canonical M1 inputs/bindings and complete
-verifier record; consume checks them again. A single commit consumes the
-capability, reserves every budget component, records the exact durable dispatch
-intent, counters/journal, and a mandatory local outbox event. Reservations end
-exactly once as `SPENT`, `RELEASED`, or `QUARANTINED_ESCROW`; release requires an
-independently verified no-effect record. Recovery never dispatches or retries.
-The M3 extension can atomically claim one already committed intent after
-rechecking its complete stored capability/verifier bindings, expiry, revocation
-epoch, and fence through a second external-verifier boundary. The claim and its
-mandatory event/outbox record persist before an executor can receive an
-envelope; reopen exposes only `ATTEMPT_CLAIMED`, never an automatic retry. An M3
-transition can then durably record the exact prospective runtime object
-inventory as `PREPARED` before untrusted exec and terminally record `STOPPED`,
-`TIMED_OUT`, or `QUARANTINED`. Only independently verified no-effect cleanup can
-release the reservation; every uncertain terminal result remains quarantined.
+`src/harness_product/` содержит чистую модель M1 в памяти. Её публичный API
+`evaluate` выполняет детерминированную цепочку
+`normalize → classify → derive → decide → transition` над закрытыми входными
+данными и явным временем. Эффективные полномочия — это точное предложение,
+ограниченное манифестом, политикой, физическим потолком и входными доверенными
+фактами. Решение `ALLOW` содержит только неизменяемое предложение с пометкой
+`authority=NONE`; оно не может отправить или выполнить эффект. Возвращаемый
+дайджест — детерминированная привязка, а не подпись или аттестация.
 
-`DELETE` is intentional for this single-writer profile: `BEGIN IMMEDIATE`
-serializes mutations, while rollback journaling avoids a separate WAL checkpoint
-lifecycle. It still uses a transient rollback-journal file during a transaction.
+## M2: устойчивое хранилище
 
-The durable module still has no executor, connector, or effect adapter,
-external crypto/trust root/attestation, OS enforcement, non-bypassability, or
-readiness claim. A local hash chain cannot detect a coherent whole-database
-rollback without an independent external anchor. `synchronous=FULL` depends on
-the filesystem and device honoring flush/order guarantees and does not prove
-power-loss durability.
+M2 добавляет один прямой, не экспортируемый из корня модуль stdlib SQLite
+`harness_product.durable`. Версия формата — 1, расширенная схема M4 — v5. Точные
+хранилища v1–v3 мигрируют атомарно; точные v4 мигрируют только пока их
+поверхность M4 пуста, иначе остаются неизменными и закрываются с ошибкой.
+Используются таблицы `STRICT`, внешние ключи, `BEGIN IMMEDIATE`,
+rollback-journal (`DELETE`) и `synchronous=FULL`. Выпуск повторяет точное
+решение M1 и сохраняет полные канонические входы/привязки M1 и полную запись
+верификатора; потребитель проверяет их повторно. Одна транзакция расходует
+возможность, резервирует каждый компонент бюджета, фиксирует точное устойчивое
+намерение отправки, счётчики/журнал и обязательное локальное событие outbox.
+Резервирования завершаются ровно один раз как `SPENT`, `RELEASED` или
+`QUARANTINED_ESCROW`; освобождение требует независимо проверенную запись об
+отсутствии эффекта. Восстановление никогда не отправляет и не повторяет работу.
 
-M3 adds the direct, non-root-exported `harness_product.l0` module: a closed
-compiler, read-only host preflight, external supply/placement-verifier boundary,
-exact session planner and supervisor, descriptor/IPC boundaries, and one
-minimal local staging operation for the one
-profile `L0-LX-A / DISCONNECTED_STAGEABLE_WORKER`. It pins the single backend
-to root-owned `/usr/bin/bwrap`, `bubblewrap 0.9.0`, SHA-256
-`52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712`.
-Compilation closes and canonicalizes five role plans, the exact fourteen-row
-Q-56 resource vector, disconnected worker controls, exact `UNIX_SEQPACKET`
-broker IPC, and measurement requirements. It emits a draft measurement plan,
-not activation or attestation. Preflight only reads host controls and invokes
-`bwrap --version/--help` with absolute typed argv, `shell=False`; it never
-creates a worker, namespace, cgroup, socket, or staging effect.
+Расширение M3 может атомарно захватить уже зафиксированное намерение после
+повторной проверки его полных привязок возможности/верификатора, срока действия,
+эпохи отзыва и забора через вторую границу внешнего верификатора. Захват и его
+обязательное событие/запись outbox сохраняются до того, как исполнитель может
+получить конверт; повторное открытие показывает только `ATTEMPT_CLAIMED` и
+никогда не делает автоматический повтор. Переход M3 может устойчиво записать
+точное будущее инвентарное состояние объекта как `PREPARED` до недоверенного
+исполнения и терминально записать `STOPPED`, `TIMED_OUT` или `QUARANTINED`.
+Только независимо проверенная очистка без эффекта может освободить
+резервирование; каждый неопределённый терминальный результат остаётся в
+карантине.
 
-Supply admission hashes actual bytes from pre-opened, immutable descriptors and
-binds the rootfs manifest, loader, dependency closure, tool, SBOM, registry
-snapshot, seccomp and LSM policy to exact runtime, signer lifecycle, profile,
-placement, session, fence, and rollback fields. It requires an explicit external
-verifier over the complete canonical payload and record. No default verifier,
-caller hash, `verified=true`, tag, or self-signed fixture is trusted.
+`DELETE` выбран намеренно для этого профиля с одним писателем: `BEGIN IMMEDIATE`
+сериализует изменения, а rollback-журнал избегает отдельного жизненного цикла
+контрольных точек WAL. Во время транзакции по-прежнему используется временный
+файл rollback-журнала.
 
-The session planner remeasures all descriptors and binds namespace, cgroup,
-mount, IPC, FD, process-tree, quota and cleanup inventories. The supervisor path
-has no fallback or retry: it repeats host measurement, durably commits
-`PREPARED`, creates and verifies one cgroup, launches only typed bwrap argv with
-`shell=False`, releases an early start gate, applies external wall/CPU limits,
-kills the cgroup process tree on failure, and terminally releases or quarantines
-the durable reservation. These properties were qualified for the exact
-disposable test-VM candidate at product commit
-`437ee01ca331cd7e4632fb8ad55eaa894254daa9`. That retained bundle is historical,
-test-profile evidence: it is not production attestation and cannot attest any
-later commit. Separately,
-`resolve_target` uses Linux `openat2` with `BENEATH`, `NO_MAGICLINKS`,
-`NO_SYMLINKS`, and `NO_XDEV`; broker ingress accepts only bounded
-`UNIX_SEQPACKET` messages with exact `SO_PEERCRED` and binding checks. The sole
-effect API can replace one already-existing file beneath a pre-opened 0700
-disposable staging root only after an exact M2 claim, external claim-verifier
-recheck, M1 selector/material match, immutable descriptor/root/mount/epoch/
-object match, and atomic consumption of the current one-use M4 stage
-authorization from `DurableStore`. A claim or caller binding alone is
-powerless. Unknown post-write outcome is quarantined and never retried.
+Модуль durable по-прежнему не имеет исполнителя, коннектора или адаптера
+эффектов, внешнего крипто/корня доверия/аттестации, принуждения на уровне ОС,
+невозможности обхода или заявления о готовности. Локальная хеш-цепочка не может
+обнаружить согласованный откат всей базы без независимого внешнего якоря.
+`synchronous=FULL` зависит от того, что файловая система и устройство соблюдают
+гарантии сброса/порядка, и не доказывает устойчивость к потере питания.
 
-M4 adds one direct, non-root-exported `harness_product.m4` coordinator and one
-non-root-exported `harness_product.publisher` boundary for that same local
-stageable-file profile. M1 admission, the M2 claim/frontier and the exact
-publication topology bind both the disposable staging inode and the separately
-configured publication target; caller input supplies neither root descriptor.
-External and non-stageable requests are deny-only. The v5 durable schema stores
-the active contract, complete D2 frontier, target-authority digest, and fenced
-canonical records for `STAGED → QUIESCED → SEALED → POSTCHECKED → publication
-authorization/receipt → COMMITTED → JOINED`, plus discard, quarantine and
-reconciliation. Budget escrow becomes `SPENT` only after a verified publication
-receipt, and recovery never resumes or retries an incomplete M4 transaction.
-Each committed D2 frontier is also one irreversible attempt slot; its append-only
-iteration sequence survives discard and reopen, while `joined_iteration`
-continues to mean only the last successful JOIN. The hard `max_iterations`
-ceiling is checked before another capability is issued.
+## M3: закрытый профиль L0
 
-Before sealing, the coordinator re-resolves the canonical path through its
-trusted root and acquires a Linux `F_RDLCK` lease on the exact read-only staged
-inode. It retains that resolver capability and rechecks both the lease and the
-canonical binding through JOIN. There is no weaker fallback: existing writers,
-a break request, lease loss, unsupported filesystems, rename/substitution, or
-identity mismatch quarantine the transaction. The immutable snapshot is a real
-sealed memfd with `F_SEAL_GROW|F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_WRITE`.
+M3 добавляет прямой, не экспортируемый из корня модуль `harness_product.l0`:
+закрытый компилятор, read-only предварительную проверку хоста, границу внешнего
+поставщика/верификатора размещения, точный планировщик сессии и супервизор,
+границы дескрипторов/IPC и одну минимальную локальную операцию размещения для
+единственного профиля `L0-LX-A / DISCONNECTED_STAGEABLE_WORKER`. Бэкенд
+закреплён за принадлежащим root `/usr/bin/bwrap`, `bubblewrap 0.9.0`,
+SHA-256 `52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712`.
+Компиляция замыкает и канонизирует пять планов ролей, точный вектор ресурсов
+Q-56 из четырнадцати строк, отключённые элементы управления работника, точный
+брокерский IPC `UNIX_SEQPACKET` и требования к измерениям. Выдаётся черновик
+плана измерений, а не активация или аттестация. Предварительная проверка только
+читает элементы управления хоста и вызывает `bwrap --version/--help` с
+абсолютным типизированным argv, `shell=False`; она никогда не создаёт работника,
+namespace, cgroup, сокет или эффект размещения.
 
-A separate observer child first closes the complete Linux descriptor range with
-`close_range`, preserving only its exact allowlist; inability to prove closure
-stops the boundary. It then produces a powerless proposal from a read-only
-snapshot; a full externally verified observer receipt is mandatory before a
-separately verified publication authorization can reach the trusted publisher.
-The publisher accepts only that authorization and the sealed descriptor, uses
-its configured descriptor-rooted target, performs one atomic replace plus
-fsync, and returns a mandatory verified publication receipt. Unknown outcome is
-quarantined without retry. The closed topology also requires pairwise-distinct
-worker/controller/executor/observer/publisher subjects, a sole publisher writer,
-and no `.git` authority. The publication root is additionally bound to its
-physical mount namespace, mountpoint, absolute root path, basename and complete
-parent ancestry, with continuity checks around atomic replacement and before
-COMMIT/JOIN. Relocation or ancestry drift, including movement under `.git`,
-quarantines rather than publishes. These are code-model and local regression
-properties.
-`DEPLOYMENT_ATTESTED` preflight remains `ABSENT` on a shared developer host; no
-new physical-runtime qualification or production attestation is claimed. The
-actual checkout and `.git` retain their existing host permissions and are not
-protected by this disposable code-model boundary.
+Приём поставки хеширует фактические байты из предварительно открытых
+неизменяемых дескрипторов и привязывает манифест rootfs, загрузчик, замыкание
+зависимостей, инструмент, SBOM, снимок реестра, политику seccomp и LSM к точным
+полям среды выполнения, жизненного цикла подписанта, профиля, размещения,
+сессии, забора и отката. Требуется явный внешний верификатор над полной
+канонической полезной нагрузкой и записью. Ни один верификатор по умолчанию,
+хеш вызывающего, `verified=true`, тег или самоподписанный фикстур не считаются
+доверенными.
 
-Run the non-skipping exact-profile availability gate separately:
+Планировщик сессии пере-измеряет все дескрипторы и привязывает перечни
+namespace, cgroup, mount, IPC, FD, процесса-дерева, квот и очистки. У пути
+супервизора нет запасного варианта или повтора: он повторяет измерение хоста,
+устойчиво фиксирует `PREPARED`, создаёт и проверяет одну cgroup, запускает только
+типизированный argv bwrap с `shell=False`, открывает раннюю стартовую задвижку,
+применяет внешние лимиты wall/CPU, убивает дерево процессов cgroup при сбое и
+терминально освобождает или помещает в карантин устойчивое резервирование. Эти
+свойства были квалифицированы для точного одноразового кандидата тестовой VM на
+коммите продукта `437ee01ca331cd7e4632fb8ad55eaa894254daa9`. Этот сохранённый
+бандл — историческое тестовое свидетельство профиля: это не production
+аттестация и он не может аттестовать более поздний коммит. Отдельно
+`resolve_target` использует Linux `openat2` с `BENEATH`, `NO_MAGICLINKS`,
+`NO_SYMLINKS` и `NO_XDEV`; приём брокера принимает только ограниченные сообщения
+`UNIX_SEQPACKET` с точными проверками `SO_PEERCRED` и привязки. Единственный
+API эффекта может заменить один уже существующий файл под предварительно
+открытым одноразовым корнем размещения 0700 только после точного захвата M2,
+повторной проверки внешним верификатором захвата, совпадения селектора/материала
+M1, совпадения неизменяемого дескриптора/корня/mount/эпохи/объекта и атомарного
+расходования текущей одноразовой авторизации этапа M4 из `DurableStore`. Захват
+или привязка вызывающего сами по себе бессильны. Неизвестный результат после
+записи помещается в карантин и никогда не повторяется.
+
+## M4: стадия, запечатывание и публикация
+
+M4 добавляет один прямой, не экспортируемый из корня координатор
+`harness_product.m4` и одну не экспортируемую границу `harness_product.publisher`
+для того же локального профиля размещаемых файлов. Admission M1, захват/граница
+M2 и точная топология публикации связывают и одноразовый размещаемый inode, и
+отдельно сконфигурированную цель публикации; входные данные вызывающего не
+дают ни одного корневого дескриптора. Внешние и не размещаемые запросы
+разрешены только через отказ. Схема durable v5 хранит активный контракт, полную
+границу D2, дайджест целевых полномочий и огороженные канонические записи
+`STAGED → QUIESCED → SEALED → POSTCHECKED → авторизация/квитанция публикации →
+COMMITTED → JOINED`, плюс отмену, карантин и сверку. Резервирование бюджета
+становится `SPENT` только после проверенной квитанции публикации, а
+восстановление никогда не возобновляет и не повторяет незавершённую транзакцию
+M4. Каждая зафиксированная граница D2 — также один необратимый слот попытки; её
+append-only последовательность итераций переживает отмену и повторное открытие,
+при этом `joined_iteration` по-прежнему означает только последний успешный JOIN.
+Жёсткий потолок `max_iterations` проверяется до выпуска следующей возможности.
+
+Перед запечатыванием координатор повторно разрешает канонический путь через
+свой доверенный корень и получает аренду Linux `F_RDLCK` на точный read-only
+размещённый inode. Он сохраняет эту возможность резолвера и перепроверяет и
+аренду, и каноническую привязку до JOIN. Запасного слабого варианта нет:
+существующие писатели, запрос на прерывание, потеря аренды, неподдерживаемые
+файловые системы, переименование/подмена или несовпадение идентичности помещают
+транзакцию в карантин. Неизменяемый снимок — это реальный запечатанный memfd с
+`F_SEAL_GROW|F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_WRITE`.
+
+Отдельный дочерний наблюдатель сначала закрывает весь диапазон Linux
+дескрипторов с помощью `close_range`, сохраняя только свой точный список
+разрешённых; невозможность доказать закрытие останавливает границу. Затем он
+создаёт безвластное предложение из read-only снимка; полная внешне проверенная
+квитанция наблюдателя обязательна до того, как отдельно проверенная авторизация
+публикации может достичь доверенного издателя. Издатель принимает только эту
+авторизацию и запечатанный дескриптор, использует свою сконфигурированную
+цель, корнем которой является дескриптор, выполняет одну атомарную замену плюс
+fsync и возвращает обязательную проверенную квитанцию публикации. Неизвестный
+исход помещается в карантин без повтора. Закрытая топология также требует
+попарно различных субъектов работник/контроллер/исполнитель/наблюдатель/издатель,
+единственного писателя-издателя и отсутствия полномочий `.git`. Корень
+публикации дополнительно привязан к своему физическому mount namespace, точке
+монтирования, абсолютному корневому пути, базовому имени и полной родительской
+цепочке, с проверками непрерывности вокруг атомарной замены и до COMMIT/JOIN.
+Перемещение или дрейф родительской цепочки, включая перемещение под `.git`,
+помещает операцию в карантин, а не публикует. Это свойства кодовой модели и
+локальной регрессии. Предварительная проверка `DEPLOYMENT_ATTESTED` остаётся
+`ABSENT` на общей машине разработчика; новая квалификация физической среды или
+production аттестация не заявляются. Фактический checkout и `.git` сохраняют
+свои существующие права хоста и не защищены этой одноразовой границей кодовой
+модели.
+
+## Гейт доступности точного профиля
+
+Непропускающий гейт доступности точного профиля запускается отдельно:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python scripts/check_m3_l0.py
 ```
 
-With no argument this is a read-only developer-host preflight. The following
-mode verifies only a same-candidate bundle while its exact live lab, checkout,
-and freshness window are still available; it is not an offline verifier for a
-historical retained bundle and never launches a VM:
+Без аргументов это read-only предварительная проверка машины разработчика.
+Следующий режим проверяет только бандл того же кандидата, пока доступны его
+точная живая лаборатория, checkout и окно свежести; это не офлайн-верификатор
+для исторического сохранённого бандла и никогда не запускает VM:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python scripts/check_m3_l0.py --evidence <bundle-directory>
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python scripts/check_m3_l0.py --evidence <каталог-бандла>
 ```
 
-Each mode exits nonzero unless its exact requirement is satisfied.
-On a host without the exact dedicated cgroup-v2 CPU/IO delegation it reports
-`ABSENT/CGROUP_DELEGATION_ABSENT`; no weaker fallback is selected. The
-historical disposable-VM qualification does not provide a production trust
-root, production privileged attestor, or production deployment evidence.
-Status therefore stays
-`NOT_IMPLEMENTED`, `NOT_ATTESTED`, and `NOT_READY`.
+Каждый режим завершается с ненулевым кодом, если его точное требование не
+выполнено. На хосте без точного выделенного делегирования CPU/IO cgroup-v2
+сообщается `ABSENT/CGROUP_DELEGATION_ABSENT`; более слабый запасной вариант не
+выбирается. Историческая квалификация одноразовой VM не даёт production-корня
+доверия, production-привилегированного аттестора или свидетельства
+production-развёртывания. Поэтому статус остаётся `NOT_IMPLEMENTED`,
+`NOT_ATTESTED` и `NOT_READY`.
